@@ -70,6 +70,7 @@ def _register_blueprints(app):
     from .api.foods import bp as foods_bp
     from .api.categories import bp as categories_bp
     from .api.tags import bp as tags_bp
+    from .api.ai import bp as ai_bp
 
     prefix = "/api/v1"
     for bp in (
@@ -82,6 +83,7 @@ def _register_blueprints(app):
         foods_bp,
         categories_bp,
         tags_bp,
+        ai_bp,
     ):
         app.register_blueprint(bp, url_prefix=prefix)
 

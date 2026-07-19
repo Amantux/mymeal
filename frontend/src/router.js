@@ -4,6 +4,8 @@ import { useAuth } from './stores/auth'
 import Dashboard from './views/Dashboard.vue'
 import Recipes from './views/Recipes.vue'
 import RecipeDetail from './views/RecipeDetail.vue'
+import RecipeImport from './views/RecipeImport.vue'
+import Settings from './views/Settings.vue'
 import HomeAssistant from './views/HomeAssistant.vue'
 import Login from './views/Login.vue'
 
@@ -11,6 +13,8 @@ const routes = [
   { path: '/', component: Dashboard },
   { path: '/recipes', component: Recipes },
   { path: '/recipes/:id', component: RecipeDetail },
+  { path: '/import', component: RecipeImport },
+  { path: '/settings', component: Settings },
   { path: '/home-assistant', component: HomeAssistant },
   { path: '/login', component: Login, meta: { public: true } },
 ]

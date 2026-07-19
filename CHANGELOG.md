@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0 — AI recipe import + provider layer (Milestone 2)
+
+### Added
+- **Pluggable AI provider layer** (`services/ai/`): one interface, three
+  adapters — **Claude** (`claude-opus-4-8`), **OpenAI**, and **Ollama** (local).
+  Selected via `MYMEAL_AI_PROVIDER`; `GET /api/v1/ai/providers` reports status.
+- **Recipe import** (`POST /api/v1/ai/import`): imports from a URL or pasted
+  text. URLs try deterministic schema.org/JSON-LD extraction first (no tokens),
+  falling back to the AI provider; text always uses the provider.
+- **Frontend**: an Import view (link or paste) and a Settings view showing
+  provider status.
+- Tests for JSON-LD extraction, ISO-8601 duration parsing, and both import
+  paths using a fake provider (no network/keys).
+
 ## 0.1.0 — Foundation (Milestone 1)
 
 Initial scaffold of **myMeal**, a self-hosted recipe manager, AI meal planner,

@@ -21,6 +21,7 @@ onMounted(() => {
 const nav = [
   { to: '/', icon: '🏠', label: 'Dashboard' },
   { to: '/recipes', icon: '📖', label: 'Recipes' },
+  { to: '/import', icon: '📥', label: 'Import' },
 ]
 </script>
 
@@ -35,6 +36,9 @@ const nav = [
           <span class="ico">{{ n.icon }}</span> {{ n.label }}
         </router-link>
         <div class="section-label">Utilities</div>
+        <router-link to="/settings" class="nav-link">
+          <span class="ico">⚙️</span> Settings
+        </router-link>
         <router-link to="/home-assistant" class="nav-link">
           <span class="ico">🔌</span> Home Assistant
         </router-link>
