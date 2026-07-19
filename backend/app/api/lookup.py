@@ -62,7 +62,10 @@ def _search_tags(gid, q, limit):
 @login_required
 def search():
     q = (request.args.get("q") or "").strip()
-    limit = min(int(request.args.get("limit", 25) or 25), 100)
+    try:
+        limit = min(int(request.args.get("limit", 25) or 25), 100)
+    except ValueError:
+        limit = 25
     gid = current_group().id
 
     types = request.args.get("types", "recipe,food,tag").split(",")

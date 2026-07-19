@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify, current_app
 
 from ..extensions import db
-from ..models import User, Group
+from ..models import User, Group, GroupInvitation
 from ..auth import (
     login_required,
     current_user,
@@ -14,6 +14,19 @@ from ..auth import (
 from ..schemas.serializers import user_out
 
 bp = Blueprint("users", __name__)
+
+
+def _invitation_expired(inv) -> bool:
+    """True if the invitation's ``expires_at`` (ISO string) is in the past."""
+    if not inv.expires_at:
+        return False
+    try:
+        exp = datetime.fromisoformat(inv.expires_at)
+    except ValueError:
+        return False
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    return exp < datetime.now(timezone.utc)
 
 
 @bp.post("/users/register")
@@ -32,15 +45,22 @@ def register():
 
     token = data.get("token")
     if token:
-        group = (
-            db.session.query(Group)
-            .join(Group.invitations)
-            .filter_by(token=token)
-            .first()
+        inv = (
+            db.session.query(GroupInvitation).filter_by(token=token).first()
         )
-        if not group:
+        if not inv:
             return jsonify({"error": "invalid invitation token"}), 422
+        # Enforce the invitation's limits — an unbounded/expired invite would
+        # otherwise grant permanent access to another household's tenant.
+        if _invitation_expired(inv):
+            return jsonify({"error": "invitation token expired"}), 422
+        if inv.uses <= 0:
+            return jsonify({"error": "invitation token already used"}), 422
+        inv.uses -= 1
+        group = inv.group
         is_owner = False
+        if inv.uses <= 0:
+            db.session.delete(inv)
     else:
         group = Group(name=data.get("groupName") or f"{name}'s Kitchen")
         db.session.add(group)
@@ -105,7 +125,12 @@ def update_self():
     if "name" in data:
         user.name = data["name"]
     if "email" in data:
-        user.email = data["email"].strip().lower()
+        new_email = data["email"].strip().lower()
+        if new_email != user.email and (
+            db.session.query(User).filter_by(email=new_email).first()
+        ):
+            return jsonify({"error": "email already registered"}), 409
+        user.email = new_email
     db.session.commit()
     return jsonify({"item": user_out(user)})
 

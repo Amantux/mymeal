@@ -34,13 +34,16 @@ def create_invitation():
     if not current_user().is_owner:
         return jsonify({"error": "only the owner can invite"}), 403
     data = request.get_json(silent=True) or {}
-    expires = datetime.now(timezone.utc) + timedelta(
-        days=int(data.get("days", 7) or 7)
-    )
+    try:
+        days = int(data.get("days", 7) or 7)
+        uses = int(data.get("uses", 1) or 1)
+    except (ValueError, TypeError):
+        return jsonify({"error": "days and uses must be integers"}), 422
+    expires = datetime.now(timezone.utc) + timedelta(days=days)
     inv = GroupInvitation(
         token=secrets.token_urlsafe(16),
         expires_at=expires.isoformat(),
-        uses=int(data.get("uses", 1) or 1),
+        uses=max(uses, 1),
         group_id=current_group().id,
     )
     db.session.add(inv)

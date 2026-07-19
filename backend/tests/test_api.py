@@ -137,6 +137,64 @@ def test_group_isolation(app):
     )
 
 
+def test_invitation_uses_enforced(auth_client):
+    """An invitation with uses=1 admits exactly one new member, then no more."""
+    inv = auth_client.post(
+        "/api/v1/groups/invitations", json={"uses": 1, "days": 7}
+    ).get_json()
+    token = inv["token"]
+    c = auth_client.application.test_client()
+    first = c.post(
+        "/api/v1/users/register",
+        json={"email": "inv1@x.com", "password": "pw12345", "name": "I1", "token": token},
+    )
+    assert first.status_code == 201
+    second = c.post(
+        "/api/v1/users/register",
+        json={"email": "inv2@x.com", "password": "pw12345", "name": "I2", "token": token},
+    )
+    assert second.status_code == 422  # single use already consumed
+
+
+def test_invitation_expiry_enforced(auth_client):
+    """An already-expired invitation is rejected."""
+    inv = auth_client.post(
+        "/api/v1/groups/invitations", json={"uses": 5, "days": -1}
+    ).get_json()
+    c = auth_client.application.test_client()
+    r = c.post(
+        "/api/v1/users/register",
+        json={
+            "email": "exp@x.com",
+            "password": "pw12345",
+            "name": "E",
+            "token": inv["token"],
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_update_self_duplicate_email_conflicts(client):
+    """Changing one's email to another user's returns 409, not a 500."""
+    client.post(
+        "/api/v1/users/register",
+        json={"email": "a@dup.com", "password": "pw12345", "name": "A"},
+    )
+    client.post(
+        "/api/v1/users/register",
+        json={"email": "b@dup.com", "password": "pw12345", "name": "B"},
+    )
+    tok = client.post(
+        "/api/v1/users/login", json={"username": "b@dup.com", "password": "pw12345"}
+    ).get_json()["token"]
+    r = client.put(
+        "/api/v1/users/self",
+        json={"email": "a@dup.com"},
+        headers={"Authorization": tok},
+    )
+    assert r.status_code == 409
+
+
 def test_noauth_mode(noauth_app):
     """With DISABLE_AUTH, requests bind to a default user with no token."""
     c = noauth_app.test_client()

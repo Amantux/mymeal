@@ -2,6 +2,7 @@ import json
 import os
 
 from flask import Blueprint, request, jsonify, abort, current_app, send_file
+from sqlalchemy.orm import selectinload
 
 from ..extensions import db
 from ..models import Recipe, RecipeIngredient, RecipeStep, Category, Tag
@@ -125,6 +126,10 @@ def list_recipes():
     if category:
         query = query.filter(Recipe.categories.any(Category.slug == category))
 
+    # Eager-load taxonomy so the summary loop doesn't fire ~2 queries per row.
+    query = query.options(
+        selectinload(Recipe.tags), selectinload(Recipe.categories)
+    )
     recipes = query.order_by(Recipe.name.asc()).all()
     return jsonify(
         {"items": [recipe_summary(r) for r in recipes], "total": len(recipes)}
