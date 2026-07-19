@@ -1,0 +1,24 @@
+services:
+  mymeal:
+    build: .
+    container_name: mymeal
+    ports:
+      - "7850:7850"
+    environment:
+      # Set a strong secret in production (>= 32 chars).
+      MYMEAL_SECRET_KEY: "please-change-me-to-a-long-random-string"
+      # Set to "true" when running behind Home Assistant ingress / a trusted proxy.
+      MYMEAL_DISABLE_AUTH: "false"
+      MYMEAL_ALLOW_REGISTRATION: "true"
+      # AI provider: "claude" | "ollama" | "openai" (blank disables AI features).
+      MYMEAL_AI_PROVIDER: ""
+      # Provider credentials/models (only the selected provider's are used):
+      # MYMEAL_ANTHROPIC_API_KEY: ""
+      # MYMEAL_OPENAI_API_KEY: ""
+      # MYMEAL_OLLAMA_HOST: "http://host.docker.internal:11434"
+    volumes:
+      - mymeal-data:/data
+    restart: unless-stopped
+
+volumes:
+  mymeal-data:

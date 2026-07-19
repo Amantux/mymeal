@@ -1,0 +1,37 @@
+name: myMeal
+version: "0.1.0"
+slug: mymeal
+description: Recipes, AI meal planning, pantry & shopping lists with a Home Assistant cooking assistant
+url: https://github.com/alexmoyse/mymeal
+# Pull the multi-arch image published by CI instead of building on-device.
+image: ghcr.io/alexmoyse/mymeal
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: services
+boot: auto
+ingress: true
+ingress_port: 7850
+panel_icon: mdi:silverware-fork-knife
+panel_title: myMeal
+# Advertise to Home Assistant so the companion integration auto-discovers us.
+discovery:
+  - mymeal
+# Expose the MCP server (SSE) so the Home Assistant MCP Client can connect.
+ports:
+  7851/tcp: 7851
+ports_description:
+  7851/tcp: myMeal MCP server (SSE) for the Home Assistant MCP Client
+map:
+  - share:rw
+options:
+  disable_auth: true
+  allow_registration: false
+  enable_mcp: true
+  ai_provider: ""
+schema:
+  disable_auth: bool
+  allow_registration: bool
+  enable_mcp: bool
+  ai_provider: "list(|claude|ollama|openai)?"
