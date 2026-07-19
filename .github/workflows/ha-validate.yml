@@ -119,6 +119,13 @@ jobs:
           if "hass.http" in src and "http" not in (man.get("dependencies") or []):
               errors.append("manifest.json: uses hass.http but 'http' is not in dependencies")
 
+          # hassfest enforces key order: domain, name, then strict alphabetical.
+          keys = list(man)
+          expected_order = ["domain", "name"] + sorted(k for k in keys
+                                                       if k not in ("domain", "name"))
+          if keys != expected_order:
+              errors.append(f"manifest.json: keys must be ordered {expected_order}, got {keys}")
+
           # Version drift between the add-on and the integration is a real
           # support burden: users report "0.5.0" and mean two different builds.
           addon = yaml.safe_load(open("mymeal/config.yaml"))

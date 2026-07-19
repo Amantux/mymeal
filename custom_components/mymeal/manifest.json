@@ -1,16 +1,16 @@
 {
   "domain": "mymeal",
   "name": "myMeal",
-  "version": "0.5.2",
-  "documentation": "https://github.com/Amantux/mymeal",
-  "issue_tracker": "https://github.com/Amantux/mymeal/issues",
-  "dependencies": [
-    "http"
-  ],
   "codeowners": [
     "@Amantux"
   ],
-  "requirements": [],
   "config_flow": true,
-  "iot_class": "local_polling"
+  "dependencies": [
+    "http"
+  ],
+  "documentation": "https://github.com/Amantux/mymeal",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/Amantux/mymeal/issues",
+  "requirements": [],
+  "version": "0.5.2"
 }
