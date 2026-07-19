@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="mymeal/logo.png" alt="myMeal" width="420">
+  <img src="docs/banner.png" alt="myMeal — recipes, AI meal planning, pantry & smart shopping lists" width="820">
 </p>
 
 # myMeal

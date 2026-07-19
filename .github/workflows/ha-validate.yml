@@ -94,6 +94,7 @@ jobs:
           # Home Assistant is strict about brand asset dimensions, and the
           # add-on store silently shows a placeholder if icon.png is missing.
           expected = {
+              "docs/banner.png": (1280, 420),
               "mymeal/icon.png": (512, 512),
               "mymeal/logo.png": (1024, 340),
               "custom_components/mymeal/brand/icon.png": (256, 256),
@@ -136,9 +137,12 @@ jobs:
               errors.append("hacs.json: missing minimum homeassistant version")
           # hacs.json has a CLOSED schema — unknown keys are a hard failure in
           # the HACS action (iot_class belongs in manifest.json, not here).
-          allowed = {"name", "homeassistant", "render_readme", "content_in_root",
-                     "zip_release", "filename", "hide_default_branch", "country",
-                     "persistent_directory"}
+          # Verified against https://hacs.xyz/docs/publish/start (not recalled).
+          # `render_readme` is legacy — undocumented now but still accepted by the
+          # HACS action; kept because dropping it would change store rendering.
+          allowed = {"name", "content_in_root", "zip_release", "filename",
+                     "hide_default_branch", "persistent_directory",
+                     "homeassistant", "country", "hacs", "render_readme"}
           extra = set(hacs) - allowed
           if extra:
               errors.append(f"hacs.json: keys not allowed by the HACS schema: {sorted(extra)}")

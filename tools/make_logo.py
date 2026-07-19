@@ -64,6 +64,18 @@ def _rounded_tile(size: tuple[int, int], radius: int) -> Image.Image:
     return out
 
 
+def _fit_font(d: ImageDraw.ImageDraw, text: str, max_width: float,
+              start_size: int) -> ImageFont.FreeTypeFont:
+    """Largest size at or below `start_size` where `text` fits in `max_width`."""
+    size = start_size
+    while size > 8:
+        font = ImageFont.truetype(FONT_BOLD, size=size)
+        if d.textlength(text, font=font) <= max_width:
+            return font
+        size -= 2
+    return ImageFont.truetype(FONT_BOLD, size=8)
+
+
 def _sparkle(d: ImageDraw.ImageDraw, cx: float, cy: float, rx: float, ry: float,
              waist: float = 0.30) -> None:
     """A four-point star, drawn as two facets so it reads as dimensional.
@@ -144,8 +156,47 @@ def make_logo(px_w: int, px_h: int) -> Image.Image:
     return img.resize((px_w, px_h), Image.LANCZOS)
 
 
+def make_banner(px_w: int = 1280, px_h: int = 420) -> Image.Image:
+    """Wide hero banner for the README and the HACS store panel.
+
+    HACS renders the repository README inside its store panel, so this doubles
+    as the store artwork — there is no separate HACS banner slot to fill.
+    """
+    w, h = px_w * SS, px_h * SS
+    img = _rounded_tile((w, h), radius=round(h * 0.075))
+    d = ImageDraw.Draw(img)
+
+    mark_scale = (h / 512) * 0.80
+    mark_cx = w * 0.135
+    _draw_mark(d, cx=mark_cx, cy=h * 0.47, scale=mark_scale)
+
+    text_x = mark_cx + 168 * mark_scale
+    avail = w - text_x - w * 0.055  # right padding
+
+    title_font = ImageFont.truetype(FONT_BOLD, size=round(h * 0.205))
+    title = "myMeal"
+    d.text((text_x, h * 0.175), title, font=title_font, fill=WHITE)
+
+    # Fit the taglines to the space that actually remains, rather than trusting
+    # a hardcoded point size — the longest line ran off the right edge at 1280px
+    # and would break again at any other banner width.
+    tagline = "Recipes · AI meal planning · Pantry · Smart shopping lists"
+    subline = "Home Assistant native — add-on, HACS, Assist voice"
+    tag_font = _fit_font(d, max(tagline, subline, key=len), avail, round(h * 0.075))
+
+    # Muted white, not a second hue: the gold stays the only accent.
+    d.text((text_x, h * 0.560), tagline, font=tag_font, fill=(255, 255, 255, 216))
+    line_h = d.textbbox((0, 0), subline, font=tag_font)[3]
+    d.text((text_x, h * 0.560 + line_h * 1.55), subline, font=tag_font,
+           fill=(255, 255, 255, 168))
+
+    return img.resize((px_w, px_h), Image.LANCZOS)
+
+
 # path -> factory. Mirrors the HomeHoard asset set exactly.
 TARGETS = {
+    # README hero / HACS store panel artwork.
+    "docs/banner.png": lambda: make_banner(1280, 420),
     # Supervisor add-on (shown in the Add-on Store).
     "mymeal/icon.png": lambda: make_icon(512),
     "mymeal/logo.png": lambda: make_logo(1024, 340),
