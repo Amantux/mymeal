@@ -157,8 +157,8 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: true
           tags: |
-            ghcr.io/alexmoyse/mymeal:${{ needs.bump-version.outputs.new_version }}-${{ matrix.arch }}
-            ghcr.io/alexmoyse/mymeal:latest-${{ matrix.arch }}
+            ghcr.io/amantux/mymeal:${{ needs.bump-version.outputs.new_version }}-${{ matrix.arch }}
+            ghcr.io/amantux/mymeal:latest-${{ matrix.arch }}
 
   merge-manifest:
     name: Merge multi-arch manifest
@@ -179,11 +179,11 @@ jobs:
         run: |
           V=${{ needs.bump-version.outputs.new_version }}
           docker buildx imagetools create \
-            --tag ghcr.io/alexmoyse/mymeal:${V} \
-            --tag ghcr.io/alexmoyse/mymeal:latest \
-            ghcr.io/alexmoyse/mymeal:${V}-amd64 \
-            ghcr.io/alexmoyse/mymeal:${V}-arm64
-          echo "Published ghcr.io/alexmoyse/mymeal:${V} (amd64 + arm64)"
+            --tag ghcr.io/amantux/mymeal:${V} \
+            --tag ghcr.io/amantux/mymeal:latest \
+            ghcr.io/amantux/mymeal:${V}-amd64 \
+            ghcr.io/amantux/mymeal:${V}-arm64
+          echo "Published ghcr.io/amantux/mymeal:${V} (amd64 + arm64)"
 
   release:
     name: GitHub release (HACS)
@@ -208,6 +208,6 @@ jobs:
               --repo "$REPO" \
               --target "$SHA" \
               --title "v${V}" \
-              --notes "myMeal ${V} — Home Assistant add-on & HACS integration. Container image: ghcr.io/alexmoyse/mymeal:${V}"
+              --notes "myMeal ${V} — Home Assistant add-on & HACS integration. Container image: ghcr.io/amantux/mymeal:${V}"
             echo "Created release v${V} at ${SHA}"
           fi

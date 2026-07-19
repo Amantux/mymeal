@@ -2,11 +2,11 @@
   "domain": "mymeal",
   "name": "myMeal",
   "version": "0.5.0",
-  "documentation": "https://github.com/alexmoyse/mymeal",
-  "issue_tracker": "https://github.com/alexmoyse/mymeal/issues",
+  "documentation": "https://github.com/Amantux/mymeal",
+  "issue_tracker": "https://github.com/Amantux/mymeal/issues",
   "dependencies": [],
   "codeowners": [
-    "@alexmoyse"
+    "@Amantux"
   ],
   "requirements": [],
   "config_flow": true,

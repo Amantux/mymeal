@@ -1,10 +1,11 @@
 import { defineStore } from 'pinia'
-import { api, setToken, getToken } from '../api'
+import { api, setToken } from '../api'
 
 export const useAuth = defineStore('auth', {
   state: () => ({
     user: null,
     authDisabled: false,
+    allowRegistration: true,
     ready: false,
   }),
   getters: {
@@ -12,11 +13,22 @@ export const useAuth = defineStore('auth', {
   },
   actions: {
     async bootstrap() {
-      // If auth is disabled server-side, /users/self succeeds with no token.
+      // Ask the server directly whether sign-in is required. We used to INFER
+      // this from an unauthenticated /users/self succeeding, but any transient
+      // failure of that call then bounced the user to a login screen — which is
+      // meaningless behind Home Assistant ingress, where the add-on runs with
+      // disable_auth and HA has already authenticated the user upstream.
+      try {
+        const mode = await api.get('/misc/auth-mode')
+        this.authDisabled = !!mode.authDisabled
+        this.allowRegistration = !!mode.allowRegistration
+      } catch (e) {
+        // Unknown mode: fall back to requiring login (fail closed, never open).
+        this.authDisabled = false
+      }
       try {
         const res = await api.get('/users/self')
         this.user = res.item
-        if (!getToken()) this.authDisabled = true
       } catch (e) {
         this.user = null
       } finally {

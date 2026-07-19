@@ -1,0 +1,133 @@
+name: HA validate
+
+# Validates the two Home Assistant install paths this repo ships:
+#   1. custom_components/mymeal  -> HACS custom integration
+#   2. mymeal/config.yaml        -> Supervisor add-on
+# These are the checks behind the README badges. They are BLOCKING: a badge that
+# stays green while the integration is unloadable is worse than no badge.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # HA and HACS both tighten their requirements over time; a repo that passed
+    # at merge can fail months later without a single commit. Catch that.
+    - cron: "0 4 * * 1"
+
+jobs:
+  hassfest:
+    name: hassfest (Home Assistant integration manifest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS (integration installability)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration
+          # `brands` checks that the domain is registered in home-assistant/brands,
+          # which is a separate PR against an upstream repo we do not control and
+          # cannot land from CI. Ignored deliberately and tracked in the README
+          # ("Pending external steps"), NOT silently dropped.
+          ignore: brands
+
+  addon-lint:
+    name: Add-on config lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate add-on config.yaml
+        run: |
+          python3 - <<'PY'
+          import sys, yaml
+          cfg = yaml.safe_load(open("mymeal/config.yaml"))
+          errors = []
+
+          required = ["name", "version", "slug", "description", "arch", "image"]
+          for key in required:
+              if not cfg.get(key):
+                  errors.append(f"missing required add-on key: {key}")
+
+          # The ingress contract is the whole point of the no-sign-in UX: HA
+          # authenticates the user upstream and proxies to ingress_port.
+          if not cfg.get("ingress"):
+              errors.append("ingress must be true (the add-on is used via the HA sidebar)")
+          if cfg.get("ingress_port") != 7850:
+              errors.append(f"ingress_port must be 7850, got {cfg.get('ingress_port')}")
+
+          # Sign-in must be OFF by default behind ingress, or every HA user hits
+          # a login screen for an app HA already authenticated them into.
+          opts = cfg.get("options") or {}
+          if opts.get("disable_auth") is not True:
+              errors.append("options.disable_auth must default to true (HA ingress already authenticates)")
+          schema = cfg.get("schema") or {}
+          if schema.get("disable_auth") != "bool":
+              errors.append("schema.disable_auth must be declared as bool")
+
+          # GHCR rejects mixed-case namespaces; a capitalised owner silently
+          # breaks `docker pull` on every user's box.
+          image = cfg.get("image", "")
+          if image != image.lower():
+              errors.append(f"image must be lowercase (GHCR requirement): {image}")
+
+          if errors:
+              print("Add-on config INVALID:")
+              for e in errors:
+                  print(f"  - {e}")
+              sys.exit(1)
+          print(f"Add-on config OK: {cfg['name']} {cfg['version']} -> {cfg['image']}")
+          PY
+
+      - name: Validate HACS + repository metadata
+        run: |
+          python3 - <<'PY'
+          import json, sys, yaml
+          errors = []
+
+          hacs = json.load(open("hacs.json"))
+          if not hacs.get("name"):
+              errors.append("hacs.json: missing name")
+          if not hacs.get("homeassistant"):
+              errors.append("hacs.json: missing minimum homeassistant version")
+
+          man = json.load(open("custom_components/mymeal/manifest.json"))
+          for key in ("domain", "name", "version", "documentation", "issue_tracker", "codeowners"):
+              if not man.get(key):
+                  errors.append(f"manifest.json: missing {key}")
+          if man.get("domain") != "mymeal":
+              errors.append(f"manifest.json: domain must be 'mymeal', got {man.get('domain')}")
+
+          # Version drift between the add-on and the integration is a real
+          # support burden: users report "0.5.0" and mean two different builds.
+          addon = yaml.safe_load(open("mymeal/config.yaml"))
+          if man.get("version") != addon.get("version"):
+              errors.append(
+                  f"version drift: manifest.json={man.get('version')} "
+                  f"addon config.yaml={addon.get('version')}"
+              )
+
+          repo = yaml.safe_load(open("repository.yaml"))
+          if not repo.get("url"):
+              errors.append("repository.yaml: missing url")
+
+          # Every documentation URL must point at the repo that actually hosts
+          # this code, or HACS sends users somewhere that 404s.
+          expected = repo["url"].rstrip("/")
+          for label, url in (("documentation", man["documentation"]),
+                             ("issue_tracker", man["issue_tracker"])):
+              if not url.startswith(expected):
+                  errors.append(f"manifest.json {label} ({url}) does not point at {expected}")
+
+          if errors:
+              print("HACS metadata INVALID:")
+              for e in errors:
+                  print(f"  - {e}")
+              sys.exit(1)
+          print(f"HACS metadata OK: {man['name']} {man['version']} ({man['domain']})")
+          PY
