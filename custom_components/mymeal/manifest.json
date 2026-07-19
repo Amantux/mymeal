@@ -4,7 +4,9 @@
   "version": "0.5.1",
   "documentation": "https://github.com/Amantux/mymeal",
   "issue_tracker": "https://github.com/Amantux/mymeal/issues",
-  "dependencies": [],
+  "dependencies": [
+    "http"
+  ],
   "codeowners": [
     "@Amantux"
   ],

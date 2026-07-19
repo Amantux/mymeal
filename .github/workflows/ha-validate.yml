@@ -95,6 +95,14 @@ jobs:
               errors.append("hacs.json: missing name")
           if not hacs.get("homeassistant"):
               errors.append("hacs.json: missing minimum homeassistant version")
+          # hacs.json has a CLOSED schema — unknown keys are a hard failure in
+          # the HACS action (iot_class belongs in manifest.json, not here).
+          allowed = {"name", "homeassistant", "render_readme", "content_in_root",
+                     "zip_release", "filename", "hide_default_branch", "country",
+                     "persistent_directory"}
+          extra = set(hacs) - allowed
+          if extra:
+              errors.append(f"hacs.json: keys not allowed by the HACS schema: {sorted(extra)}")
 
           man = json.load(open("custom_components/mymeal/manifest.json"))
           for key in ("domain", "name", "version", "documentation", "issue_tracker", "codeowners"):
@@ -102,6 +110,14 @@ jobs:
                   errors.append(f"manifest.json: missing {key}")
           if man.get("domain") != "mymeal":
               errors.append(f"manifest.json: domain must be 'mymeal', got {man.get('domain')}")
+
+          # Any HA component we touch at runtime must be declared, or HA may set
+          # us up before it exists. __init__.py uses hass.http to serve the
+          # Lovelace card, so `http` is mandatory — hassfest enforces this, but
+          # catching it here fails in seconds instead of after a container pull.
+          src = open("custom_components/mymeal/__init__.py").read()
+          if "hass.http" in src and "http" not in (man.get("dependencies") or []):
+              errors.append("manifest.json: uses hass.http but 'http' is not in dependencies")
 
           # Version drift between the add-on and the integration is a real
           # support burden: users report "0.5.0" and mean two different builds.
