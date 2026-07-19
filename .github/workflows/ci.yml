@@ -1,10 +1,14 @@
-name: CI
+name: CI/CD
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+
+permissions:
+  contents: write
+  packages: write
 
 jobs:
   backend-tests:
@@ -42,22 +46,168 @@ jobs:
           npm run build
 
   validate-addon:
-    name: Validate add-on config
+    name: Validate add-on + integration
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validate config.yaml / repository.yaml
+      - name: Validate config.yaml / manifest.json / repository.yaml
         run: |
           pip install pyyaml
           python3 - <<'PY'
-          import yaml
+          import json, yaml
           cfg = yaml.safe_load(open("mymeal/config.yaml"))
           for f in ("name", "version", "slug", "image", "arch"):
               assert f in cfg, f"config.yaml missing {f}"
+          man = json.load(open("custom_components/mymeal/manifest.json"))
+          assert man["domain"] == "mymeal"
+          # add-on version and integration version must stay in lockstep
+          assert str(cfg["version"]) == str(man["version"]), (
+              f"version mismatch: config={cfg['version']} manifest={man['version']}"
+          )
           yaml.safe_load(open("repository.yaml"))
           print("add-on config OK, version", cfg["version"])
           PY
 
-# NOTE: multi-arch GHCR publish + version-bump + HACS release pipeline and the
-# config.yaml/manifest.json version-lockstep check are added in the HA
-# integration milestone, once custom_components/mymeal/manifest.json exists.
+  # Auto-bump the patch version on every push to main (skips its own commit).
+  bump-version:
+    name: Auto-bump patch version
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'push' &&
+      !startsWith(github.event.head_commit.message, 'chore: bump version')
+    needs: [backend-tests, frontend-build, validate-addon]
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+      bump_sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+      - name: Bump patch version in config.yaml + manifest.json
+        id: bump
+        run: |
+          python3 - <<'PY'
+          import json, re, os
+
+          cfg_path = "mymeal/config.yaml"
+          man_path = "custom_components/mymeal/manifest.json"
+
+          text = open(cfg_path).read()
+          m = re.search(r'^version:\s*"?([0-9]+\.[0-9]+\.[0-9]+)"?', text, re.M)
+          old = m.group(1)
+          parts = old.split("."); parts[-1] = str(int(parts[-1]) + 1)
+          new = ".".join(parts)
+
+          text = re.sub(r'^(version:\s*).*$', f'\\1"{new}"', text, count=1, flags=re.M)
+          open(cfg_path, "w").write(text)
+
+          man = json.load(open(man_path))
+          man["version"] = new
+          with open(man_path, "w") as f:
+              json.dump(man, f, indent=2); f.write("\n")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"old_version={old}\nnew_version={new}\n")
+          print(f"Bumped {old} -> {new}")
+          PY
+      - name: Commit version bump
+        id: commit
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add mymeal/config.yaml custom_components/mymeal/manifest.json
+          git commit -m "chore: bump version ${{ steps.bump.outputs.old_version }} → ${{ steps.bump.outputs.new_version }}"
+          git push origin HEAD:${{ github.ref_name }}
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  # Build each architecture on a native runner (no QEMU) and push per-arch tags.
+  docker-build:
+    name: Build & push (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    if: >
+      github.event_name == 'push' &&
+      !startsWith(github.event.head_commit.message, 'chore: bump version')
+    needs: [bump-version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push per-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: |
+            ghcr.io/alexmoyse/mymeal:${{ needs.bump-version.outputs.new_version }}-${{ matrix.arch }}
+            ghcr.io/alexmoyse/mymeal:latest-${{ matrix.arch }}
+
+  merge-manifest:
+    name: Merge multi-arch manifest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: >
+      github.event_name == 'push' &&
+      !startsWith(github.event.head_commit.message, 'chore: bump version')
+    needs: [bump-version, docker-build]
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create and push multi-arch manifests
+        run: |
+          V=${{ needs.bump-version.outputs.new_version }}
+          docker buildx imagetools create \
+            --tag ghcr.io/alexmoyse/mymeal:${V} \
+            --tag ghcr.io/alexmoyse/mymeal:latest \
+            ghcr.io/alexmoyse/mymeal:${V}-amd64 \
+            ghcr.io/alexmoyse/mymeal:${V}-arm64
+          echo "Published ghcr.io/alexmoyse/mymeal:${V} (amd64 + arm64)"
+
+  release:
+    name: GitHub release (HACS)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: >
+      github.event_name == 'push' &&
+      !startsWith(github.event.head_commit.message, 'chore: bump version')
+    needs: [bump-version, merge-manifest]
+    steps:
+      - name: Create release v${{ needs.bump-version.outputs.new_version }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V: ${{ needs.bump-version.outputs.new_version }}
+          SHA: ${{ needs.bump-version.outputs.bump_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          if gh release view "v${V}" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release v${V} already exists — skipping."
+          else
+            gh release create "v${V}" \
+              --repo "$REPO" \
+              --target "$SHA" \
+              --title "v${V}" \
+              --notes "myMeal ${V} — Home Assistant add-on & HACS integration. Container image: ghcr.io/alexmoyse/mymeal:${V}"
+            echo "Created release v${V} at ${SHA}"
+          fi

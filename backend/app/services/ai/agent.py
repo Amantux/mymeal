@@ -94,7 +94,9 @@ def _find_recipe(gid, name_or_id):
 
 def execute_tool(gid: str, name: str, args: dict):
     """Run one tool against the group's data. Returns a JSON-serializable value."""
-    args = args or {}
+    # The model may emit a non-dict (array/scalar) as arguments — never trust it.
+    if not isinstance(args, dict):
+        args = {}
     if name == "search_recipes":
         like = f"%{(args.get('query') or '').strip()}%"
         rows = (
@@ -169,7 +171,9 @@ def execute_tool(gid: str, name: str, args: dict):
         db.session.add(
             ShoppingListItem(display=item_text, position=pos, shopping_list_id=sl.id)
         )
-        db.session.commit()
+        # Flush, don't commit — the request handler owns the single commit so a
+        # later failure in the turn rolls this back atomically.
+        db.session.flush()
         return {"added": item_text, "list": sl.name}
 
     return {"error": f"unknown tool {name}"}
@@ -199,7 +203,10 @@ def run_chat(
             {"role": "assistant", "content": result.content or "(using tools)"}
         )
         for call in result.tool_calls:
-            output = execute_tool(gid, call.name, call.arguments)
+            try:
+                output = execute_tool(gid, call.name, call.arguments)
+            except Exception as exc:  # noqa: BLE001 - feed errors back, never 500
+                output = {"error": f"{call.name} failed: {exc}"}
             trace.append(
                 {"tool": call.name, "args": call.arguments, "result": output}
             )

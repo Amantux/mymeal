@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.5.0 — MCP server + Home Assistant integration (Milestone 5)
+
+### Added
+- **MCP server** (`backend/mcp_server.py`, FastMCP SSE on port 7851): exposes
+  cooking tools to HA Assist — `search_recipes`, `get_recipe`,
+  `whats_for_dinner`, `what_can_i_cook`, `get_shopping_list`,
+  `add_to_shopping_list`, `pantry_list`/`pantry_add`, `plan_week`, and voice
+  step-through (`start_cooking`/`next_step`).
+- **HA read endpoints**: `/api/v1/ha/summary` (counts + today's/this week's
+  meals, expiring pantry) and `/api/v1/ha/calendar` (meal plan as events).
+- **HACS integration** (`custom_components/mymeal/`): config flow (manual +
+  Supervisor discovery), coordinator, sensors, a meal-plan **calendar** entity,
+  Assist intents + `mymeal.*` response services, custom sentences, and an
+  auto-registered Lovelace card.
+- **Packaging**: full CI (ruff + pytest + frontend build + add-on/manifest
+  version-lockstep validation + multi-arch GHCR publish + version bump + HACS
+  release). Add-on `config.yaml` and integration `manifest.json` pinned to
+  0.5.0. HA docs + example dashboard under `docs/ha/`.
+
+### Fixed (M4 review)
+- Chat tools no longer `commit()` mid-turn — they `flush()`, and the request
+  owns the single commit (with rollback on failure) so a failed turn leaves no
+  orphaned session or partial shopping-list write.
+- Non-dict tool arguments and tool exceptions are fed back to the model as
+  errors instead of 500-ing.
+
 ## 0.4.0 — Conversational cooking agent (Milestone 4)
 
 ### Added

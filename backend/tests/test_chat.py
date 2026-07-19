@@ -96,6 +96,60 @@ def test_chat_add_to_shopping_list_tool(auth_client, monkeypatch):
     )
 
 
+def test_failed_turn_after_tool_write_is_atomic(auth_client, monkeypatch):
+    """A tool that wrote, followed by a provider error, must leave nothing behind."""
+    import app.api.chat as chat_api
+    from app.services.ai.base import ProviderError
+
+    class WriteThenFail(AIProvider):
+        name = "fake"
+
+        def available(self):
+            return True
+
+        def _complete(self, system, prompt, max_tokens):
+            return "{}"
+
+        def chat(self, messages, system="", tools=None, max_tokens=2048):
+            if not any("Result of add_to_shopping_list" in (m.get("content") or "") for m in messages):
+                return ChatResult(
+                    tool_calls=[ToolCall(id="c1", name="add_to_shopping_list", arguments={"item": "milk"})]
+                )
+            raise ProviderError("upstream died")
+
+    monkeypatch.setattr(chat_api, "get_provider", lambda: WriteThenFail())
+    r = auth_client.post("/api/v1/ai/chat", json={"message": "add milk"})
+    assert r.status_code == 502
+    # No phantom session, and the shopping write was rolled back.
+    assert auth_client.get("/api/v1/ai/chat/sessions").get_json()["items"] == []
+    lists = auth_client.get("/api/v1/shopping-lists").get_json()["items"]
+    assert all(not sl["items"] for sl in lists)
+
+
+def test_non_dict_tool_arguments_do_not_500(auth_client, monkeypatch):
+    import app.api.chat as chat_api
+
+    class BadArgs(AIProvider):
+        name = "fake"
+
+        def available(self):
+            return True
+
+        def _complete(self, system, prompt, max_tokens):
+            return "{}"
+
+        def chat(self, messages, system="", tools=None, max_tokens=2048):
+            if not any("Result of" in (m.get("content") or "") for m in messages):
+                return ChatResult(
+                    tool_calls=[ToolCall(id="c1", name="search_recipes", arguments=["not", "a", "dict"])]
+                )
+            return ChatResult(content="handled")
+
+    monkeypatch.setattr(chat_api, "get_provider", lambda: BadArgs())
+    r = auth_client.post("/api/v1/ai/chat", json={"message": "hi"})
+    assert r.status_code == 200
+
+
 def test_chat_requires_provider(auth_client, monkeypatch):
     import app.api.chat as chat_api
     from app.services.ai.base import ProviderError

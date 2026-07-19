@@ -8,10 +8,10 @@ collection, let an AI help you plan the week and cook, track what's in your
 pantry, and generate consolidated shopping lists — all runnable standalone or as
 a Home Assistant add-on with voice control through Assist.
 
-> **Status:** Milestone 1 (Foundation). Core recipe management, API, SPA, and
-> packaging are in place. AI import, planning, pantry, the conversational agent,
-> and the Home Assistant integration land in subsequent milestones — see the
-> [CHANGELOG](CHANGELOG.md).
+> **Status:** all five milestones shipped — core recipe management, AI recipe
+> import + pluggable providers, meal planning, pantry, smart shopping lists, the
+> conversational cooking agent, the MCP server, and the Home Assistant
+> integration. See the [CHANGELOG](CHANGELOG.md).
 
 ## Highlights (target feature set)
 
@@ -34,7 +34,7 @@ a Home Assistant add-on with voice control through Assist.
 ```
 backend/          Flask API (app factory, /api/v1), SQLAlchemy models, MCP server
 frontend/         Vue 3 + Vite SPA (served by the backend)
-custom_components/ Home Assistant (HACS) integration        [added in the HA milestone]
+custom_components/ Home Assistant (HACS) integration — config flow, sensors, calendar, services, card
 mymeal/           Home Assistant add-on config
 Dockerfile        Multi-stage build (frontend → python runtime)
 ```

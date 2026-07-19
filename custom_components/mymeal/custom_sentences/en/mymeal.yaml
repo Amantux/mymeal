@@ -1,0 +1,32 @@
+# myMeal voice sentences for Home Assistant Assist.
+#
+# Copy this file to:  <your HA config>/custom_sentences/en/mymeal.yaml
+# then restart Home Assistant. You can then ask Assist things like:
+#   "what's for dinner"   "what can I cook"   "add eggs to my shopping list"
+language: "en"
+intents:
+  MyMealWhatsForDinner:
+    data:
+      - sentences:
+          - "what's for dinner [today]"
+          - "what is for dinner [today]"
+          - "what's [for] (lunch|breakfast|dinner) [today]"
+          - "what are we (eating|having) [today|tonight]"
+          - "what's on the (menu|meal plan) [today]"
+  MyMealWhatCanICook:
+    data:
+      - sentences:
+          - "what can I (cook|make) [right now|tonight]"
+          - "what can I make with what I have"
+          - "what should I cook"
+          - "suggest [me] a (recipe|meal|dinner)"
+  MyMealAddToShoppingList:
+    data:
+      - sentences:
+          - "add {item} to [my|the] shopping list"
+          - "put {item} on [my|the] shopping list"
+          - "[I] need to buy {item}"
+          - "add {item} to [my|the] groceries"
+lists:
+  item:
+    wildcard: true

@@ -83,6 +83,9 @@ def chat():
     try:
         result = run_chat(gid, provider, history, message)
     except ProviderError as exc:
+        # Discard the flushed-but-uncommitted session and any tool writes so a
+        # failed turn leaves no phantom session or partial shopping-list item.
+        db.session.rollback()
         return jsonify({"error": str(exc)}), 502
 
     pos = _next_position(session)

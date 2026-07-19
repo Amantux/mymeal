@@ -1,0 +1,54 @@
+whats_for_dinner:
+  name: What's for dinner
+  description: >-
+    Return the meals planned for a day, plus a ready-to-speak sentence — handy
+    for notifications and voice.
+  fields:
+    day:
+      name: Day
+      description: The date to check (YYYY-MM-DD). Defaults to today.
+      required: false
+      example: "2026-07-20"
+      selector:
+        text:
+
+what_can_i_cook:
+  name: What can I cook
+  description: >-
+    Suggest recipes you can make now, ranked by what's in your pantry. Returns
+    the ranked list plus a ready-to-speak sentence.
+
+add_to_shopping_list:
+  name: Add to shopping list
+  description: Add an item to your myMeal shopping list.
+  fields:
+    item:
+      name: Item
+      description: What to add.
+      required: true
+      example: eggs
+      selector:
+        text:
+
+plan_week:
+  name: Plan the week
+  description: >-
+    Generate a meal plan with AI and save it. Requires an AI provider to be
+    configured in myMeal.
+  fields:
+    days:
+      name: Days
+      description: How many days to plan (1-14).
+      required: false
+      example: 7
+      selector:
+        number:
+          min: 1
+          max: 14
+    preferences:
+      name: Preferences
+      description: Dietary preferences or constraints to respect.
+      required: false
+      example: vegetarian, quick weeknight meals
+      selector:
+        text:

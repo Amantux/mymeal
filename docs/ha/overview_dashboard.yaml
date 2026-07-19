@@ -1,0 +1,40 @@
+# myMeal — example Home Assistant dashboard.
+# Settings → Dashboards → (new dashboard) → Edit → Raw configuration editor,
+# then paste this. Entity ids may carry a config-entry suffix; adjust if needed.
+title: myMeal
+views:
+  - title: Kitchen
+    path: mymeal
+    cards:
+      - type: custom:mymeal-card
+
+      - type: entities
+        title: This week
+        entities:
+          - entity: sensor.mymeal_meals_planned_this_week
+          - entity: sensor.mymeal_todays_meals
+          - entity: sensor.mymeal_shopping_list_items
+          - entity: sensor.mymeal_pantry_items
+          - entity: sensor.mymeal_pantry_expiring_7d
+
+      - type: calendar
+        title: Meal plan
+        entities:
+          - calendar.mymeal_meal_plan
+
+      # Quick actions — wire to the mymeal.* services.
+      - type: entities
+        title: Assistant actions
+        entities:
+          - type: button
+            name: What can I cook?
+            icon: mdi:chef-hat
+            tap_action:
+              action: perform-action
+              perform_action: mymeal.what_can_i_cook
+          - type: button
+            name: Plan the week
+            icon: mdi:calendar-plus
+            tap_action:
+              action: perform-action
+              perform_action: mymeal.plan_week

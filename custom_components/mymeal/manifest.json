@@ -1,0 +1,14 @@
+{
+  "domain": "mymeal",
+  "name": "myMeal",
+  "version": "0.5.0",
+  "documentation": "https://github.com/alexmoyse/mymeal",
+  "issue_tracker": "https://github.com/alexmoyse/mymeal/issues",
+  "dependencies": [],
+  "codeowners": [
+    "@alexmoyse"
+  ],
+  "requirements": [],
+  "config_flow": true,
+  "iot_class": "local_polling"
+}
