@@ -1,4 +1,8 @@
-# myMeal 🍽️
+<p align="center">
+  <img src="mymeal/logo.png" alt="myMeal" width="420">
+</p>
+
+# myMeal
 
 [![HA validate](https://github.com/Amantux/mymeal/actions/workflows/ha-validate.yml/badge.svg)](https://github.com/Amantux/mymeal/actions/workflows/ha-validate.yml)
 [![CI](https://github.com/Amantux/mymeal/actions/workflows/ci.yml/badge.svg)](https://github.com/Amantux/mymeal/actions/workflows/ci.yml)

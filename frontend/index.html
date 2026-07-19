@@ -3,6 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Relative hrefs: behind Home Assistant ingress the app is served from
+         /api/hassio_ingress/<token>/, so a leading slash would 404. -->
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <meta name="theme-color" content="#e2542a" />
     <title>myMeal</title>
   </head>
   <body>

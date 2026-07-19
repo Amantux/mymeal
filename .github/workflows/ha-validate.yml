@@ -84,6 +84,45 @@ jobs:
           print(f"Add-on config OK: {cfg['name']} {cfg['version']} -> {cfg['image']}")
           PY
 
+      - name: Validate brand assets
+        run: |
+          pip install --quiet pillow
+          python3 - <<'PY'
+          import sys
+          from PIL import Image
+
+          # Home Assistant is strict about brand asset dimensions, and the
+          # add-on store silently shows a placeholder if icon.png is missing.
+          expected = {
+              "mymeal/icon.png": (512, 512),
+              "mymeal/logo.png": (1024, 340),
+              "custom_components/mymeal/brand/icon.png": (256, 256),
+              "custom_components/mymeal/brand/icon@2x.png": (512, 512),
+              "custom_components/mymeal/brand/logo.png": (512, 170),
+              "custom_components/mymeal/brand/logo@2x.png": (1024, 340),
+              "frontend/public/favicon.png": (64, 64),
+              "frontend/public/apple-touch-icon.png": (180, 180),
+          }
+          errors = []
+          for path, size in expected.items():
+              try:
+                  img = Image.open(path)
+              except FileNotFoundError:
+                  errors.append(f"missing brand asset: {path}")
+                  continue
+              if img.size != size:
+                  errors.append(f"{path}: expected {size}, got {img.size}")
+              if img.mode != "RGBA":
+                  errors.append(f"{path}: expected RGBA, got {img.mode}")
+          if errors:
+              print("Brand assets INVALID:")
+              for e in errors:
+                  print(f"  - {e}")
+              print("\nRegenerate with: python3 tools/make_logo.py")
+              sys.exit(1)
+          print(f"Brand assets OK ({len(expected)} files)")
+          PY
+
       - name: Validate HACS + repository metadata
         run: |
           python3 - <<'PY'
