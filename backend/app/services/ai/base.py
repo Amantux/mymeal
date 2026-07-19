@@ -83,21 +83,30 @@ class AIProvider(ABC):
 
 
 def extract_json(text: str) -> dict:
-    """Parse a JSON object from model output, tolerating fences/prose."""
+    """Parse a JSON *object* from model output, tolerating fences/prose.
+
+    Raises ``ProviderError`` on anything that isn't a JSON object — including
+    valid-but-wrong-shape output like a bare array or scalar — so callers never
+    have to defend against a non-dict return.
+    """
     text = (text or "").strip()
     # Strip a ```json … ``` fence if present.
     fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if fence:
         text = fence.group(1).strip()
+    parsed = None
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
     except json.JSONDecodeError:
-        pass
-    # Last resort: grab the outermost {...} span.
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and end > start:
-        try:
-            return json.loads(text[start : end + 1])
-        except json.JSONDecodeError as exc:
-            raise ProviderError(f"model did not return valid JSON: {exc}") from exc
-    raise ProviderError("model did not return JSON")
+        # Last resort: grab the outermost {...} span.
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end > start:
+            try:
+                parsed = json.loads(text[start : end + 1])
+            except json.JSONDecodeError as exc:
+                raise ProviderError(
+                    f"model did not return valid JSON: {exc}"
+                ) from exc
+    if not isinstance(parsed, dict):
+        raise ProviderError("model did not return a JSON object")
+    return parsed

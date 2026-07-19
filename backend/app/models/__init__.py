@@ -11,6 +11,9 @@ from .food import Food, Unit  # noqa: F401
 from .category import Category, recipe_categories  # noqa: F401
 from .tag import Tag, recipe_tags  # noqa: F401
 from .recipe import Recipe, RecipeIngredient, RecipeStep  # noqa: F401
+from .mealplan import MealPlanEntry  # noqa: F401
+from .pantry import PantryItem  # noqa: F401
+from .shopping import ShoppingList, ShoppingListItem  # noqa: F401
 
 __all__ = [
     "gen_uuid",
@@ -32,4 +35,8 @@ __all__ = [
     "Recipe",
     "RecipeIngredient",
     "RecipeStep",
+    "MealPlanEntry",
+    "PantryItem",
+    "ShoppingList",
+    "ShoppingListItem",
 ]

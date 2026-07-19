@@ -1,6 +1,13 @@
 """AI provider layer + recipe import — no network or API keys required."""
+import pytest
+
 from app.services.ai import recipe_import
-from app.services.ai.base import extract_json, AIProvider, ChatResult
+from app.services.ai.base import (
+    extract_json,
+    AIProvider,
+    ChatResult,
+    ProviderError,
+)
 
 
 # --- Pure helpers --------------------------------------------------------
@@ -106,7 +113,6 @@ def test_ai_import_endpoint_text_with_provider(auth_client, monkeypatch):
 
 def test_ai_import_text_without_provider_is_503(auth_client, monkeypatch):
     import app.api.ai as ai_api
-    from app.services.ai.base import ProviderError
 
     def _no_provider():
         raise ProviderError("none configured")
@@ -114,3 +120,64 @@ def test_ai_import_text_without_provider_is_503(auth_client, monkeypatch):
     monkeypatch.setattr(ai_api, "get_provider", _no_provider)
     r = auth_client.post("/api/v1/ai/import", json={"text": "pasta"})
     assert r.status_code == 503
+
+
+# --- Adversarial / failure-path (regression for M2 review) ---------------
+ARRAY_NAME_PAGE = """
+<html><head><script type="application/ld+json">
+{"@type":"Recipe","name":["Tacos","(v2)"],"description":["line1","line2"],
+ "recipeIngredient":["tortillas",["nested","beef"]],
+ "recipeInstructions":[{"text":["Warm","Serve"]}]}
+</script></head><body>x</body></html>
+"""
+
+
+def test_jsonld_array_fields_degrade_not_crash():
+    """schema.org fields as arrays/nested lists must coerce, not raise."""
+    node = recipe_import.extract_jsonld_recipe(ARRAY_NAME_PAGE)
+    payload = recipe_import.normalize_jsonld(node)
+    assert payload["name"] == "Tacos (v2)"
+    assert isinstance(payload["description"], str)
+    assert all(isinstance(i["display"], str) for i in payload["ingredients"])
+    assert all(isinstance(s["text"], str) for s in payload["steps"])
+
+
+def test_extract_json_non_object_raises():
+    for bad in ("[1,2,3]", "42", '"hi"', "not json at all"):
+        with pytest.raises(ProviderError):
+            extract_json(bad)
+
+
+class _BadJsonProvider(_FakeProvider):
+    def _complete(self, system, prompt, max_tokens):
+        return "[1, 2, 3]"  # valid JSON, wrong shape
+
+
+def test_import_recipe_bad_model_output_raises_provider_error():
+    with pytest.raises(ProviderError):
+        recipe_import.import_recipe(text="x", provider=_BadJsonProvider())
+
+
+def test_ssrf_guard_blocks_private_and_nonhttp():
+    for url in (
+        "http://localhost/x",
+        "http://127.0.0.1:8123/",
+        "http://169.254.169.254/latest/meta-data",
+        "file:///etc/passwd",
+        "ftp://example.com/x",
+    ):
+        with pytest.raises(recipe_import.UnsafeURLError):
+            recipe_import._assert_public_url(url)
+
+
+def test_ai_import_non_string_url_is_not_500(auth_client):
+    r = auth_client.post("/api/v1/ai/import", json={"url": 12345})
+    # Coerced to a string, then rejected as an unsafe/invalid URL — never 500.
+    assert r.status_code in (400, 502)
+
+
+def test_ai_import_private_url_rejected(auth_client):
+    r = auth_client.post(
+        "/api/v1/ai/import", json={"url": "http://127.0.0.1:8123/config"}
+    )
+    assert r.status_code == 400

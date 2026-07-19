@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0 — Meal planning, pantry & smart shopping lists (Milestone 3)
+
+### Added
+- **Meal planning**: `MealPlanEntry` model + `/api/v1/mealplans` (date-range
+  query, CRUD) and a weekly-calendar view.
+- **Pantry**: `PantryItem` model + `/api/v1/pantry` CRUD and a Pantry view.
+- **Smart shopping lists**: `ShoppingList`/`ShoppingListItem` + a consolidating
+  builder (merges duplicate ingredients, groups by aisle). Build from selected
+  recipes or from a meal-plan date range; aisle-grouped Shopping view.
+- **AI meal planning** (`POST /ai/plan`): generates a plan from the group's
+  recipes + preferences and saves it as plan entries.
+- **Pantry-aware suggestions** (`POST /ai/suggest`): deterministic
+  "what can I cook now?" ranking by pantry coverage (no provider required).
+
+### Fixed (M2 review)
+- Recipe import no longer 500s on array/object-valued schema.org fields or on
+  non-object model output; both degrade cleanly.
+- **SSRF guard** on the import fetch: rejects non-http(s) and private/loopback/
+  link-local/metadata addresses, validates each redirect hop, caps body size.
+- Non-string / malformed import inputs return 4xx, not 500.
+
 ## 0.2.0 — AI recipe import + provider layer (Milestone 2)
 
 ### Added

@@ -12,8 +12,11 @@ Both paths return the camelCase payload the recipes API's ``_apply`` accepts.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
+import socket
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -60,6 +63,26 @@ def _as_list(value) -> list:
     return value if isinstance(value, list) else [value]
 
 
+def _text(value) -> str:
+    """Coerce a schema.org / model value to a plain string.
+
+    schema.org fields (and sloppy model output) may be strings, lists, or
+    nested objects — this flattens all of them so callers never do ``.strip()``
+    on a list and 500.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return " ".join(_text(v) for v in value if v is not None).strip()
+    if isinstance(value, dict):
+        return _text(
+            value.get("name") or value.get("text") or value.get("@value") or ""
+        )
+    return str(value).strip()
+
+
 def _first_servings(recipe_yield) -> int:
     for v in _as_list(recipe_yield):
         m = re.search(r"\d+", str(v))
@@ -69,14 +92,9 @@ def _first_servings(recipe_yield) -> int:
 
 
 def _instruction_text(step) -> str:
-    if isinstance(step, str):
-        return step.strip()
-    if isinstance(step, dict):
-        # HowToStep / HowToSection
-        if step.get("@type") == "HowToSection":
-            return ""  # sections are handled by flattening their itemListElement
-        return (step.get("text") or step.get("name") or "").strip()
-    return ""
+    if isinstance(step, dict) and step.get("@type") == "HowToSection":
+        return ""  # sections are handled by flattening their itemListElement
+    return _text(step)
 
 
 def _flatten_instructions(instructions) -> list[str]:
@@ -98,17 +116,17 @@ def normalize_jsonld(node: dict) -> dict:
     """Map a schema.org Recipe node to our payload shape."""
     yield_val = node.get("recipeYield")
     ingredients = [
-        {"display": str(i).strip()}
+        {"display": _text(i)}
         for i in _as_list(node.get("recipeIngredient"))
-        if str(i).strip()
+        if _text(i)
     ]
     steps = [{"text": t} for t in _flatten_instructions(node.get("recipeInstructions"))]
     prep = _iso_duration_to_minutes(node.get("prepTime"))
     cook = _iso_duration_to_minutes(node.get("cookTime"))
     total = _iso_duration_to_minutes(node.get("totalTime")) or (prep + cook)
     return {
-        "name": (node.get("name") or "Imported Recipe").strip(),
-        "description": (node.get("description") or "").strip(),
+        "name": _text(node.get("name")) or "Imported Recipe",
+        "description": _text(node.get("description")),
         "recipeYield": " ".join(str(v) for v in _as_list(yield_val))[:120],
         "servings": _first_servings(yield_val),
         "prepMinutes": prep,
@@ -169,32 +187,87 @@ def _normalize_ai(payload: dict) -> dict:
             return 0
 
     ings = [
-        {"display": str(i.get("display", i) if isinstance(i, dict) else i).strip()}
-        for i in (payload.get("ingredients") or [])
+        {"display": _text(i.get("display") if isinstance(i, dict) else i)}
+        for i in _as_list(payload.get("ingredients"))
     ]
     steps = [
-        {"text": str(s.get("text", s) if isinstance(s, dict) else s).strip()}
-        for s in (payload.get("steps") or [])
+        {"text": _text(s.get("text") if isinstance(s, dict) else s)}
+        for s in _as_list(payload.get("steps"))
     ]
     return {
-        "name": (payload.get("name") or "Imported Recipe").strip(),
-        "description": (payload.get("description") or "").strip(),
-        "recipeYield": (payload.get("recipeYield") or "").strip(),
+        "name": _text(payload.get("name")) or "Imported Recipe",
+        "description": _text(payload.get("description")),
+        "recipeYield": _text(payload.get("recipeYield")),
         "servings": _int(payload.get("servings")),
         "prepMinutes": _int(payload.get("prepMinutes")),
         "cookMinutes": _int(payload.get("cookMinutes")),
         "totalMinutes": _int(payload.get("totalMinutes")),
         "ingredients": [i for i in ings if i["display"]],
         "steps": [s for s in steps if s["text"]],
-        "notes": (payload.get("notes") or "").strip(),
+        "notes": _text(payload.get("notes")),
     }
 
 
+class UnsafeURLError(ValueError):
+    """Raised when a URL targets a non-public / non-http destination."""
+
+
+_MAX_FETCH_BYTES = 3_000_000
+_MAX_REDIRECTS = 5
+
+
+def _assert_public_url(url: str):
+    """Reject non-http(s) schemes and hosts that resolve to private ranges.
+
+    This is the SSRF guard: myMeal fetches user-supplied URLs server-side, and
+    without this a group member could point it at localhost, the HA supervisor,
+    a bundled Ollama, cloud metadata, or the LAN.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise UnsafeURLError("only http(s) URLs can be imported")
+    host = parsed.hostname
+    if not host:
+        raise UnsafeURLError("invalid URL host")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        raise UnsafeURLError(f"could not resolve host: {exc}") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise UnsafeURLError("refusing to fetch a private/internal address")
+
+
 def _fetch(url: str) -> str:
+    """Fetch a page, validating each redirect hop and capping the body size."""
     headers = {"User-Agent": "myMeal/0.1 (+recipe importer)"}
-    r = httpx.get(url, headers=headers, timeout=20, follow_redirects=True)
-    r.raise_for_status()
-    return r.text
+    current = url
+    with httpx.Client(follow_redirects=False, timeout=20, headers=headers) as client:
+        for _ in range(_MAX_REDIRECTS):
+            _assert_public_url(current)
+            with client.stream("GET", current) as r:
+                if r.is_redirect and r.headers.get("location"):
+                    current = urljoin(current, r.headers["location"])
+                    continue
+                r.raise_for_status()
+                total = 0
+                chunks: list[bytes] = []
+                for chunk in r.iter_bytes():
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total >= _MAX_FETCH_BYTES:
+                        break
+                body = b"".join(chunks)
+                return body.decode(r.encoding or "utf-8", errors="replace")
+    raise UnsafeURLError("too many redirects")
 
 
 def import_recipe(

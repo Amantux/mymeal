@@ -101,6 +101,56 @@ def recipe_summary(r):
     }
 
 
+def mealplan_entry_out(e):
+    return {
+        "id": e.id,
+        "date": iso(e.date),
+        "mealType": e.meal_type,
+        "title": e.title,
+        "notes": e.notes,
+        "servings": e.servings,
+        "recipeId": e.recipe_id,
+        "recipe": recipe_summary(e.recipe) if e.recipe else None,
+        "createdAt": iso(e.created_at),
+    }
+
+
+def pantry_item_out(p):
+    return {
+        "id": p.id,
+        "label": p.label,
+        "quantity": p.quantity,
+        "unit": p.unit,
+        "location": p.location,
+        "expiresAt": iso(p.expires_at),
+        "foodId": p.food_id,
+        "food": food_out(p.food) if p.food else None,
+    }
+
+
+def shopping_item_out(i):
+    return {
+        "id": i.id,
+        "display": i.display,
+        "quantity": i.quantity,
+        "unit": i.unit,
+        "aisle": i.aisle,
+        "checked": i.checked,
+        "position": i.position,
+        "foodId": i.food_id,
+    }
+
+
+def shopping_list_out(sl):
+    return {
+        "id": sl.id,
+        "name": sl.name,
+        "items": [shopping_item_out(i) for i in sl.items],
+        "createdAt": iso(sl.created_at),
+        "updatedAt": iso(sl.updated_at),
+    }
+
+
 def recipe_out(r):
     data = recipe_summary(r)
     data.update(

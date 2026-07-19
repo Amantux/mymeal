@@ -21,6 +21,9 @@ onMounted(() => {
 const nav = [
   { to: '/', icon: '🏠', label: 'Dashboard' },
   { to: '/recipes', icon: '📖', label: 'Recipes' },
+  { to: '/plan', icon: '🗓️', label: 'Meal Plan' },
+  { to: '/pantry', icon: '🧺', label: 'Pantry' },
+  { to: '/shopping', icon: '🛒', label: 'Shopping' },
   { to: '/import', icon: '📥', label: 'Import' },
 ]
 </script>

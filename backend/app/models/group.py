@@ -22,6 +22,15 @@ class Group(IDMixin, TimestampMixin, db.Model):
         "Category", back_populates="group", cascade="all, delete-orphan"
     )
     tags = relationship("Tag", back_populates="group", cascade="all, delete-orphan")
+    mealplan_entries = relationship(
+        "MealPlanEntry", back_populates="group", cascade="all, delete-orphan"
+    )
+    pantry_items = relationship(
+        "PantryItem", back_populates="group", cascade="all, delete-orphan"
+    )
+    shopping_lists = relationship(
+        "ShoppingList", back_populates="group", cascade="all, delete-orphan"
+    )
     invitations = relationship(
         "GroupInvitation", back_populates="group", cascade="all, delete-orphan"
     )
