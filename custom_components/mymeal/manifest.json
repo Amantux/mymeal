@@ -1,7 +1,7 @@
 {
   "domain": "mymeal",
   "name": "myMeal",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "documentation": "https://github.com/Amantux/mymeal",
   "issue_tracker": "https://github.com/Amantux/mymeal/issues",
   "dependencies": [
