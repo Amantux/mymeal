@@ -6,6 +6,7 @@ from ..extensions import db
 from ..models import PantryItem, Food
 from ..auth import login_required, current_group
 from ..schemas.serializers import pantry_item_out
+from ..utils import to_float
 
 bp = Blueprint("pantry", __name__)
 
@@ -51,7 +52,7 @@ def create_pantry():
     data = request.get_json(force=True) or {}
     item = PantryItem(
         label=data.get("label", ""),
-        quantity=float(data.get("quantity") or 0),
+        quantity=to_float(data.get("quantity")),
         unit=data.get("unit", ""),
         location=data.get("location", ""),
         expires_at=_parse_date(data.get("expiresAt")),
@@ -71,7 +72,7 @@ def update_pantry(item_id):
     if "label" in data:
         item.label = data["label"]
     if "quantity" in data:
-        item.quantity = float(data["quantity"] or 0)
+        item.quantity = to_float(data["quantity"])
     if "unit" in data:
         item.unit = data["unit"]
     if "location" in data:

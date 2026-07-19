@@ -8,6 +8,7 @@ import RecipeImport from './views/RecipeImport.vue'
 import MealPlan from './views/MealPlan.vue'
 import Pantry from './views/Pantry.vue'
 import ShoppingList from './views/ShoppingList.vue'
+import Chat from './views/Chat.vue'
 import Settings from './views/Settings.vue'
 import HomeAssistant from './views/HomeAssistant.vue'
 import Login from './views/Login.vue'
@@ -20,6 +21,7 @@ const routes = [
   { path: '/plan', component: MealPlan },
   { path: '/pantry', component: Pantry },
   { path: '/shopping', component: ShoppingList },
+  { path: '/chat', component: Chat },
   { path: '/settings', component: Settings },
   { path: '/home-assistant', component: HomeAssistant },
   { path: '/login', component: Login, meta: { public: true } },

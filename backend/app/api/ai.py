@@ -118,9 +118,19 @@ def plan_week():
         days = max(1, min(int(data.get("days", 7) or 7), 14))
     except (ValueError, TypeError):
         days = 7
-    meal_types = data.get("mealTypes") or ["dinner"]
-    servings = int(data.get("servings") or 0)
-    preferences = (data.get("preferences") or "").strip()
+    # Coerce user input defensively — mealTypes may arrive as a string, a
+    # non-list, or a list of non-strings; preferences/servings may be junk.
+    raw_types = data.get("mealTypes")
+    if isinstance(raw_types, str):
+        raw_types = [raw_types]
+    if not isinstance(raw_types, list) or not raw_types:
+        raw_types = ["dinner"]
+    meal_types = [str(t) for t in raw_types]
+    try:
+        servings = int(data.get("servings") or 0)
+    except (ValueError, TypeError):
+        servings = 0
+    preferences = str(data.get("preferences") or "").strip()
 
     recipes = db.session.query(Recipe).filter_by(group_id=gid).all()
     catalog = [
@@ -151,13 +161,23 @@ def plan_week():
 
     valid_ids = {r.id for r in recipes}
     created = []
-    for day in result.get("days", []):
+    days_out = result.get("days")
+    if not isinstance(days_out, list):
+        days_out = []
+    for day in days_out:
+        if not isinstance(day, dict):
+            continue  # model returned an off-shape entry — skip it
         try:
             offset = int(day.get("offset", 0))
         except (ValueError, TypeError):
             offset = 0
         entry_date = start + timedelta(days=offset)
-        for meal in day.get("meals", []):
+        meals = day.get("meals")
+        if not isinstance(meals, list):
+            continue
+        for meal in meals:
+            if not isinstance(meal, dict):
+                continue
             rid = meal.get("recipeId") or None
             if rid not in valid_ids:
                 rid = None

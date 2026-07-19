@@ -73,6 +73,7 @@ def _register_blueprints(app):
     from .api.mealplans import bp as mealplans_bp
     from .api.pantry import bp as pantry_bp
     from .api.shopping_lists import bp as shopping_lists_bp
+    from .api.chat import bp as chat_bp
     from .api.ai import bp as ai_bp
 
     prefix = "/api/v1"
@@ -89,6 +90,7 @@ def _register_blueprints(app):
         mealplans_bp,
         pantry_bp,
         shopping_lists_bp,
+        chat_bp,
         ai_bp,
     ):
         app.register_blueprint(bp, url_prefix=prefix)

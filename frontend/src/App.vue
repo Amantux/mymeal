@@ -24,6 +24,7 @@ const nav = [
   { to: '/plan', icon: '🗓️', label: 'Meal Plan' },
   { to: '/pantry', icon: '🧺', label: 'Pantry' },
   { to: '/shopping', icon: '🛒', label: 'Shopping' },
+  { to: '/chat', icon: '💬', label: 'Assistant' },
   { to: '/import', icon: '📥', label: 'Import' },
 ]
 </script>

@@ -6,6 +6,7 @@ from ..extensions import db
 from ..models import MealPlanEntry, Recipe
 from ..auth import login_required, current_group
 from ..schemas.serializers import mealplan_entry_out
+from ..utils import to_int
 
 bp = Blueprint("mealplans", __name__)
 
@@ -58,7 +59,7 @@ def create_entry():
         meal_type=data.get("mealType", "dinner"),
         title=data.get("title", ""),
         notes=data.get("notes", ""),
-        servings=int(data.get("servings") or 0),
+        servings=to_int(data.get("servings")),
         recipe_id=_valid_recipe_id(data.get("recipeId")),
         group_id=current_group().id,
     )
@@ -83,7 +84,7 @@ def update_entry(entry_id):
     if "notes" in data:
         entry.notes = data["notes"]
     if "servings" in data:
-        entry.servings = int(data["servings"] or 0)
+        entry.servings = to_int(data["servings"])
     if "recipeId" in data:
         entry.recipe_id = _valid_recipe_id(data["recipeId"])
     db.session.commit()

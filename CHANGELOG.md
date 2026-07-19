@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.0 — Conversational cooking agent (Milestone 4)
+
+### Added
+- **Cooking assistant** (`POST /api/v1/ai/chat`): a provider-agnostic
+  tool-calling agent over the group's data. Tools: `search_recipes`,
+  `get_recipe`, `list_pantry`, `what_can_i_cook`, `whats_for_dinner`,
+  `add_to_shopping_list`. The tool loop feeds results back as text so it runs
+  identically on Claude, OpenAI, and Ollama; the executors are reused by the
+  MCP server later.
+- `ChatSession`/`ChatMessage` models with a tool-call trace; session
+  list/get/delete endpoints. Group-isolated. Chat view in the SPA.
+
+### Fixed (M3 review)
+- `/ai/plan` no longer 500s on off-shape provider JSON (non-list `days`,
+  string `meals`, non-dict entries) or malformed request bodies.
+- Non-numeric `servings`/`quantity` on the meal-plan, pantry, and shopping
+  endpoints now coerce via shared `to_int`/`to_float` helpers instead of 500.
+
 ## 0.3.0 — Meal planning, pantry & smart shopping lists (Milestone 3)
 
 ### Added

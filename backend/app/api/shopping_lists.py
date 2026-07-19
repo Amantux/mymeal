@@ -7,6 +7,7 @@ from ..models import ShoppingList, ShoppingListItem, Recipe
 from ..auth import login_required, current_group
 from ..schemas.serializers import shopping_list_out, shopping_item_out
 from ..services.shopping import build_from_recipes
+from ..utils import to_float
 from .mealplans import recipe_ids_in_range
 
 bp = Blueprint("shopping_lists", __name__)
@@ -82,7 +83,7 @@ def add_item(list_id):
     data = request.get_json(force=True) or {}
     item = ShoppingListItem(
         display=data.get("display", ""),
-        quantity=float(data.get("quantity") or 0),
+        quantity=to_float(data.get("quantity")),
         unit=data.get("unit", ""),
         aisle=data.get("aisle", ""),
         position=_next_position(sl),
@@ -101,7 +102,7 @@ def update_item(item_id):
     if "display" in data:
         item.display = data["display"]
     if "quantity" in data:
-        item.quantity = float(data["quantity"] or 0)
+        item.quantity = to_float(data["quantity"])
     if "unit" in data:
         item.unit = data["unit"]
     if "aisle" in data:

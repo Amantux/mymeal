@@ -133,6 +133,71 @@ def test_ai_plan_creates_entries(auth_client, monkeypatch):
     assert entries[1]["recipeId"] is None
 
 
+def _fake_plan_provider(raw_json):
+    from app.services.ai.base import AIProvider, ChatResult
+
+    class P(AIProvider):
+        name = "fake"
+
+        def available(self):
+            return True
+
+        def _complete(self, system, prompt, max_tokens):
+            return raw_json
+
+        def chat(self, messages, system="", tools=None, max_tokens=2048):
+            return ChatResult(content="ok")
+
+    return P()
+
+
+def test_ai_plan_survives_offshape_provider_json(auth_client, monkeypatch):
+    """Off-shape provider output must degrade to a clean response, not 500."""
+    import app.api.ai as ai_api
+
+    for raw in (
+        '{"days":"nonsense"}',
+        '{"days":[{"offset":0,"meals":["dinner"]}]}',
+        '{"days":[42,{"offset":"x","meals":null}]}',
+    ):
+        monkeypatch.setattr(ai_api, "get_provider", lambda raw=raw: _fake_plan_provider(raw))
+        r = auth_client.post("/api/v1/ai/plan", json={"days": 1})
+        assert r.status_code < 500
+
+
+def test_ai_plan_survives_malformed_request_body(auth_client, monkeypatch):
+    import app.api.ai as ai_api
+
+    monkeypatch.setattr(
+        ai_api, "get_provider", lambda: _fake_plan_provider('{"days":[]}')
+    )
+    r = auth_client.post(
+        "/api/v1/ai/plan",
+        json={"mealTypes": [1, 2], "preferences": 5, "servings": "lots"},
+    )
+    assert r.status_code < 500
+
+
+def test_write_endpoints_coerce_bad_numbers(auth_client):
+    """Non-numeric servings/quantity must not 500 on the M3 write endpoints."""
+    assert (
+        auth_client.post("/api/v1/mealplans", json={"servings": "lots"}).status_code
+        == 201
+    )
+    assert (
+        auth_client.post("/api/v1/pantry", json={"label": "x", "quantity": "abc"}).status_code
+        == 201
+    )
+    sl = auth_client.post("/api/v1/shopping-lists", json={}).get_json()
+    assert (
+        auth_client.post(
+            f"/api/v1/shopping-lists/{sl['id']}/items",
+            json={"display": "y", "quantity": [1, 2]},
+        ).status_code
+        == 201
+    )
+
+
 def test_ai_plan_without_provider_503(auth_client, monkeypatch):
     import app.api.ai as ai_api
     from app.services.ai.base import ProviderError
