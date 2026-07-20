@@ -13,7 +13,7 @@ from ..schemas.serializers import (
 )
 from ..services.ai.base import ProviderError
 from ..services.ai.registry import get_provider
-from ..services.ai.agent import run_chat
+from ..services.ai.agent import run_chat, actions_from_trace
 
 bp = Blueprint("chat", __name__)
 
@@ -107,6 +107,7 @@ def chat():
             "sessionId": session.id,
             "reply": result["reply"],
             "trace": result["trace"],
+            "actions": actions_from_trace(result["trace"]),
             "message": chat_message_out(assistant_msg),
         }
     )

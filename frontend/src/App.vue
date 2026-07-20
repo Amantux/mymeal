@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { useAuth } from './stores/auth'
 import { useUI } from './stores/ui'
 import Toasts from './components/Toasts.vue'
+import ChatAssistant from './components/ChatAssistant.vue'
 
 const route = useRoute()
 const auth = useAuth()
@@ -23,7 +24,6 @@ const nav = [
   { to: '/recipes', icon: '📖', label: 'Recipes' },
   { to: '/plan', icon: '🗓️', label: 'Meal Plan' },
   { to: '/shopping', icon: '🛒', label: 'Shopping' },
-  { to: '/chat', icon: '💬', label: 'Assistant' },
   { to: '/import', icon: '📥', label: 'Import' },
 ]
 </script>
@@ -67,6 +67,7 @@ const nav = [
       </div>
     </div>
     <Toasts />
+    <ChatAssistant />
   </template>
 
   <template v-else>

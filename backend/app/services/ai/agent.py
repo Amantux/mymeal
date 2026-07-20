@@ -183,6 +183,31 @@ def execute_tool(gid: str, name: str, args: dict):
     return {"error": f"unknown tool {name}"}
 
 
+# Maps a mutating tool's result to a user-facing "action" chip — what the
+# assistant actually DID, surfaced under its reply (Edibl-style), rather than a
+# raw tool-name trace. Read-only tools produce no action. Returning None skips.
+_ACTION_FORMATTERS = {
+    "add_to_shopping_list": lambda r: (
+        {"label": f'Added "{r["added"]}" to {r.get("list", "your list")}',
+         "kind": "shopping", "icon": "🛒"}
+        if r.get("added") else None
+    ),
+}
+
+
+def actions_from_trace(trace: list[dict]) -> list[dict]:
+    """Derive action chips from the tool trace (mutations only)."""
+    actions = []
+    for step in trace:
+        fmt = _ACTION_FORMATTERS.get(step.get("tool"))
+        if not fmt:
+            continue
+        action = fmt(step.get("result") or {})
+        if action:
+            actions.append(action)
+    return actions
+
+
 def run_chat(
     gid: str,
     provider: AIProvider,
