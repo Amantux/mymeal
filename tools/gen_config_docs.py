@@ -30,6 +30,7 @@ GROUPS = [
                       "OLLAMA_HOST", "OLLAMA_MODEL", "AI_TIMEOUT_SECONDS"]),
     ("MCP (Home Assistant Assist)", ["MCP_ENABLED", "MCP_HOST", "MCP_PORT",
                                      "MCP_API", "MCP_API_TOKEN", "MCP_REQUIRED"]),
+    ("Edibl integration (companion inventory app)", ["EDIBL_URL", "EDIBL_API_TOKEN"]),
     ("Serving", ["WORKERS", "THREADS", "TIMEOUT", "GRACEFUL_TIMEOUT",
                  "MAX_UPLOAD_MB", "HTTP_TIMEOUT_SECONDS", "MAX_IMPORT_BYTES"]),
     ("Misc", ["FRONTEND_DIST", "LOG_LEVEL", "DEBUG"]),

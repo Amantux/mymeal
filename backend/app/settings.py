@@ -204,6 +204,15 @@ FIELDS: tuple[Field, ...] = (
     Field("AI_TIMEOUT_SECONDS", int_between(1, 600), 60,
           "Per-request timeout for AI provider calls."),
 
+    # --- Edibl (sibling food-inventory app) ---
+    Field("EDIBL_URL", as_str, "",
+          "Base URL of a companion Edibl instance (e.g. http://edibl:8080). "
+          "Blank disables the integration. When set, myMeal can pull real stock "
+          "and push meal-plan ingredients."),
+    Field("EDIBL_API_TOKEN", as_str, "",
+          "API token myMeal presents to Edibl (Edibl tokens API). Sent as a "
+          "Bearer token.", secret=True, supports_file=True),
+
     # --- MCP ---
     Field("MCP_ENABLED", parse_bool, True,
           "Run the MCP server so Home Assistant Assist can use myMeal as a tool.",
@@ -284,6 +293,10 @@ class Settings:
     @property
     def ai_enabled(self) -> bool:
         return bool(self.values["AI_PROVIDER"])
+
+    @property
+    def edibl_enabled(self) -> bool:
+        return bool(self.values["EDIBL_URL"])
 
     def redacted(self) -> dict[str, Any]:
         """Effective settings with every secret replaced. Safe to print/log."""
@@ -497,6 +510,17 @@ def _validate_semantics(values, sources, in_ha, errors, warnings, strict_secret)
             f"MYMEAL_DATABASE_URL points at a non-SQLite database ({uri.split(':')[0]}). "
             "Only SQLite is tested and supported; the schema is created with "
             "create_all() and additive migrations that have not been verified elsewhere."
+        )
+
+    edibl_url = values["EDIBL_URL"]
+    if edibl_url and not re.match(r"^https?://", edibl_url):
+        errors.append(
+            f"MYMEAL_EDIBL_URL must start with http:// or https://, got {edibl_url!r}"
+        )
+    if values["EDIBL_API_TOKEN"] and not edibl_url:
+        warnings.append(
+            "MYMEAL_EDIBL_API_TOKEN is set but MYMEAL_EDIBL_URL is not, so the "
+            "Edibl integration is inactive."
         )
 
     if values["MCP_ENABLED"] and values["MCP_PORT"] == values["PORT"]:

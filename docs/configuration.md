@@ -88,6 +88,13 @@ docker compose run --rm app python3 -m app.config_check
 | `MYMEAL_MCP_API_TOKEN` | string | `_(empty)_` | **yes** | yes | Token the MCP server uses when app auth is enabled. Supports `MYMEAL_MCP_API_TOKEN_FILE`. |
 | `MYMEAL_MCP_REQUIRED` | boolean | `false` | no | yes | Treat a dead MCP process as making the whole app UNREADY. |
 
+### Edibl integration (companion inventory app)
+
+| Variable | Type | Default | Secret | Restart | Notes |
+|---|---|---|---|---|---|
+| `MYMEAL_EDIBL_URL` | string | `_(empty)_` | no | yes | Base URL of a companion Edibl instance (e.g. http://edibl:8080). Blank disables the integration. When set, myMeal can pull real stock and push meal-plan ingredients. |
+| `MYMEAL_EDIBL_API_TOKEN` | string | `_(empty)_` | **yes** | yes | API token myMeal presents to Edibl (Edibl tokens API). Sent as a Bearer token. Supports `MYMEAL_EDIBL_API_TOKEN_FILE`. |
+
 ### Serving
 
 | Variable | Type | Default | Secret | Restart | Notes |

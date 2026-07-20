@@ -34,6 +34,36 @@ def _valid_recipe_id(recipe_id):
     return r.id if r and r.group_id == current_group().id else None
 
 
+@bp.get("/plan/ingredients")
+@login_required
+def plan_ingredients():
+    """Flattened ingredient demand for the upcoming plan.
+
+    This is the endpoint the companion Edibl app calls
+    (``/integrations/mymeal/pull``) to reconcile myMeal's plan against real
+    stock. It is also what myMeal pushes to Edibl. Authenticated like any other
+    endpoint, so an Edibl instance presents an API token — it is NOT public.
+
+    Query: ?days=N (default 7) — how far ahead to include.
+    """
+    from datetime import date as _date
+
+    from ..services.plan_ingredients import flatten_plan, upcoming_window
+
+    days = to_int(request.args.get("days"), 7)
+    start, end = upcoming_window(_date.today(), days)
+    entries = (
+        db.session.query(MealPlanEntry)
+        .filter(MealPlanEntry.group_id == current_group().id)
+        .filter(MealPlanEntry.date >= start, MealPlanEntry.date <= end)
+        .order_by(MealPlanEntry.date.asc())
+        .all()
+    )
+    items = flatten_plan(entries)
+    return jsonify({"items": items, "from": start.isoformat(),
+                    "to": end.isoformat(), "count": len(items)})
+
+
 @bp.get("/mealplans")
 @login_required
 def list_entries():
