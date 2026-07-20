@@ -41,3 +41,18 @@ def test_chat_response_includes_actions_key(monkeypatch, tmp_path):
     c = app.test_client()
     body = c.post("/api/v1/ai/chat", json={"message": "hi"}).get_json()
     assert "actions" in body and isinstance(body["actions"], list)
+
+
+def test_shopping_action_carries_undo_descriptor():
+    """The action must include a structured undo the client can reverse."""
+    trace = [{"tool": "add_to_shopping_list", "args": {"item": "eggs"},
+              "result": {"added": "eggs", "list": "Shopping List", "itemId": "abc-123"}}]
+    action = actions_from_trace(trace)[0]
+    assert action["undo"] == {"kind": "shopping_item", "id": "abc-123"}
+
+
+def test_no_undo_when_item_id_missing():
+    """Older result shape (no itemId) -> chip shown but no undo offered."""
+    trace = [{"tool": "add_to_shopping_list", "args": {"item": "eggs"},
+              "result": {"added": "eggs", "list": "Shopping List"}}]
+    assert "undo" not in actions_from_trace(trace)[0]

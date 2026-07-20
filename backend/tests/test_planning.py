@@ -204,3 +204,43 @@ def test_ai_plan_without_provider_503(auth_client, monkeypatch):
 
     monkeypatch.setattr(ai_api, "get_provider", _none)
     assert auth_client.post("/api/v1/ai/plan", json={}).status_code == 503
+
+
+def test_assistant_shopping_action_id_is_a_real_deletable_item(auth_client, monkeypatch):
+    """The undo id in a chat action must actually address a real shopping item,
+    so the frontend's DELETE reverses exactly what was added."""
+    import app.api.chat as chat_api
+    from app.services.ai.agent import execute_tool
+    from app.api.groups import current_group  # noqa: F401
+
+    # Drive the tool directly through the app/group the auth_client set up.
+    self_ = auth_client.get("/api/v1/users/self").get_json()["item"]
+    gid = self_["groupId"] if "groupId" in self_ else None
+
+    class FakeProvider:
+        def __init__(self):
+            self.calls = 0
+        def chat(self, messages, system=None, tools=None):
+            self.calls += 1
+            class R:
+                pass
+            r = R()
+            if self.calls == 1:
+                class Call:
+                    name = "add_to_shopping_list"
+                    arguments = {"item": "eggs"}
+                r.content = ""
+                r.tool_calls = [Call()]
+            else:
+                r.content = "Added eggs."
+                r.tool_calls = []
+            return r
+
+    monkeypatch.setattr(chat_api, "get_provider", lambda: FakeProvider())
+    body = auth_client.post("/api/v1/ai/chat", json={"message": "add eggs"}).get_json()
+    actions = body["actions"]
+    assert actions and actions[0]["undo"]["kind"] == "shopping_item"
+    item_id = actions[0]["undo"]["id"]
+    # The undo call the frontend would make must succeed, then be idempotent-ish.
+    assert auth_client.delete(f"/api/v1/shopping-lists/items/{item_id}").status_code == 204
+    assert auth_client.delete(f"/api/v1/shopping-lists/items/{item_id}").status_code == 404

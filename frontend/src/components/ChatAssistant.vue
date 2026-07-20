@@ -6,6 +6,13 @@
 import { ref, nextTick } from 'vue'
 import { api } from '../api'
 
+// Maps a structured undo descriptor (from the server) to a known, safe API
+// call. The server never dictates an arbitrary method/path — it names a `kind`
+// and an id, and the reversal lives here, on the client, per kind.
+const UNDO = {
+  shopping_item: (id) => api.del(`/shopping-lists/items/${id}`),
+}
+
 const open = ref(false)
 const msgs = ref([]) // {role, content, actions?, error?}
 const input = ref('')
@@ -29,6 +36,23 @@ async function scrollDown() {
 function toggle() {
   open.value = !open.value
   if (open.value) scrollDown()
+}
+
+async function undo(action) {
+  const fn = action.undo && UNDO[action.undo.kind]
+  if (!fn || action.undoing || action.undone) return
+  action.undoing = true
+  try {
+    await fn(action.undo.id)
+    action.undone = true
+  } catch (e) {
+    // Most likely the item was already removed elsewhere; treat as undone
+    // rather than leaving a stuck spinner, but surface anything unexpected.
+    if (e.status === 404) action.undone = true
+    else action.undoError = e.message || 'Undo failed'
+  } finally {
+    action.undoing = false
+  }
 }
 
 function reset() {
@@ -93,8 +117,20 @@ async function send(text) {
           <div v-for="(m, i) in msgs" :key="i" class="turn" :class="m.role">
             <div class="bubble" :class="{ err: m.error }">{{ m.content }}</div>
             <div v-if="m.actions && m.actions.length" class="actions">
-              <span v-for="(a, j) in m.actions" :key="j" class="action">
+              <span
+                v-for="(a, j) in m.actions"
+                :key="j"
+                class="action"
+                :class="{ undone: a.undone }"
+              >
                 {{ a.icon }} {{ a.label }}
+                <button
+                  v-if="a.undo && !a.undone"
+                  class="undo"
+                  :disabled="a.undoing"
+                  @click="undo(a)"
+                >{{ a.undoing ? '…' : 'Undo' }}</button>
+                <span v-else-if="a.undone" class="undone-tag">Undone</span>
               </span>
             </div>
           </div>
@@ -193,12 +229,27 @@ async function send(text) {
 
 .actions { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
 .action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 0.74rem;
   background: var(--accent-soft);
   color: var(--accent);
   border-radius: 999px;
-  padding: 3px 9px;
+  padding: 3px 4px 3px 9px;
 }
+.action.undone { background: var(--surface-2); color: var(--muted); text-decoration: line-through; }
+.undo {
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.undo:disabled { opacity: 0.6; cursor: default; }
+.undone-tag { opacity: 0.7; padding-right: 5px; text-decoration: none; }
 .thinking { font-size: 0.85rem; }
 
 .pfoot { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); }

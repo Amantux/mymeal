@@ -172,13 +172,13 @@ def execute_tool(gid: str, name: str, args: dict):
             db.session.add(sl)
             db.session.flush()
         pos = (max((i.position for i in sl.items), default=-1)) + 1
-        db.session.add(
-            ShoppingListItem(display=item_text, position=pos, shopping_list_id=sl.id)
-        )
+        item = ShoppingListItem(display=item_text, position=pos, shopping_list_id=sl.id)
+        db.session.add(item)
         # Flush, don't commit — the request handler owns the single commit so a
-        # later failure in the turn rolls this back atomically.
+        # later failure in the turn rolls this back atomically. The flush
+        # populates item.id, which the action chip needs so the user can undo.
         db.session.flush()
-        return {"added": item_text, "list": sl.name}
+        return {"added": item_text, "list": sl.name, "itemId": item.id}
 
     return {"error": f"unknown tool {name}"}
 
@@ -189,7 +189,11 @@ def execute_tool(gid: str, name: str, args: dict):
 _ACTION_FORMATTERS = {
     "add_to_shopping_list": lambda r: (
         {"label": f'Added "{r["added"]}" to {r.get("list", "your list")}',
-         "kind": "shopping", "icon": "🛒"}
+         "kind": "shopping", "icon": "🛒",
+         # Structured undo the frontend maps to a known, safe call — NOT a raw
+         # method+path from the server. Present only when we have the item id.
+         **({"undo": {"kind": "shopping_item", "id": r["itemId"]}}
+            if r.get("itemId") else {})}
         if r.get("added") else None
     ),
 }
