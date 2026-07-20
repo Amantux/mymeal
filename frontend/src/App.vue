@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuth } from './stores/auth'
 import { useUI } from './stores/ui'
@@ -11,6 +11,11 @@ const auth = useAuth()
 const ui = useUI()
 
 const bare = computed(() => route.meta.public)
+
+// Mobile nav drawer. The sidebar is off-canvas below 720px; this toggles it.
+const menuOpen = ref(false)
+// Close the drawer whenever the route changes (i.e. a nav link was tapped).
+watch(() => route.fullPath, () => { menuOpen.value = false })
 
 onMounted(() => {
   ui.applyTheme()
@@ -31,7 +36,9 @@ const nav = [
 <template>
   <template v-if="!bare">
     <div class="app-shell">
-      <aside class="sidebar">
+      <!-- Scrim behind the mobile drawer; tap to close. -->
+      <div v-if="menuOpen" class="nav-scrim only-mobile" @click="menuOpen = false"></div>
+      <aside class="sidebar" :class="{ 'mobile-open': menuOpen }">
         <div class="brand">
           <span class="logo">🍽️</span> myMeal
         </div>
@@ -54,6 +61,12 @@ const nav = [
 
       <div class="main">
         <header class="topbar">
+          <button
+            class="secondary icon-btn only-mobile"
+            aria-label="Open menu"
+            @click="menuOpen = true"
+          >☰</button>
+          <span class="topbar-brand only-mobile"><span class="logo">🍽️</span> myMeal</span>
           <div class="grow"></div>
           <button class="secondary icon-btn" title="Toggle theme" @click="ui.toggleTheme()">🌓</button>
           <div v-if="!auth.authDisabled" class="dropdown">

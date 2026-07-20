@@ -261,10 +261,43 @@ label.field > span {
 .kv dt { color: var(--muted); font-size: 0.85rem; }
 .kv dd { margin: 0; }
 
+/* Mobile-only chrome (hamburger, topbar brand, drawer scrim): hidden on desktop
+   where the sidebar is always visible. */
+.only-mobile { display: none; }
+
 @media (max-width: 720px) {
-  .sidebar { display: none; }
+  /* The sidebar becomes an off-canvas drawer instead of vanishing — previously
+     it was display:none with no replacement, so no page was reachable. */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 70;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    box-shadow: var(--shadow-lg);
+  }
+  .sidebar.mobile-open { transform: translateX(0); }
+  .nav-scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 65;
+  }
+  .only-mobile { display: inline-flex; align-items: center; }
+  .topbar-brand { font-weight: 700; gap: 6px; }
+  .topbar-brand .logo { font-size: 1.1rem; }
+
   .content { padding: 18px 14px; }
-  .topbar { padding: 0 14px; }
+  .topbar { padding: 0 14px; gap: 10px; }
+  /* Let page headers with action buttons wrap instead of overflowing the
+     viewport (Meal Plan's title + two actions clipped off-screen otherwise). */
+  .page-head { flex-wrap: wrap; }
   .kv { grid-template-columns: 1fr; gap: 2px 0; }
   .kv dd { margin-bottom: 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar { transition: none; }
 }
