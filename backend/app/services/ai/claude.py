@@ -15,11 +15,14 @@ from .base import AIProvider, ChatResult, ProviderError, ToolCall
 class ClaudeProvider(AIProvider):
     name = "claude"
 
-    def __init__(self):
-        self.api_key = os.environ.get("MYMEAL_ANTHROPIC_API_KEY") or os.environ.get(
+    def __init__(self, settings=None):
+        from .settings_access import resolved
+        cfg = resolved(settings)
+        self.api_key = cfg.ANTHROPIC_API_KEY or os.environ.get(
             "ANTHROPIC_API_KEY"
         )
-        self.model = os.environ.get("MYMEAL_CLAUDE_MODEL", "claude-opus-4-8")
+        self.model = cfg.CLAUDE_MODEL
+        self.timeout = cfg.AI_TIMEOUT_SECONDS
         self._client = None
 
     def available(self) -> bool:

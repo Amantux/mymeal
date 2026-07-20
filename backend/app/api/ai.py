@@ -23,6 +23,30 @@ from .recipes import _apply
 bp = Blueprint("ai", __name__)
 
 
+@bp.get("/ai/discover-ollama")
+@login_required
+def discover_ollama_endpoint():
+    """Find a local Ollama server so the user does not type a URL.
+
+    Home Assistant's Ollama integration connects OUT to an Ollama server and
+    does not expose it to other apps — so myMeal cannot route through Home
+    Assistant. It can, however, reach the very same server directly, which is
+    what this finds. Bounded and best-effort: it never raises and never blocks
+    for long.
+    """
+    from ..services.ai.discovery import discover_ollama
+
+    found = discover_ollama()
+    if not found:
+        return jsonify({
+            "found": False,
+            "hint": "No Ollama server answered on the usual addresses. Start "
+                    "Ollama and make sure it listens on the network "
+                    "(OLLAMA_HOST=0.0.0.0), then set MYMEAL_OLLAMA_HOST.",
+        })
+    return jsonify({"found": True, **found})
+
+
 @bp.get("/ai/providers")
 @login_required
 def providers():

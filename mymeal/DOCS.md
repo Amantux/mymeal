@@ -43,8 +43,22 @@ myMeal works fully without AI — you just lose recipe-import-from-URL,
 Set `ai_provider`, then add the matching credentials in the app under
 **Settings → AI**:
 
-- **`ollama`** — fully local, no API key, nothing leaves your network. Point it
-  at your Ollama host. This is the privacy-preserving choice.
+- **`ollama`** — fully local, no API key, nothing leaves your network. This is
+  the privacy-preserving choice, and the one to pick if you already run Ollama
+  for Home Assistant's own conversation agent.
+
+  **You should not need to type a URL.** Settings → AI → *Find Ollama* asks the
+  Supervisor whether an Ollama add-on is installed, and otherwise probes the
+  usual addresses (`homeassistant.local`, the Docker host, `localhost`).
+
+  Worth knowing: Home Assistant's Ollama integration connects *out* to an
+  Ollama server and does not share that model with other applications, so
+  myMeal cannot route its requests through Home Assistant. It talks to the same
+  Ollama server directly instead — one server, both consumers, no duplicate
+  setup and no second copy of the model in memory.
+
+  If discovery finds nothing, Ollama is probably listening only on loopback.
+  Start it with `OLLAMA_HOST=0.0.0.0` so other containers can reach it.
 - **`claude`** / **`openai`** — better quality, but recipe text and your
   question are sent to that provider. Requires an API key and costs money per
   request.

@@ -6,10 +6,6 @@ powers the Settings UI and the ``/ai/providers`` endpoint.
 """
 from __future__ import annotations
 
-import os
-
-from flask import current_app
-
 from .base import AIProvider, ProviderError
 from .claude import ClaudeProvider
 from .ollama import OllamaProvider
@@ -21,26 +17,31 @@ _REGISTRY: dict[str, type[AIProvider]] = {
     "ollama": OllamaProvider,
 }
 
-_INSTANCES: dict[str, AIProvider] = {}
+def _instance(name: str, settings=None) -> AIProvider:
+    """Build a provider from the CURRENT settings.
+
+    Deliberately NOT cached process-wide any more: the old cache meant the
+    first app to request AI froze provider configuration for every app in the
+    process, so a settings change (or a second app in tests) was ignored.
+    Construction only reads already-resolved fields, so it is cheap.
+    """
+    from .settings_access import resolved
+
+    return _REGISTRY[name](resolved(settings))
 
 
-def _instance(name: str) -> AIProvider:
-    if name not in _INSTANCES:
-        _INSTANCES[name] = _REGISTRY[name]()
-    return _INSTANCES[name]
+def _configured_name(settings=None) -> str:
+    from .settings_access import resolved
+
+    return (resolved(settings).AI_PROVIDER or "").strip().lower()
 
 
-def _configured_name() -> str:
-    return (
-        os.environ.get("MYMEAL_AI_PROVIDER")
-        or (current_app.config.get("AI_PROVIDER") if current_app else "")
-        or ""
-    ).strip().lower()
-
-
-def get_provider() -> AIProvider:
+def get_provider(settings=None) -> AIProvider:
     """Return the configured, available provider or raise ``ProviderError``."""
-    name = _configured_name()
+    from .settings_access import resolved
+
+    settings = resolved(settings)
+    name = _configured_name(settings)
     if not name:
         raise ProviderError(
             "No AI provider configured. Set MYMEAL_AI_PROVIDER to "
@@ -48,7 +49,7 @@ def get_provider() -> AIProvider:
         )
     if name not in _REGISTRY:
         raise ProviderError(f"Unknown AI provider '{name}'.")
-    provider = _instance(name)
+    provider = _instance(name, settings)
     if not provider.available():
         raise ProviderError(
             f"AI provider '{name}' is selected but not configured "
@@ -57,13 +58,16 @@ def get_provider() -> AIProvider:
     return provider
 
 
-def list_providers() -> list[dict]:
+def list_providers(settings=None) -> list[dict]:
     """Report every provider, whether it's available, and which is active."""
-    active = _configured_name()
+    from .settings_access import resolved
+
+    settings = resolved(settings)
+    active = _configured_name(settings)
     out = []
     for name in _REGISTRY:
         try:
-            avail = _instance(name).available()
+            avail = _instance(name, settings).available()
         except Exception:  # noqa: BLE001 - never let a bad env crash the list
             avail = False
         out.append({"name": name, "available": avail, "active": name == active})

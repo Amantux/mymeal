@@ -553,3 +553,84 @@ def test_placeholder_markers_are_rejected_case_insensitively(value):
 def test_a_real_random_secret_is_accepted():
     import secrets as _s
     assert L({"MYMEAL_SECRET_KEY": _s.token_urlsafe(32)}).SECRET_KEY
+
+
+# --------------------------------------------------------------- AI providers
+
+def test_providers_read_current_settings_not_a_process_cache(tmp_path):
+    """Providers were built once from os.environ and cached process-wide, so
+    the first app to use AI froze provider config for every later app."""
+    from app.services.ai.registry import _instance
+
+    class S1:
+        OLLAMA_HOST = "http://one:11434"
+        OLLAMA_MODEL = "m1"
+        AI_TIMEOUT_SECONDS = 30
+
+    class S2:
+        OLLAMA_HOST = "http://two:11434"
+        OLLAMA_MODEL = "m2"
+        AI_TIMEOUT_SECONDS = 30
+
+    assert _instance("ollama", S1()).host == "http://one:11434"
+    assert _instance("ollama", S2()).host == "http://two:11434"
+
+
+def test_provider_honours_the_configured_ai_timeout():
+    from app.services.ai.registry import _instance
+
+    class S:
+        OLLAMA_HOST = "http://x:11434"
+        OLLAMA_MODEL = "m"
+        AI_TIMEOUT_SECONDS = 7
+
+    assert _instance("ollama", S()).timeout == 7
+
+
+def test_ollama_discovery_returns_none_when_nothing_answers(monkeypatch):
+    """Absence must be an ordinary result, not an exception or a hang."""
+    from app.services.ai import discovery
+
+    monkeypatch.setattr(discovery, "_probe", lambda *a, **k: None)
+    monkeypatch.setattr(discovery, "_supervisor_addon_hosts", lambda: [])
+    assert discovery.discover_ollama() is None
+
+
+def test_ollama_discovery_prefers_a_supervisor_addon(monkeypatch):
+    from app.services.ai import discovery
+
+    monkeypatch.setattr(discovery, "_supervisor_addon_hosts",
+                        lambda: ["http://addon-ollama:11434"])
+    monkeypatch.setattr(discovery, "_probe",
+                        lambda host, **k: ["llama3.1"] if "addon" in host else None)
+    found = discovery.discover_ollama()
+    assert found["host"] == "http://addon-ollama:11434"
+    assert found["via"] == "supervisor"
+    assert "llama3.1" in found["models"]
+
+
+def test_ollama_discovery_falls_back_to_probing(monkeypatch):
+    from app.services.ai import discovery
+
+    monkeypatch.setattr(discovery, "_supervisor_addon_hosts", lambda: [])
+    monkeypatch.setattr(discovery, "_probe",
+                        lambda host, **k: ["m"] if "localhost" in host else None)
+    found = discovery.discover_ollama()
+    assert found["host"] == "http://localhost:11434" and found["via"] == "probe"
+
+
+def test_ollama_discovery_never_raises_on_network_errors(monkeypatch):
+    from app.services.ai import discovery
+
+    def boom(*a, **k):
+        raise OSError("network unreachable")
+
+    monkeypatch.setattr(discovery.httpx, "get", boom)
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    assert discovery.discover_ollama() is None
+
+
+def test_discovery_endpoint_requires_authentication(tmp_path):
+    """It probes internal network addresses, so it must never be anonymous."""
+    client = _mk(tmp_path, "disc", MCP_ENABLED=False)
+    assert client.get("/api/v1/ai/discover-ollama").status_code == 401

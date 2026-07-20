@@ -16,12 +16,15 @@ from .base import AIProvider, ChatResult, ProviderError, ToolCall
 class OpenAIProvider(AIProvider):
     name = "openai"
 
-    def __init__(self):
-        self.api_key = os.environ.get("MYMEAL_OPENAI_API_KEY") or os.environ.get(
+    def __init__(self, settings=None):
+        from .settings_access import resolved
+        cfg = resolved(settings)
+        self.api_key = cfg.OPENAI_API_KEY or os.environ.get(
             "OPENAI_API_KEY"
         )
-        self.model = os.environ.get("MYMEAL_OPENAI_MODEL", "gpt-4o-mini")
-        self.base_url = os.environ.get("MYMEAL_OPENAI_BASE_URL")  # optional override
+        self.model = cfg.OPENAI_MODEL
+        self.timeout = cfg.AI_TIMEOUT_SECONDS
+        self.base_url = cfg.OPENAI_BASE_URL or None  # optional override
         self._client = None
 
     def available(self) -> bool:

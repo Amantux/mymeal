@@ -6,8 +6,6 @@ privacy-first option for Home Assistant users who self-host everything.
 """
 from __future__ import annotations
 
-import os
-
 import httpx
 
 from .base import AIProvider, ChatResult, ProviderError, ToolCall
@@ -16,9 +14,16 @@ from .base import AIProvider, ChatResult, ProviderError, ToolCall
 class OllamaProvider(AIProvider):
     name = "ollama"
 
-    def __init__(self):
-        self.host = os.environ.get("MYMEAL_OLLAMA_HOST", "http://localhost:11434")
-        self.model = os.environ.get("MYMEAL_OLLAMA_MODEL", "llama3.1")
+    def __init__(self, settings=None):
+        # Settings are resolved once at startup and passed in, rather than each
+        # provider re-reading os.environ at first use — which cached whatever
+        # the environment happened to be when the process first needed AI.
+        from .settings_access import resolved
+        cfg = resolved(settings)
+        self.host = cfg.OLLAMA_HOST
+        self.model = cfg.OLLAMA_MODEL
+        self.timeout = cfg.AI_TIMEOUT_SECONDS
+        self._discovered = None
 
     def available(self) -> bool:
         # A model name is always set; treat configured host as availability.
@@ -26,7 +31,7 @@ class OllamaProvider(AIProvider):
 
     def _post(self, payload: dict) -> dict:
         try:
-            r = httpx.post(f"{self.host}/api/chat", json=payload, timeout=120)
+            r = httpx.post(f"{self.host}/api/chat", json=payload, timeout=self.timeout)
             r.raise_for_status()
         except httpx.HTTPError as exc:
             raise ProviderError(f"ollama request failed: {exc}") from exc
