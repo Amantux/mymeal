@@ -210,12 +210,6 @@ def test_assistant_shopping_action_id_is_a_real_deletable_item(auth_client, monk
     """The undo id in a chat action must actually address a real shopping item,
     so the frontend's DELETE reverses exactly what was added."""
     import app.api.chat as chat_api
-    from app.services.ai.agent import execute_tool
-    from app.api.groups import current_group  # noqa: F401
-
-    # Drive the tool directly through the app/group the auth_client set up.
-    self_ = auth_client.get("/api/v1/users/self").get_json()["item"]
-    gid = self_["groupId"] if "groupId" in self_ else None
 
     class FakeProvider:
         def __init__(self):
