@@ -103,7 +103,12 @@ jobs:
           m = re.search(r'^version:\s*"?([0-9]+\.[0-9]+\.[0-9]+)"?', text, re.M)
           old = m.group(1)
           major, minor, patch = (int(x) for x in old.split("."))
-          msg = os.environ.get("COMMIT_MSG", "").lower()
+          # Scan ONLY the commit SUBJECT (first line), not the whole message —
+          # otherwise a body that merely mentions "[major]"/"[minor]" (e.g. this
+          # feature's own docs) would trigger a bump. (It did, once: it turned a
+          # [minor] into 1.0.0.)
+          subject = (os.environ.get("COMMIT_MSG", "").splitlines() or [""])[0].lower()
+          msg = subject
           if "[major]" in msg:
               major, minor, patch = major + 1, 0, 0
           elif "[minor]" in msg:

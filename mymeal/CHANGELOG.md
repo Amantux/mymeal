@@ -9,11 +9,7 @@ without notes are build-only republishes with no user-visible change.
 
 ## 1.0.0
 
-Build-only republish; no user-visible change.
-
-## 0.6.0
-
-Feature milestone.
+Feature milestone (and first stable release).
 
 ### Added
 - **Companion Edibl integration.** myMeal now works with the Edibl food-inventory
