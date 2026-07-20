@@ -24,8 +24,15 @@ const labels = { claude: 'Claude (Anthropic)', openai: 'OpenAI', ollama: 'Ollama
     <h2>AI provider</h2>
     <p class="muted">
       myMeal talks to a pluggable AI backend for recipe import, meal planning, and
-      the cooking assistant. Select and configure a provider with the
-      <code>MYMEAL_AI_PROVIDER</code> environment variable and its API key/host.
+      the cooking assistant. Configure it with the <code>MYMEAL_AI_PROVIDER</code>
+      environment variable (or the add-on options) plus its API key/host — this
+      page shows status only.
+    </p>
+    <p class="muted" style="font-size:0.82rem">
+      Already run <strong>Ollama</strong> for Home Assistant's conversation agent?
+      Reuse the same server: set <code>MYMEAL_AI_PROVIDER=ollama</code> and
+      <code>MYMEAL_OLLAMA_HOST</code> to that Ollama's URL. (myMeal can't route
+      through HA's Ollama integration, but it talks to the same server directly.)
     </p>
     <div v-if="loading" class="skeleton" style="height:120px;margin-top:12px"></div>
     <div v-else style="margin-top:12px">

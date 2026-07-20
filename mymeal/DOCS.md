@@ -40,28 +40,37 @@ gatekeeper. It is *not* safe on a port exposed to your network — see
 myMeal works fully without AI — you just lose recipe-import-from-URL,
 "what can I cook", plan generation, and the chat assistant.
 
-Set `ai_provider`, then add the matching credentials in the app under
-**Settings → AI**:
+Configuration is by environment / add-on options (the Settings page shows
+provider status but does not edit it):
 
 - **`ollama`** — fully local, no API key, nothing leaves your network. This is
-  the privacy-preserving choice, and the one to pick if you already run Ollama
-  for Home Assistant's own conversation agent.
+  the privacy-preserving choice.
 
-  **You should not need to type a URL.** Settings → AI → *Find Ollama* asks the
-  Supervisor whether an Ollama add-on is installed, and otherwise probes the
-  usual addresses (`homeassistant.local`, the Docker host, `localhost`).
+  **Already running Ollama for Home Assistant's conversation agent? Reuse it —
+  it's the same server.** Home Assistant's Ollama integration connects *out* to
+  an Ollama server and does not re-share that model with other apps, so myMeal
+  cannot route *through* Home Assistant — but it can talk to the very same
+  Ollama directly. One server, both consumers, no duplicate model in memory.
 
-  Worth knowing: Home Assistant's Ollama integration connects *out* to an
-  Ollama server and does not share that model with other applications, so
-  myMeal cannot route its requests through Home Assistant. It talks to the same
-  Ollama server directly instead — one server, both consumers, no duplicate
-  setup and no second copy of the model in memory.
+  Point myMeal at it:
 
-  If discovery finds nothing, Ollama is probably listening only on loopback.
-  Start it with `OLLAMA_HOST=0.0.0.0` so other containers can reach it.
+  ```
+  MYMEAL_AI_PROVIDER=ollama
+  MYMEAL_OLLAMA_HOST=http://<your-ollama-host>:11434
+  ```
+
+  Use the same host you gave the HA Ollama integration — often the Ollama
+  add-on's hostname (e.g. `http://local-ollama:11434`), `http://homeassistant.local:11434`,
+  or the Docker host. If myMeal can't reach it, Ollama is probably bound to
+  loopback only; start it with `OLLAMA_HOST=0.0.0.0` so other containers can
+  connect.
+
+  (There is also a helper endpoint, `GET /api/v1/ai/discover-ollama`, that probes
+  those addresses and reports what it finds — handy for confirming the host to
+  put in `MYMEAL_OLLAMA_HOST`.)
 - **`claude`** / **`openai`** — better quality, but recipe text and your
-  question are sent to that provider. Requires an API key and costs money per
-  request.
+  question are sent to that provider. Requires an API key (`MYMEAL_ANTHROPIC_API_KEY`
+  / `MYMEAL_OPENAI_API_KEY`) and costs money per request.
 
 Recipe import tries the page's embedded structured data **first** and only falls
 back to the AI when a site doesn't publish any — so most imports cost nothing
@@ -111,8 +120,9 @@ Check **Log** in the add-on page. The most common cause is port `7851` already
 being in use by another add-on; set `enable_mcp: false` to free it.
 
 **AI features return an error.**
-Confirm `ai_provider` matches the credentials you saved under Settings → AI. For
-Ollama, confirm the add-on can reach your Ollama host — it is a separate service
+Confirm `ai_provider` matches the credentials you configured (env / add-on
+options). For Ollama, confirm the add-on can reach your Ollama host — it is a
+separate service
 and is not bundled here.
 
 **Assist can't see myMeal.**
