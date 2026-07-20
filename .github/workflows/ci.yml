@@ -213,13 +213,38 @@ jobs:
           SHA: ${{ needs.bump-version.outputs.bump_sha }}
           REPO: ${{ github.repository }}
         run: |
-          if gh release view "v${V}" --repo "$REPO" >/dev/null 2>&1; then
-            echo "Release v${V} already exists — skipping."
-          else
+          # Retry on transient GitHub API failures. A 503 here is not cosmetic:
+          # HACS validates the LATEST RELEASE, so a lost release leaves the repo
+          # shipping a version HACS users cannot get. This happened on v0.5.7.
+          create_release() {
             gh release create "v${V}" \
               --repo "$REPO" \
               --target "$SHA" \
               --title "v${V}" \
               --notes "myMeal ${V} — Home Assistant add-on & HACS integration. Container image: ghcr.io/amantux/mymeal:${V}"
-            echo "Created release v${V} at ${SHA}"
+          }
+
+          if gh release view "v${V}" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release v${V} already exists — skipping."
+            exit 0
           fi
+
+          for attempt in 1 2 3 4 5; do
+            if create_release; then
+              echo "Created release v${V} at ${SHA} (attempt ${attempt})"
+              exit 0
+            fi
+            # Another run may have won the race between our check and our create.
+            if gh release view "v${V}" --repo "$REPO" >/dev/null 2>&1; then
+              echo "Release v${V} appeared concurrently — nothing to do."
+              exit 0
+            fi
+            backoff=$((attempt * 15))
+            echo "Release creation failed (attempt ${attempt}/5); retrying in ${backoff}s." >&2
+            sleep "$backoff"
+          done
+
+          echo "::error::Could not create release v${V} after 5 attempts. The repo" \
+               "now ships a version with no release, and HACS serves the previous" \
+               "one. Re-run this job, or create the release manually." >&2
+          exit 1

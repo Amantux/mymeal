@@ -432,13 +432,16 @@ def test_unwritable_data_dir_fails_at_startup_not_at_request_time(tmp_path):
     on the first upload."""
     from app import create_app
 
+    # The unwritable directory must be the IMMEDIATE parent of the one we try
+    # to create. A previous version chmod'd a grandparent and created the target
+    # inside a still-writable child, so makedirs correctly succeeded and the
+    # test failed for the wrong reason.
     blocked = tmp_path / "ro"
     blocked.mkdir()
-    (blocked / "sub").mkdir()
-    os.chmod(blocked, 0o500)
+    os.chmod(blocked, 0o500)  # r-x: traversable, not writable
 
     class C:
-        DATA_DIR = str(blocked / "sub" / "deeper")
+        DATA_DIR = str(blocked / "deeper")
         DATABASE_URL = f"sqlite:///{tmp_path/'f.db'}"
 
     try:
