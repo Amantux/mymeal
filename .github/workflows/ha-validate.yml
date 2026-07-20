@@ -182,6 +182,41 @@ jobs:
           if not repo.get("url"):
               errors.append("repository.yaml: missing url")
 
+          # Home Assistant renders these two files as the add-on's Documentation
+          # and Changelog tabs. Missing = the add-on ships with empty tabs.
+          import os as _os
+          import re as _re
+          for doc in ("mymeal/DOCS.md", "mymeal/CHANGELOG.md"):
+              if not _os.path.isfile(doc) or _os.path.getsize(doc) < 200:
+                  errors.append(f"missing or near-empty add-on doc: {doc}")
+
+          # The shipped version must appear in the changelog, or a user weighing
+          # an update sees no entry for the version they are being offered.
+          if _os.path.isfile("mymeal/CHANGELOG.md"):
+              ch = open("mymeal/CHANGELOG.md").read()
+              if not _re.search(rf"^## {_re.escape(addon['version'])}\b", ch, _re.M):
+                  errors.append(
+                      f"mymeal/CHANGELOG.md has no '## {addon['version']}' entry "
+                      "(the auto-bump inserts a stub; did it fail?)"
+                  )
+
+          # The My Home Assistant buttons must point at the repo that hosts this
+          # code, or one click sends users to someone else's repository.
+          owner_repo = expected.replace("https://github.com/", "")
+          readme = open("README.md").read()
+          if "my.home-assistant.io/redirect/supervisor_add_addon_repository" not in readme:
+              errors.append("README.md: missing the add-on repository My-HA button")
+          if "my.home-assistant.io/redirect/hacs_repository" not in readme:
+              errors.append("README.md: missing the HACS My-HA button")
+          from urllib.parse import quote
+          if quote(expected, safe="") not in readme:
+              errors.append(
+                  f"README.md: the add-on My-HA button does not url-encode {expected}"
+              )
+          o, _, r = owner_repo.partition("/")
+          if f"owner={o}&repository={r}" not in readme:
+              errors.append(f"README.md: HACS button does not point at {owner_repo}")
+
           # Every documentation URL must point at the repo that actually hosts
           # this code, or HACS sends users somewhere that 404s.
           expected = repo["url"].rstrip("/")

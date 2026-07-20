@@ -2,6 +2,17 @@
   <img src="docs/banner.png" alt="myMeal — recipes, AI meal planning, pantry & smart shopping lists" width="820">
 </p>
 
+<p align="center">
+  <a href="https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FAmantux%2Fmymeal"><img src="https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg" alt="Add add-on repository to My Home Assistant"></a>
+  &nbsp;
+  <a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=Amantux&repository=mymeal&category=integration"><img src="https://my.home-assistant.io/badges/hacs_repository.svg" alt="Add integration to HACS via My Home Assistant"></a>
+</p>
+
+<p align="center">
+  <sub><b>Left:</b> installs the add-on (runs myMeal). <b>Right:</b> installs the HACS integration (entities, calendar, voice).<br>
+  Most people want <b>both</b> — see <a href="#home-assistant">Home Assistant</a>.</sub>
+</p>
+
 # myMeal
 
 [![HA validate](https://github.com/Amantux/mymeal/actions/workflows/ha-validate.yml/badge.svg)](https://github.com/Amantux/mymeal/actions/workflows/ha-validate.yml)
@@ -86,13 +97,20 @@ alternatives — the add-on runs the app, the integration surfaces it as entitie
 
 ### Path 1 — the add-on (runs myMeal inside HA)
 
+[![Add repository to My Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FAmantux%2Fmymeal)
+
+One click adds the repository to your Home Assistant. Then install **myMeal**
+and click **Open Web UI**.
+
+<details>
+<summary>Manual alternative</summary>
+
 **Settings → Add-ons → Add-on Store → ⋮ → Repositories → Add**
 
 ```
 https://github.com/Amantux/mymeal
 ```
-
-Then install **myMeal** and click **Open Web UI**.
+</details>
 
 **You will not be asked to sign in.** Ingress is enabled (`ingress: true`,
 `ingress_port: 7850`) and the add-on ships `disable_auth: true` by default:
@@ -108,9 +126,17 @@ MCP server is exposed on port `7851` for the Home Assistant MCP Client.
 
 ### Path 2 — the HACS integration (entities, calendar, voice)
 
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Amantux&repository=mymeal&category=integration)
+
+One click opens it in HACS (requires HACS installed). Then **Download** →
+restart HA → **Settings → Devices & Services → Add Integration → myMeal**.
+
+<details>
+<summary>Manual alternative</summary>
+
 **HACS → ⋮ → Custom repositories** → add `https://github.com/Amantux/mymeal`
-with category **Integration** → install **myMeal** → restart HA → **Settings →
-Devices & Services → Add Integration → myMeal**.
+with category **Integration**, then download it.
+</details>
 
 If you installed the add-on, it advertises itself via Supervisor discovery and
 the integration should offer to configure itself with no URL or token typing.

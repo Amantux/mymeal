@@ -1,0 +1,114 @@
+# myMeal — Home Assistant add-on
+
+Recipes, AI meal planning, a pantry, and smart shopping lists — running inside
+Home Assistant, with voice control through Assist.
+
+[![Add repository to My Home Assistant][repo-badge]][repo-link]
+
+## Install
+
+1. Click the button above (or **Settings → Add-ons → Add-on Store → ⋮ →
+   Repositories** and paste `https://github.com/Amantux/mymeal`).
+2. Find **myMeal** in the store and click **Install**.
+3. Click **Start**, then **Open Web UI**.
+
+There is nothing else to configure. The defaults are the intended setup.
+
+## You will not be asked to sign in
+
+The add-on runs behind Home Assistant **ingress**: HA authenticates you before
+the request ever reaches myMeal, so a second login would be pure friction. The
+add-on therefore ships with `disable_auth: true`, and the web UI asks the
+backend directly whether sign-in is required rather than guessing.
+
+**This is safe here and only here.** With `disable_auth` on, every request binds
+to a single local user. That is correct behind ingress, where HA is the
+gatekeeper. It is *not* safe on a port exposed to your network — see
+"Running outside Home Assistant" below.
+
+## Configuration
+
+| Option | Default | What it does |
+|---|---|---|
+| `disable_auth` | `true` | No login prompt behind ingress. Turn OFF only if you expose port 7850 directly and want myMeal's own login. |
+| `allow_registration` | `false` | Whether strangers can create accounts. Irrelevant while `disable_auth` is on. |
+| `enable_mcp` | `true` | Runs the MCP server on port 7851 so Assist can use myMeal as a tool. |
+| `ai_provider` | _(blank)_ | `claude`, `ollama`, or `openai`. Blank = AI features off; everything else still works. |
+
+### Turning on the AI features
+
+myMeal works fully without AI — you just lose recipe-import-from-URL,
+"what can I cook", plan generation, and the chat assistant.
+
+Set `ai_provider`, then add the matching credentials in the app under
+**Settings → AI**:
+
+- **`ollama`** — fully local, no API key, nothing leaves your network. Point it
+  at your Ollama host. This is the privacy-preserving choice.
+- **`claude`** / **`openai`** — better quality, but recipe text and your
+  question are sent to that provider. Requires an API key and costs money per
+  request.
+
+Recipe import tries the page's embedded structured data **first** and only falls
+back to the AI when a site doesn't publish any — so most imports cost nothing
+even with a paid provider configured.
+
+## Voice control with Assist
+
+The add-on exposes an MCP server on port `7851`. To let Assist cook with it:
+
+**Settings → Devices & Services → Add Integration → Model Context Protocol**,
+then use:
+
+```
+http://<your-ha-host>:7851/sse
+```
+
+Ask things like *"what's for dinner?"*, *"add milk to my shopping list"*, or
+*"what can I cook with what I have?"*.
+
+For entities (sensors, a meal-plan calendar, services), also install the
+companion **myMeal integration** from HACS — see the repository README. The
+integration auto-discovers this add-on, so you should not need to type a URL.
+
+## Data and backups
+
+Everything lives in the add-on's data directory: a SQLite database plus uploaded
+recipe images. It is included in normal **Home Assistant backups** — take one
+before upgrading if your collection matters to you.
+
+Nothing is sent anywhere unless you explicitly configure a cloud AI provider.
+
+## Running outside Home Assistant
+
+The same image runs standalone via `docker compose` (see the repository README).
+In that mode **auth stays on**: `MYMEAL_DISABLE_AUTH` defaults to `false`, and
+you should set a strong `MYMEAL_SECRET_KEY`. Never set `MYMEAL_DISABLE_AUTH=true`
+on anything reachable from an untrusted network.
+
+## Troubleshooting
+
+**"Open Web UI" shows a login screen.**
+That should not happen behind ingress. Check that `disable_auth` is still `true`
+in the add-on configuration, then restart the add-on.
+
+**The add-on won't start.**
+Check **Log** in the add-on page. The most common cause is port `7851` already
+being in use by another add-on; set `enable_mcp: false` to free it.
+
+**AI features return an error.**
+Confirm `ai_provider` matches the credentials you saved under Settings → AI. For
+Ollama, confirm the add-on can reach your Ollama host — it is a separate service
+and is not bundled here.
+
+**Assist can't see myMeal.**
+Confirm `enable_mcp: true`, the add-on is running, and the MCP integration URL
+uses your HA host's real address (not `localhost`, which resolves inside the
+container, not on your network).
+
+## Support
+
+Issues and questions: <https://github.com/Amantux/mymeal/issues>
+
+[repo-badge]: https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg
+[repo-link]: https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FAmantux%2Fmymeal
