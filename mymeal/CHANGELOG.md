@@ -7,6 +7,26 @@ whether to hit Update — not for developers reading a diff.
 Patch versions are minted automatically on every push to `main`; entries below
 without notes are build-only republishes with no user-visible change.
 
+## 0.6.0
+
+Feature milestone.
+
+### Added
+- **Companion Edibl integration.** myMeal now works with the Edibl food-inventory
+  app: it can pull your real, fresh stock and push planned ingredients for
+  reconciliation. Configure `MYMEAL_EDIBL_URL` (and a token).
+- **Ambient cooking assistant.** A floating chat button on every page, with
+  quick-start suggestions and one-tap **undo** for actions it takes (e.g.
+  adding to your shopping list).
+- **One typed, validated configuration contract** with a `config_check` command,
+  clearer startup diagnostics, and safer secret handling.
+
+### Changed
+- **myMeal no longer keeps its own pantry** — inventory is owned by Edibl.
+  Inventory-aware features ("what can I cook") use Edibl when connected and are
+  otherwise cleanly unavailable. **On upgrade, the old local pantry table is
+  removed and its rows are discarded** (that data now lives in Edibl).
+
 ## 0.5.12
 
 Build-only republish; no user-visible change.
