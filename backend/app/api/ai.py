@@ -10,14 +10,13 @@ import httpx
 from flask import Blueprint, request, jsonify
 
 from ..extensions import db
-from ..models import Recipe, PantryItem, MealPlanEntry
+from ..models import Recipe, MealPlanEntry
 from ..auth import login_required, current_group
 from ..schemas.serializers import recipe_out, mealplan_entry_out
 from ..utils import unique_slug
 from ..services.ai.base import ProviderError
 from ..services.ai.registry import get_provider, list_providers
 from ..services.ai.recipe_import import import_recipe, UnsafeURLError
-from ..services.pantry import rank_recipes
 from .recipes import _apply
 
 bp = Blueprint("ai", __name__)
@@ -105,20 +104,35 @@ def import_recipe_endpoint():
 @bp.post("/ai/suggest")
 @login_required
 def suggest():
-    """Pantry-aware 'what can I cook now?' — deterministic, no provider needed.
+    """Inventory-aware 'what can I cook now?' — deterministic, no provider needed.
 
-    Ranks the group's recipes by how well the current pantry covers their
-    ingredients. Optional ``limit`` caps the result count.
+    Ranks the group's recipes by how well the on-hand inventory (from the
+    companion Edibl app) covers their ingredients. Optional ``limit`` caps the
+    result count.
+
+    Inventory is owned by Edibl, not myMeal. With no Edibl configured this
+    reports the feature as unavailable rather than ranking against nothing.
     """
+    from ..services.edibl import EdiblClient
+    from ..services.inventory import rank_recipes
+
     gid = current_group().id
     data = request.get_json(silent=True) or {}
     try:
         limit = min(int(data.get("limit", 20) or 20), 100)
     except (ValueError, TypeError):
         limit = 20
+
+    inv = EdiblClient.from_settings().on_hand()
+    if not inv["available"]:
+        # 200 with a flag, not an error: this is a missing-optional-dependency,
+        # and the UI should prompt to connect Edibl, not show a failure.
+        return jsonify({"suggestions": [], "inventorySource": "edibl",
+                        "ediblAvailable": False, "message": inv["reason"]})
+
     recipes = db.session.query(Recipe).filter_by(group_id=gid).all()
-    pantry = db.session.query(PantryItem).filter_by(group_id=gid).all()
-    return jsonify({"suggestions": rank_recipes(recipes, pantry)[:limit]})
+    return jsonify({"suggestions": rank_recipes(recipes, inv["items"])[:limit],
+                    "inventorySource": "edibl", "ediblAvailable": True})
 
 
 @bp.post("/ai/plan")

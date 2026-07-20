@@ -44,9 +44,14 @@ def speak_dinner(status: dict) -> str:
 def speak_suggestions(status: dict) -> str:
     if status.get("status") != "ok":
         return "I couldn't reach myMeal for suggestions."
+    # Distinguish "inventory source not connected" from "no matching recipes" —
+    # otherwise a missing Edibl is misreported as an empty recipe box.
+    if status.get("ediblAvailable") is False:
+        return (status.get("message")
+                or "Inventory comes from Edibl, which isn't connected yet.")
     s = status.get("suggestions", [])
     if not s:
-        return "I don't have any recipes to match against your pantry yet."
+        return "I don't have any recipes to match against your inventory yet."
     top = s[0]
     line = f"You could make {top['name']} — you have {top['haveCount']} of " \
            f"{top['totalCount']} ingredients."

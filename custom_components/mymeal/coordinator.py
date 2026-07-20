@@ -91,7 +91,9 @@ class MyMealDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data = await self._post("/api/v1/ai/suggest", {"limit": 5})
         except (ClientError, asyncio.TimeoutError):
             return {"status": "error"}
-        return {"status": "ok", "suggestions": data.get("suggestions", [])}
+        return {"status": "ok", "suggestions": data.get("suggestions", []),
+                "ediblAvailable": data.get("ediblAvailable", True),
+                "message": data.get("message")}
 
     async def add_to_shopping_list(self, item: str) -> dict:
         try:

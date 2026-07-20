@@ -187,6 +187,70 @@ def test_client_surfaces_http_errors_without_raising(patch_httpx):
     assert res["reachable"] is True and res["status"] == 401
 
 
+# --------------------------------------------------------------- errored Edibl (blocker regression)
+
+def test_on_hand_unavailable_on_auth_error(patch_httpx):
+    """BLOCKER regression: a 401 (bad token) must NOT read as available+empty.
+    Before the fix, on_hand returned {available: True, items: []} and callers
+    silently ranked against nothing while reporting Edibl healthy."""
+    patch_httpx(lambda req: httpx.Response(401, json={"error": "unauthorized"}))
+    inv = EdiblClient("http://edibl:8080", "bad-token").on_hand()
+    assert inv["available"] is False
+    assert inv["items"] == []
+    assert "401" in inv["reason"] or "error" in inv["reason"].lower()
+
+
+def test_on_hand_unavailable_on_server_error(patch_httpx):
+    patch_httpx(lambda req: httpx.Response(500, json={"error": "boom"}))
+    inv = EdiblClient("http://edibl:8080", "t").on_hand()
+    assert inv["available"] is False and inv["items"] == []
+
+
+def test_get_stock_reports_not_ok_on_http_error(patch_httpx):
+    patch_httpx(lambda req: httpx.Response(403, json={}))
+    stock = EdiblClient("http://edibl:8080", "t").get_stock()
+    assert stock["ok"] is False
+    assert stock["reachable"] is True          # server answered...
+    assert stock["items"] == []                # ...but gave no usable stock
+
+
+def test_edibl_stock_endpoint_502s_on_edibl_error(tmp_path, patch_httpx):
+    patch_httpx(lambda req: httpx.Response(401, json={}))
+    c = _client(tmp_path, DISABLE_AUTH=True,
+                EDIBL_URL="http://edibl:8080", EDIBL_API_TOKEN="bad")
+    r = c.get("/api/v1/edibl/stock")
+    assert r.status_code == 502
+    assert r.get_json()["items"] == []
+
+
+def test_push_plan_endpoint_502s_on_edibl_error(tmp_path, monkeypatch):
+    # A push with an errored Edibl must not report success. Supply a non-empty
+    # plan so the endpoint reaches the push (it short-circuits on an empty one).
+    import app.api.edibl as edibl_api
+    from app.services.edibl import EdiblClient as _C
+    monkeypatch.setattr(edibl_api, "flatten_plan", lambda entries: [{"name": "Flour"}])
+    monkeypatch.setattr(_C, "push_plan",
+                        lambda self, items, **kw: {"ok": False, "reachable": True,
+                                                   "error": "HTTP 500"})
+    c = _client(tmp_path, DISABLE_AUTH=True,
+                EDIBL_URL="http://edibl:8080", EDIBL_API_TOKEN="t")
+    r = c.post("/api/v1/edibl/push-plan", json={})
+    assert r.status_code == 502
+
+
+def test_suggest_reports_unavailable_when_edibl_errors(tmp_path):
+    """/ai/suggest end to end: a configured-but-erroring Edibl reports the
+    feature unavailable rather than an empty (misleading) ranking."""
+    c = _client(tmp_path, DISABLE_AUTH=True,
+                EDIBL_URL="http://edibl:8080", EDIBL_API_TOKEN="bad")
+    # No live server -> the real client will fail to connect (unreachable),
+    # which is also `ok: False`; assert the feature is reported unavailable.
+    body = c.post("/api/v1/ai/suggest", json={}).get_json()
+    assert body["ediblAvailable"] is False
+    assert body["suggestions"] == []
+    assert body["message"]
+
+
 # --------------------------------------------------------------- endpoints
 
 def _client(tmp_path, **settings):
@@ -235,3 +299,93 @@ def test_edibl_token_is_a_secret_and_redacted():
                       ha_options={})
     import json as _j
     assert "sk-edibl-must-not-leak" not in _j.dumps(s.redacted())
+
+
+# --------------------------------------------------------------- pantry removal
+
+def test_pantry_endpoints_are_gone(tmp_path):
+    """myMeal no longer owns a pantry; the old CRUD endpoints must not work.
+
+    GET falls through to the 404 API handler; POST is 405 because only the SPA
+    catch-all (GET-only) matches the path. Either way there is no pantry API.
+    """
+    c = _client(tmp_path, DISABLE_AUTH=True)
+    assert c.get("/api/v1/pantry").status_code == 404
+    post = c.post("/api/v1/pantry", json={"label": "rice"})
+    assert post.status_code >= 400          # no create route
+    assert post.status_code != 201          # definitely did not create anything
+
+
+def test_no_pantry_table_in_a_fresh_database(tmp_path):
+    """A new install must not create a pantry table at all."""
+    from sqlalchemy import inspect
+    from app.extensions import db
+
+    app = create_app(type("C", (), {
+        "DATA_DIR": str(tmp_path), "DATABASE_URL": f"sqlite:///{tmp_path/'fresh.db'}",
+        "MCP_ENABLED": False}))
+    with app.app_context():
+        assert "pantry_items" not in inspect(db.engine).get_table_names()
+
+
+def test_migration_drops_a_legacy_pantry_table(tmp_path):
+    """An upgraded install that still has pantry_items has it dropped (the
+    explicit, destructive choice) — and nothing else is touched."""
+    import sqlite3
+    from sqlalchemy import inspect
+    from app.extensions import db
+
+    dbfile = tmp_path / "legacy.db"
+    con = sqlite3.connect(dbfile)
+    con.execute("CREATE TABLE pantry_items (id TEXT PRIMARY KEY, label TEXT)")
+    con.execute("INSERT INTO pantry_items VALUES ('1', 'old rice')")
+    con.execute("CREATE TABLE keep_me (id TEXT)")   # unrelated table must survive
+    con.commit()
+    con.close()
+
+    app = create_app(type("C", (), {
+        "DATA_DIR": str(tmp_path), "DATABASE_URL": f"sqlite:///{dbfile}",
+        "MCP_ENABLED": False}))
+    with app.app_context():
+        tables = inspect(db.engine).get_table_names()
+    assert "pantry_items" not in tables      # dropped
+    assert "keep_me" in tables                # scoped: everything else survives
+
+
+# --------------------------------------------------------------- matcher
+
+def test_rank_recipes_matches_by_name_only():
+    """The matcher works off Edibl names (no myMeal food ids)."""
+    from app.services.inventory import rank_recipes
+
+    class Ing:
+        def __init__(self, display):
+            self.display, self.food = display, None
+
+    class R:
+        def __init__(self, rid, name, ings):
+            self.id, self.name, self.slug = rid, name, name.lower()
+            self.ingredients = [Ing(i) for i in ings]
+
+    recipes = [R("a", "Salad", ["fresh lettuce", "ripe tomato"]),
+               R("b", "Steak", ["beef", "salt"])]
+    ranked = rank_recipes(recipes, [{"name": "lettuce"}, {"name": "tomato"}])
+    assert ranked[0]["name"] == "Salad" and ranked[0]["coverage"] == 1.0
+    assert ranked[1]["missingCount"] == 2
+
+
+def test_rank_recipes_ignores_short_inventory_tokens():
+    """A 2-char inventory name must not match everything by substring."""
+    from app.services.inventory import rank_recipes
+
+    class Ing:
+        def __init__(self, d):
+            self.display, self.food = d, None
+
+    class R:
+        def __init__(self):
+            self.id, self.name, self.slug = "x", "X", "x"
+            self.ingredients = [Ing("anchovy")]
+
+    ranked = rank_recipes([R()], [{"name": "an"}])
+    assert ranked[0]["haveCount"] == 0

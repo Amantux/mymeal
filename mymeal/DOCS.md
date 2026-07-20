@@ -1,6 +1,6 @@
 # myMeal — Home Assistant add-on
 
-Recipes, AI meal planning, a pantry, and smart shopping lists — running inside
+Recipes, AI meal planning, and smart shopping lists — running inside
 Home Assistant, with voice control through Assist.
 
 [![Add repository to My Home Assistant][repo-badge]][repo-link]

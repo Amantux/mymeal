@@ -1,7 +1,7 @@
 """Consolidated read endpoints for the Home Assistant integration.
 
 * ``/api/v1/ha/summary``  – one cheap poll with counts + today's/this week's
-  meals, unchecked shopping items, and soon-to-expire pantry items.
+  meals and unchecked shopping items.
 * ``/api/v1/ha/calendar`` – meal-plan entries as calendar events, consumed by
   the myMeal Calendar entity.
 """
@@ -10,7 +10,7 @@ from datetime import date, timedelta
 from flask import Blueprint, jsonify, request
 
 from ..extensions import db
-from ..models import Recipe, MealPlanEntry, PantryItem, ShoppingList, ShoppingListItem
+from ..models import Recipe, MealPlanEntry, ShoppingList, ShoppingListItem
 from ..auth import login_required, current_group
 
 bp = Blueprint("ha", __name__)
@@ -48,11 +48,6 @@ def summary():
     )
     todays = [e for e in week_entries if e.date == today]
 
-    pantry = db.session.query(PantryItem).filter_by(group_id=gid).all()
-    expiring = [
-        p for p in pantry if p.expires_at and today <= p.expires_at <= week_end
-    ]
-
     unchecked = (
         db.session.query(ShoppingListItem)
         .join(ShoppingList, ShoppingList.id == ShoppingListItem.shopping_list_id)
@@ -68,8 +63,6 @@ def summary():
                 "recipes": recipes,
                 "mealsThisWeek": len(week_entries),
                 "shoppingItems": unchecked,
-                "pantryItems": len(pantry),
-                "pantryExpiring": len(expiring),
             },
             "todaysMeals": [
                 {"mealType": e.meal_type, "name": _entry_label(e)} for e in todays
@@ -81,10 +74,6 @@ def summary():
                     "name": _entry_label(e),
                 }
                 for e in week_entries
-            ],
-            "pantryExpiring": [
-                {"name": p.label, "expires": p.expires_at.isoformat()}
-                for p in sorted(expiring, key=lambda x: x.expires_at)
             ],
         }
     )

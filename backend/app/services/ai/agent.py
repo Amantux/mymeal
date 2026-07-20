@@ -13,8 +13,9 @@ import json
 from datetime import date
 
 from ...extensions import db
-from ...models import Recipe, PantryItem, MealPlanEntry, ShoppingList, ShoppingListItem
-from ..pantry import rank_recipes
+from ...models import Recipe, MealPlanEntry, ShoppingList, ShoppingListItem
+from ..edibl import EdiblClient
+from ..inventory import rank_recipes
 from .base import AIProvider
 
 SYSTEM = (
@@ -46,14 +47,14 @@ TOOLS = [
         },
     },
     {
-        "name": "list_pantry",
-        "description": "List what the user currently has in their pantry.",
+        "name": "list_inventory",
+        "description": "List what food the user currently has on hand (from Edibl).",
         "parameters": {"type": "object", "properties": {}},
     },
     {
         "name": "what_can_i_cook",
-        "description": "Rank the user's recipes by how well their current pantry "
-        "covers the ingredients.",
+        "description": "Rank the user's recipes by how well their on-hand "
+        "inventory (from Edibl) covers the ingredients.",
         "parameters": {"type": "object", "properties": {}},
     },
     {
@@ -121,16 +122,19 @@ def execute_tool(gid: str, name: str, args: dict):
             "steps": [s.text for s in r.steps],
         }
 
-    if name == "list_pantry":
-        items = db.session.query(PantryItem).filter_by(group_id=gid).all()
-        return [
-            {"item": p.label, "quantity": p.quantity, "unit": p.unit} for p in items
-        ]
+    if name == "list_inventory":
+        inv = EdiblClient.from_settings().on_hand()
+        if not inv["available"]:
+            return {"available": False, "message": inv["reason"], "items": []}
+        return {"available": True, "items": inv["items"]}
 
     if name == "what_can_i_cook":
+        inv = EdiblClient.from_settings().on_hand()
+        if not inv["available"]:
+            return {"available": False, "message": inv["reason"], "suggestions": []}
         recipes = db.session.query(Recipe).filter_by(group_id=gid).all()
-        pantry = db.session.query(PantryItem).filter_by(group_id=gid).all()
-        return rank_recipes(recipes, pantry)[:5]
+        return {"available": True,
+                "suggestions": rank_recipes(recipes, inv["items"])[:5]}
 
     if name == "whats_for_dinner":
         try:

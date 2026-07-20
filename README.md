@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner.png" alt="myMeal — recipes, AI meal planning, pantry & smart shopping lists" width="820">
+  <img src="docs/banner.png" alt="myMeal — recipes, AI meal planning & smart shopping lists" width="820">
 </p>
 
 <p align="center">
@@ -22,16 +22,16 @@
 [![Min HA version](https://img.shields.io/badge/Home%20Assistant-%E2%89%A5%202023.1.0-41BDF5.svg)](https://www.home-assistant.io/)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 
-**Self-hosted recipes, AI meal planning, pantry & smart shopping lists — with a
+**Self-hosted recipes, AI meal planning & smart shopping lists — with a
 Home Assistant cooking assistant built in.**
 
 myMeal is a privacy-first, self-hosted kitchen companion. Keep your recipe
 collection, let an AI help you plan the week and cook, track what's in your
-pantry, and generate consolidated shopping lists — all runnable standalone or as
+and generate consolidated shopping lists — all runnable standalone or as
 a Home Assistant add-on with voice control through Assist.
 
 > **Status:** all five milestones shipped — core recipe management, AI recipe
-> import + pluggable providers, meal planning, pantry, smart shopping lists, the
+> import + pluggable providers, meal planning, smart shopping lists, the
 > conversational cooking agent, the MCP server, and the Home Assistant
 > integration. See the [CHANGELOG](CHANGELOG.md).
 
@@ -43,7 +43,7 @@ a Home Assistant add-on with voice control through Assist.
   recipe from a URL or pasted text, ask "what can I cook with what I have", and
   generate weekly meal plans.
 - 🗓️ **Meal planning** — a weekly planner that also feeds your calendar.
-- 🧺 **Pantry-aware** — track stock and get suggestions that minimize shopping.
+- 🧺 **Inventory-aware** — with the companion [Edibl](https://github.com/Amantux/edibl) app connected, get suggestions ranked by what's actually on hand. myMeal itself stores no pantry; Edibl owns inventory.
 - 🛒 **Smart shopping lists** — auto-built from your plan, deduped and grouped by
   aisle.
 - 💬 **Cooking agent** — chat with an assistant that helps you build and cook
@@ -145,7 +145,7 @@ You get:
 
 | Kind | What |
 |---|---|
-| Sensors | today's meals, shopping-list count, expiring pantry items |
+| Sensors | today's meals, shopping-list count |
 | Calendar | your meal plan as a native HA calendar entity |
 | Services | `add_to_shopping_list`, `plan_week`, `whats_for_dinner` |
 | Voice | Assist sentences — *"what's for dinner?"*, *"add milk to my shopping list"* |

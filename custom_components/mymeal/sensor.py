@@ -51,17 +51,9 @@ SENSORS: tuple[MyMealSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d: _totals(d).get("shoppingItems"),
     ),
-    MyMealSensorDescription(
-        key="pantry_items", name="Pantry items", icon="mdi:fridge",
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _totals(d).get("pantryItems"),
-    ),
-    MyMealSensorDescription(
-        key="pantry_expiring", name="Pantry expiring (7d)", icon="mdi:food-off",
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _totals(d).get("pantryExpiring"),
-        attrs_fn=lambda d: {"items": d.get("pantryExpiring", [])},
-    ),
+    # Inventory (pantry) sensors were removed: myMeal no longer owns inventory —
+    # it is provided by the companion Edibl app, which ships its own HA
+    # integration with freshness/expiry sensors.
 )
 
 

@@ -115,8 +115,11 @@ def whats_for_dinner(day: str = "") -> dict:
 
 @mcp.tool()
 def what_can_i_cook() -> list[dict]:
-    """Suggest recipes you can make now, ranked by what's in the pantry."""
+    """Suggest recipes you can make now, ranked by on-hand inventory (Edibl)."""
     data = _post("/ai/suggest", {"limit": 5})
+    if data.get("ediblAvailable") is False:
+        return [{"message": data.get("message", "Inventory is provided by Edibl, "
+                 "which isn't connected.")}]
     out = []
     for s in data.get("suggestions", []):
         out.append(
@@ -148,22 +151,13 @@ def add_to_shopping_list(item: str) -> str:
 
 
 @mcp.tool()
-def pantry_list() -> list[dict]:
-    """List what's currently in the pantry."""
-    items = _get("/pantry").get("items", [])
-    return [
-        {"item": p["label"], "quantity": p.get("quantity"), "unit": p.get("unit")}
-        for p in items
-    ]
-
-
-@mcp.tool()
-def pantry_add(item: str, quantity: float = 0, unit: str = "") -> str:
-    """Add or record an item in the pantry."""
-    if not item.strip():
-        return "Tell me what to add to the pantry."
-    _post("/pantry", {"label": item, "quantity": quantity, "unit": unit})
-    return f"Added {item} to the pantry."
+def list_inventory() -> list[dict]:
+    """List what food is currently on hand (from the Edibl inventory app)."""
+    data = _get("/edibl/stock")
+    if not data.get("configured"):
+        return [{"message": "Inventory is provided by Edibl, which isn't connected."}]
+    return [{"item": i["name"], "quantity": i.get("quantity"), "unit": i.get("unit")}
+            for i in data.get("items", [])]
 
 
 @mcp.tool()

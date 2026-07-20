@@ -49,35 +49,38 @@ class EdiblClient:
         # only if Edibl itself runs with auth disabled behind ingress.
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
-    def _get(self, path: str, params: dict | None = None) -> dict:
+    def _finish(self, call) -> dict:
+        """Run an httpx call and classify the outcome as {ok, reachable, ...}.
+
+        `ok` is True ONLY on a 2xx with a body. `reachable` distinguishes
+        "server answered with an error" (True — e.g. 401/500) from "could not
+        reach the server" (False). Callers that need USABLE data must check
+        `ok`, not `reachable`: a 401 is reachable but useless, and treating it
+        as success is how a bad token silently became "empty inventory".
+        """
         if not self.configured:
-            return {"configured": False, "reachable": False}
+            return {"ok": False, "configured": False, "reachable": False}
         try:
-            r = httpx.get(f"{self.base_url}{path}", params=params,
-                          headers=self._headers(), timeout=self.timeout)
+            r = call()
             r.raise_for_status()
-            return {"configured": True, "reachable": True, "data": r.json()}
+            return {"ok": True, "configured": True, "reachable": True, "data": r.json()}
         except httpx.HTTPStatusError as exc:
-            return {"configured": True, "reachable": True,
+            logger.warning("edibl request -> HTTP %s", exc.response.status_code)
+            return {"ok": False, "configured": True, "reachable": True,
                     "error": f"HTTP {exc.response.status_code}", "status": exc.response.status_code}
         except httpx.HTTPError as exc:
-            logger.warning("edibl GET %s failed: %s", path, exc)
-            return {"configured": True, "reachable": False, "error": str(exc)}
+            logger.warning("edibl request failed: %s", exc)
+            return {"ok": False, "configured": True, "reachable": False, "error": str(exc)}
+
+    def _get(self, path: str, params: dict | None = None) -> dict:
+        return self._finish(lambda: httpx.get(
+            f"{self.base_url}{path}", params=params,
+            headers=self._headers(), timeout=self.timeout))
 
     def _post(self, path: str, payload: dict) -> dict:
-        if not self.configured:
-            return {"configured": False, "reachable": False}
-        try:
-            r = httpx.post(f"{self.base_url}{path}", json=payload,
-                           headers=self._headers(), timeout=self.timeout)
-            r.raise_for_status()
-            return {"configured": True, "reachable": True, "data": r.json()}
-        except httpx.HTTPStatusError as exc:
-            return {"configured": True, "reachable": True,
-                    "error": f"HTTP {exc.response.status_code}", "status": exc.response.status_code}
-        except httpx.HTTPError as exc:
-            logger.warning("edibl POST %s failed: %s", path, exc)
-            return {"configured": True, "reachable": False, "error": str(exc)}
+        return self._finish(lambda: httpx.post(
+            f"{self.base_url}{path}", json=payload,
+            headers=self._headers(), timeout=self.timeout))
 
     # -- operations --------------------------------------------------------
 
@@ -91,8 +94,10 @@ class EdiblClient:
             return {"configured": False, "reachable": False}
         probe = self._get("/api/v1/integrations/status")
         return {"configured": True, "reachable": probe.get("reachable", False),
-                "url": self.base_url,
-                "detail": probe.get("data") if probe.get("reachable") else probe.get("error")}
+                "ok": probe.get("ok", False), "url": self.base_url,
+                # Surface the error (e.g. HTTP 401) when the server answered but
+                # not with usable data, so a bad token is diagnosable.
+                "detail": probe.get("data") if probe.get("ok") else probe.get("error")}
 
     def push_plan(self, items: list[dict], meal: str = "", source: str = "mymeal") -> dict:
         """Send planned ingredients to Edibl. Matches Edibl's documented body:
@@ -100,12 +105,42 @@ class EdiblClient:
         return self._post("/api/v1/integrations/mymeal/plan",
                           {"meal": meal, "source": source, "items": items})
 
+    def on_hand(self) -> dict:
+        """Inventory for recipe matching. Returns
+        {available: bool, reason?: str, items: [{name,...}]}.
+
+        `available` is False (with a reason) when Edibl is not configured or
+        unreachable, so callers can tell the user to connect Edibl instead of
+        silently ranking against an empty inventory.
+        """
+        if not self.configured:
+            return {"available": False, "items": [],
+                    "reason": "Edibl is not configured. Inventory-aware features "
+                              "need a companion Edibl instance (set MYMEAL_EDIBL_URL)."}
+        stock = self.get_stock()
+        # Gate on `ok`, not `reachable`: a 401 (bad token) or 500 is reachable
+        # but did NOT give us inventory, so the feature is unavailable — never
+        # rank against a falsely-empty stock and claim Edibl is fine.
+        if not stock.get("ok"):
+            if stock.get("reachable"):
+                reason = (f"Edibl responded with an error ({stock.get('error')}). "
+                          "Check MYMEAL_EDIBL_API_TOKEN and that Edibl is healthy.")
+            else:
+                reason = f"Edibl is configured but unreachable: {stock.get('error')}"
+            return {"available": False, "items": [], "reason": reason}
+        return {"available": True, "items": stock["items"]}
+
     def get_stock(self) -> dict:
         """Read Edibl's current stock, normalised to myMeal's pantry shape:
         {name, quantity, unit}. Returns {configured, reachable, items}."""
         res = self._get("/api/v1/stock")
-        if not res.get("reachable"):
-            return {**res, "items": []}
+        if not res.get("ok"):
+            # Reachable-but-errored (401/500) and unreachable both mean "no
+            # usable stock". Carry ok/reachable/error through so callers can
+            # tell the user which it was.
+            return {"ok": False, "configured": self.configured,
+                    "reachable": res.get("reachable", False),
+                    "error": res.get("error"), "items": []}
         raw = (res.get("data") or {}).get("items", [])
         items = []
         for row in raw:
@@ -118,4 +153,4 @@ class EdiblClient:
                 "unit": row.get("unit"),
                 "expiresAt": row.get("expiryDate") or row.get("expiresAt"),
             })
-        return {"configured": True, "reachable": True, "items": items}
+        return {"ok": True, "configured": True, "reachable": True, "items": items}

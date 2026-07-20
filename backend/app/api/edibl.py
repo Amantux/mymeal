@@ -38,8 +38,9 @@ def stock():
     result = EdiblClient.from_settings().get_stock()
     if not result.get("configured"):
         return jsonify({"configured": False, "items": []})
-    if not result.get("reachable"):
-        return jsonify({"configured": True, "reachable": False,
+    # `ok`, not `reachable`: a 401/500 answered but gave no usable stock.
+    if not result.get("ok"):
+        return jsonify({"configured": True, "reachable": result.get("reachable", False),
                         "error": result.get("error"), "items": []}), 502
     return jsonify(result)
 
@@ -72,7 +73,8 @@ def push_plan():
         return jsonify({"pushed": 0, "reason": "no planned ingredients in window"})
 
     result = client.push_plan(items, source="mymeal")
-    if not result.get("reachable"):
-        return jsonify({"configured": True, "reachable": False,
+    # `ok`, not `reachable`: a 401/500 must not report a successful push.
+    if not result.get("ok"):
+        return jsonify({"configured": True, "reachable": result.get("reachable", False),
                         "error": result.get("error")}), 502
     return jsonify({"pushed": len(items), "edibl": result.get("data")})

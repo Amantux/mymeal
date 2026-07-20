@@ -15,7 +15,7 @@ whats_for_dinner:
 what_can_i_cook:
   name: What can I cook
   description: >-
-    Suggest recipes you can make now, ranked by what's in your pantry. Returns
+    Suggest recipes you can make now, ranked by what's on hand (via Edibl). Returns
     the ranked list plus a ready-to-speak sentence.
 
 add_to_shopping_list:

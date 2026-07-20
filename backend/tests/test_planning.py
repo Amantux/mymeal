@@ -1,4 +1,4 @@
-"""M3: meal planning, pantry, shopping lists, suggest, and AI plan."""
+"""M3: meal planning, shopping lists, suggest (Edibl-backed), and AI plan."""
 
 
 def _make_recipe(client, name, ingredients):
@@ -31,19 +31,6 @@ def test_mealplan_crud_and_range(auth_client):
     assert auth_client.delete(f"/api/v1/mealplans/{e['id']}").status_code == 204
 
 
-# --- Pantry --------------------------------------------------------------
-def test_pantry_crud(auth_client):
-    p = auth_client.post(
-        "/api/v1/pantry", json={"label": "Rice", "quantity": 2, "unit": "kg"}
-    ).get_json()
-    assert p["label"] == "Rice"
-    listing = auth_client.get("/api/v1/pantry").get_json()
-    assert listing["items"][0]["id"] == p["id"]
-    auth_client.put(f"/api/v1/pantry/{p['id']}", json={"quantity": 5})
-    assert (
-        auth_client.get("/api/v1/pantry").get_json()["items"][0]["quantity"] == 5
-    )
-    assert auth_client.delete(f"/api/v1/pantry/{p['id']}").status_code == 204
 
 
 # --- Shopping lists + consolidation --------------------------------------
@@ -81,18 +68,32 @@ def test_shopping_item_check_and_delete(auth_client):
     )
 
 
-# --- Suggest (pantry-aware) ---------------------------------------------
-def test_suggest_ranks_by_pantry_coverage(auth_client):
+# --- Suggest (inventory-aware, backed by Edibl) -------------------------
+def test_suggest_ranks_by_edibl_inventory_coverage(auth_client, monkeypatch):
+    """Inventory now comes from Edibl, not a local pantry. Stub the on-hand
+    inventory and confirm ranking still works end to end."""
+    from app.services.edibl import EdiblClient
+
     _make_recipe(auth_client, "Salad", ["lettuce", "tomato"])
     _make_recipe(auth_client, "Steak", ["beef", "salt", "pepper"])
-    auth_client.post("/api/v1/pantry", json={"label": "lettuce"})
-    auth_client.post("/api/v1/pantry", json={"label": "tomato"})
+    monkeypatch.setattr(EdiblClient, "on_hand", lambda self: {
+        "available": True, "items": [{"name": "lettuce"}, {"name": "tomato"}]})
 
-    res = auth_client.post("/api/v1/ai/suggest", json={}).get_json()["suggestions"]
-    # Salad is fully covered → ranked first with coverage 1.0
-    assert res[0]["name"] == "Salad"
-    assert res[0]["coverage"] == 1.0
-    assert res[0]["missingCount"] == 0
+    body = auth_client.post("/api/v1/ai/suggest", json={}).get_json()
+    assert body["ediblAvailable"] is True
+    res = body["suggestions"]
+    assert res[0]["name"] == "Salad"       # fully covered -> first
+    assert res[0]["coverage"] == 1.0 and res[0]["missingCount"] == 0
+
+
+def test_suggest_reports_unavailable_without_edibl(auth_client):
+    """Standalone, no Edibl: the feature is cleanly unavailable, not a 500 and
+    not a meaningless ranking against nothing."""
+    _make_recipe(auth_client, "Salad", ["lettuce"])
+    body = auth_client.post("/api/v1/ai/suggest", json={}).get_json()
+    assert body["ediblAvailable"] is False
+    assert body["suggestions"] == []
+    assert "Edibl" in body["message"]
 
 
 # --- AI plan (fake provider) --------------------------------------------
@@ -182,10 +183,6 @@ def test_write_endpoints_coerce_bad_numbers(auth_client):
     """Non-numeric servings/quantity must not 500 on the M3 write endpoints."""
     assert (
         auth_client.post("/api/v1/mealplans", json={"servings": "lots"}).status_code
-        == 201
-    )
-    assert (
-        auth_client.post("/api/v1/pantry", json={"label": "x", "quantity": "abc"}).status_code
         == 201
     )
     sl = auth_client.post("/api/v1/shopping-lists", json={}).get_json()

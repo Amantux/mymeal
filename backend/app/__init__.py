@@ -176,6 +176,19 @@ def _migrate(app):
                         text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
                     )
 
+    # DESTRUCTIVE, one-way: myMeal no longer owns a pantry — inventory is owned
+    # by the companion Edibl app. Drop the legacy table if an older install has
+    # it. Explicitly requested; the data is superseded by Edibl. Scoped to this
+    # one table by name so nothing else can be affected, and idempotent
+    # (DROP ... IF EXISTS) so it is a no-op on new databases and on re-runs.
+    if inspector.has_table("pantry_items"):
+        with db.engine.begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS pantry_items"))
+        logger.warning(
+            "Dropped the legacy 'pantry_items' table: myMeal's pantry moved to "
+            "the Edibl integration. Any rows it held are gone."
+        )
+
 
 def _register_blueprints(app):
     from .api.users import bp as users_bp
@@ -188,7 +201,6 @@ def _register_blueprints(app):
     from .api.categories import bp as categories_bp
     from .api.tags import bp as tags_bp
     from .api.mealplans import bp as mealplans_bp
-    from .api.pantry import bp as pantry_bp
     from .api.shopping_lists import bp as shopping_lists_bp
     from .api.chat import bp as chat_bp
     from .api.ha import bp as ha_bp
@@ -207,7 +219,6 @@ def _register_blueprints(app):
         categories_bp,
         tags_bp,
         mealplans_bp,
-        pantry_bp,
         shopping_lists_bp,
         chat_bp,
         ha_bp,

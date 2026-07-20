@@ -6,7 +6,7 @@ from .base import IDMixin, TimestampMixin
 
 
 class Group(IDMixin, TimestampMixin, db.Model):
-    """A household. Every recipe, plan, and pantry item belongs to one group."""
+    """A household. Every recipe, plan, and shopping list belongs to one group."""
 
     __tablename__ = "groups"
 
@@ -24,9 +24,6 @@ class Group(IDMixin, TimestampMixin, db.Model):
     tags = relationship("Tag", back_populates="group", cascade="all, delete-orphan")
     mealplan_entries = relationship(
         "MealPlanEntry", back_populates="group", cascade="all, delete-orphan"
-    )
-    pantry_items = relationship(
-        "PantryItem", back_populates="group", cascade="all, delete-orphan"
     )
     shopping_lists = relationship(
         "ShoppingList", back_populates="group", cascade="all, delete-orphan"

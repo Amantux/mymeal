@@ -5,12 +5,10 @@ def test_ha_summary_shape(auth_client):
     r = auth_client.get("/api/v1/recipes", json={})  # ensure group exists
     assert r.status_code == 200
     auth_client.post("/api/v1/recipes", json={"name": "Soup"})
-    auth_client.post("/api/v1/pantry", json={"label": "rice"})
 
     s = auth_client.get("/api/v1/ha/summary").get_json()
     assert s["health"] is True
     assert s["totals"]["recipes"] == 1
-    assert s["totals"]["pantryItems"] == 1
     assert "todaysMeals" in s and "weekPlan" in s
 
 

@@ -6,7 +6,6 @@ import Recipes from './views/Recipes.vue'
 import RecipeDetail from './views/RecipeDetail.vue'
 import RecipeImport from './views/RecipeImport.vue'
 import MealPlan from './views/MealPlan.vue'
-import Pantry from './views/Pantry.vue'
 import ShoppingList from './views/ShoppingList.vue'
 import Chat from './views/Chat.vue'
 import Settings from './views/Settings.vue'
@@ -19,7 +18,7 @@ const routes = [
   { path: '/recipes/:id', component: RecipeDetail },
   { path: '/import', component: RecipeImport },
   { path: '/plan', component: MealPlan },
-  { path: '/pantry', component: Pantry },
+  { path: '/pantry', redirect: '/' },  // pantry removed; inventory is owned by Edibl
   { path: '/shopping', component: ShoppingList },
   { path: '/chat', component: Chat },
   { path: '/settings', component: Settings },

@@ -32,7 +32,7 @@
           "update_interval": "Poll interval (seconds)"
         },
         "data_description": {
-          "update_interval": "How often to fetch meal-plan and pantry stats. Minimum 30 s, maximum 3600 s."
+          "update_interval": "How often to fetch meal-plan and shopping stats. Minimum 30 s, maximum 3600 s."
         }
       }
     }

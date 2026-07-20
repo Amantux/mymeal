@@ -115,18 +115,6 @@ def mealplan_entry_out(e):
     }
 
 
-def pantry_item_out(p):
-    return {
-        "id": p.id,
-        "label": p.label,
-        "quantity": p.quantity,
-        "unit": p.unit,
-        "location": p.location,
-        "expiresAt": iso(p.expires_at),
-        "foodId": p.food_id,
-        "food": food_out(p.food) if p.food else None,
-    }
-
 
 def shopping_item_out(i):
     return {

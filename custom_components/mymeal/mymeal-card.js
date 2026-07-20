@@ -29,7 +29,6 @@ class MyMealCard extends HTMLElement {
     const today = this._find('todays_meals');
     const week = this._find('meals_planned_this_week');
     const shopping = this._find('shopping_list_items');
-    const pantry = this._find('pantry_expiring');
 
     const meals = (today && today.attributes.meals) || [];
     const mealHtml = meals.length
@@ -52,7 +51,6 @@ class MyMealCard extends HTMLElement {
           <div class="stats">
             ${stat(week, 'This week')}
             ${stat(shopping, 'To buy')}
-            ${stat(pantry, 'Expiring')}
           </div>
         </div>
         <style>
