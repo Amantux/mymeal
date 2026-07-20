@@ -5,8 +5,13 @@ services:
     ports:
       - "7850:7850"
     environment:
-      # Set a strong secret in production (>= 32 chars).
-      MYMEAL_SECRET_KEY: "please-change-me-to-a-long-random-string"
+      # MYMEAL_SECRET_KEY is intentionally NOT set here. Left unset, myMeal
+      # generates a strong key once and persists it to /data/.secret_key, so
+      # restarts do not log everyone out. Set it explicitly only if you need the
+      # same key across several instances — placeholder values are rejected.
+      #   MYMEAL_SECRET_KEY: "<32+ random chars>"
+      # Or, better, use a Docker secret:
+      #   MYMEAL_SECRET_KEY_FILE: /run/secrets/mymeal_secret
       # Set to "true" when running behind Home Assistant ingress / a trusted proxy.
       MYMEAL_DISABLE_AUTH: "false"
       MYMEAL_ALLOW_REGISTRATION: "true"
@@ -19,6 +24,16 @@ services:
     volumes:
       - mymeal-data:/data
     restart: unless-stopped
+    # Readiness, not liveness: this reports NOT ready (503) when the database or
+    # storage is unusable, so an orchestrator stops sending traffic. An
+    # unreachable AI provider deliberately does not affect it.
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:7850/api/v1/health/ready',timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
 volumes:
   mymeal-data:

@@ -4,23 +4,140 @@ A self-hosted recipe manager, AI meal planner, and cooking assistant. Ships an
 optional-auth JSON API under ``/api/v1`` and serves the built Vue SPA. Designed
 to run standalone or as a Home Assistant add-on.
 """
+import logging
 import os
+from datetime import timedelta
 
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
 
-from .config import Config
 from .extensions import db
+from .settings import FIELDS_BY_NAME, ensure_secret_key, load_settings
+
+logger = logging.getLogger(__name__)
 
 
-def create_app(config_object=Config):
+def _settings_from(config_object):
+    """Resolve settings for this app instance.
+
+    ``config_object`` keeps the historical ``create_app(TestConfig)`` contract
+    working: any attribute on it that names a known setting becomes an explicit
+    override, which sits at the top of the precedence chain. Each call resolves
+    independently, so one process can build many differently-configured apps —
+    previously impossible, because ``Config`` captured ``os.environ`` at import
+    time and the first import won forever.
+    """
+    if config_object is None:
+        return load_settings()
+
+    overrides = {}
+    for name in FIELDS_BY_NAME:
+        if hasattr(config_object, name):
+            overrides[name] = getattr(config_object, name)
+    # Historical spellings that do not map 1:1 onto a field name.
+    if hasattr(config_object, "MAX_UPLOAD_BYTES") and "MAX_UPLOAD_MB" not in overrides:
+        overrides["MAX_UPLOAD_MB"] = max(1, int(config_object.MAX_UPLOAD_BYTES) // (1024 * 1024))
+    # A test config is by definition not a production deployment; do not demand
+    # a 32-character signing secret from a fixture.
+    return load_settings(overrides=overrides, ha_options={}, strict_secret=False)
+
+
+def _prepare_storage(settings):
+    """Create the data directories deliberately, with actionable errors.
+
+    Directory creation used to happen as a side effect of reading a config
+    property, which meant merely importing the wrong module could scatter a
+    ``data/`` directory into whatever the current working directory happened
+    to be.
+    """
+    for path in (settings.data_dir, settings.images_dir):
+        try:
+            os.makedirs(path, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Cannot create data directory {path!r}: {exc}. "
+                f"Set MYMEAL_DATA_DIR to a writable location, or fix ownership "
+                f"of the mounted volume."
+            ) from exc
+    if not os.access(settings.data_dir, os.W_OK):
+        raise RuntimeError(
+            f"Data directory {settings.data_dir!r} is not writable by this process "
+            f"(uid {os.getuid()}). myMeal stores its database and uploaded images "
+            f"here, so it cannot start."
+        )
+
+
+def _log_startup(settings):
+    """One structured startup block. Deliberately contains no secret values.
+
+    Everything here is something an operator needs to confirm they got the
+    deployment they intended — the questions that otherwise get answered by
+    reading source code.
+    """
+    logging.basicConfig(
+        level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    db_kind = "sqlite" if settings.sqlalchemy_uri.startswith("sqlite") else \
+        settings.sqlalchemy_uri.split("://", 1)[0]
+    logger.info(
+        "myMeal starting | mode=%s auth=%s registration=%s db=%s data_dir=%s "
+        "ai=%s mcp=%s workers=%s",
+        "home-assistant" if settings.sources.get("DISABLE_AUTH") == "ha_option" else "standalone",
+        "disabled" if settings.DISABLE_AUTH else "jwt",
+        "open" if settings.ALLOW_REGISTRATION else "closed",
+        db_kind,
+        settings.data_dir,
+        settings.AI_PROVIDER or "disabled",
+        f"port {settings.MCP_PORT}" if settings.MCP_ENABLED else "disabled",
+        settings.WORKERS,
+    )
+    for warning in settings.warnings:
+        logger.warning("config: %s", warning)
+
+
+def create_app(config_object=None):
+    settings = _settings_from(config_object)
+    _prepare_storage(settings)
+
+    secret, generated = ensure_secret_key(settings.values, settings.data_dir)
+    if generated:
+        logger.warning(
+            "No MYMEAL_SECRET_KEY was supplied; generated one and persisted it to "
+            "%s so sessions survive restarts. Back this file up with your data.",
+            os.path.join(settings.data_dir, ".secret_key"),
+        )
+
     app = Flask(__name__, static_folder=None)
-    app.config.from_object(config_object)
-    app.config["SQLALCHEMY_DATABASE_URI"] = config_object.sqlalchemy_uri()
-    app.config["images_dir"] = config_object.images_dir
-    app.config["MAX_CONTENT_LENGTH"] = config_object.MAX_UPLOAD_BYTES
+    app.config["SETTINGS"] = settings
+    app.config["SECRET_KEY"] = secret
+    app.config["JWT_EXPIRES"] = timedelta(hours=settings.JWT_HOURS)
+    app.config["DISABLE_AUTH"] = settings.DISABLE_AUTH
+    app.config["ALLOW_REGISTRATION"] = settings.ALLOW_REGISTRATION
+    app.config["SQLALCHEMY_DATABASE_URI"] = settings.sqlalchemy_uri
+    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    app.config["images_dir"] = lambda: settings.images_dir
+    app.config["MAX_CONTENT_LENGTH"] = settings.MAX_UPLOAD_MB * 1024 * 1024
+    app.config["JSON_SORT_KEYS"] = False
+    app.config["DEBUG"] = settings.DEBUG
 
-    CORS(app, supports_credentials=True)
+    # Trust X-Forwarded-* only for the number of proxies the operator declares.
+    # Accepting them from arbitrary clients lets a caller forge their apparent
+    # scheme and address, so the default (0) trusts nothing.
+    if settings.TRUSTED_PROXY_COUNT:
+        n = settings.TRUSTED_PROXY_COUNT
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=n, x_proto=n, x_host=n)
+
+    # Same-origin by default: the SPA is served by this very app, so no
+    # cross-origin access is required. Previously this was
+    # ``CORS(app, supports_credentials=True)`` with no origin list, which
+    # reflects ANY origin — allowing any website to make credentialed calls.
+    if settings.CORS_ORIGINS:
+        CORS(app, resources={r"/api/*": {"origins": list(settings.CORS_ORIGINS)}},
+             supports_credentials=True)
+
+    _log_startup(settings)
     db.init_app(app)
 
     from . import models  # noqa: F401  (register models)
@@ -113,15 +230,22 @@ def _register_errors(app):
 
 
 # --- SPA serving ---------------------------------------------------------
-_FRONTEND_DIST = os.environ.get(
-    "MYMEAL_FRONTEND_DIST",
-    os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist")
-    ),
+_DEFAULT_FRONTEND_DIST = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist")
 )
 
 
+def _frontend_dist():
+    """Resolved per-request from this app's settings rather than captured at
+    import time, so two apps in one process can serve different builds."""
+    from flask import current_app
+    settings = current_app.config.get("SETTINGS")
+    configured = getattr(settings, "FRONTEND_DIST", "") if settings else ""
+    return configured or _DEFAULT_FRONTEND_DIST
+
+
 def _serve_spa(path):
+    _FRONTEND_DIST = _frontend_dist()
     full = os.path.join(_FRONTEND_DIST, path)
     if path and os.path.isfile(full):
         return send_from_directory(_FRONTEND_DIST, path)

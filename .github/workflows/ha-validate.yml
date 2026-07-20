@@ -232,3 +232,86 @@ jobs:
               sys.exit(1)
           print(f"HACS metadata OK: {man['name']} {man['version']} ({man['domain']})")
           PY
+
+  config:
+    name: Configuration contract
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read          # read-only: this job never publishes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend deps
+        run: pip install --quiet -r backend/requirements.txt pytest
+
+      - name: Settings + health + precedence tests
+        run: cd backend && python3 -m pytest tests/test_settings.py -q
+
+      - name: Generated config docs are in sync with the code
+        # .env.example and docs/configuration.md are generated from the same
+        # inventory the app validates against, so they cannot silently drift.
+        run: python3 tools/gen_config_docs.py --check
+
+      - name: Every setting is documented, and every documented setting exists
+        run: |
+          cd backend && python3 - <<'PY'
+          import re, sys
+          sys.path.insert(0, ".")
+          from app.settings import FIELDS
+          declared = {f.env_var for f in FIELDS}
+          ref = open("../docs/configuration.md").read()
+          example = open("../.env.example").read()
+          missing_doc = sorted(v for v in declared if v not in ref)
+          missing_env = sorted(v for v in declared if v not in example)
+          # Anything MYMEAL_* referenced in code but absent from the inventory
+          # is a setting nobody documented and nobody validates.
+          import subprocess
+          used = set(subprocess.run(
+              ["grep", "-rhoE", "MYMEAL_[A-Z_]+", "app", "mcp_server.py",
+               "ha_discovery.py", "run.py"],
+              capture_output=True, text=True).stdout.split())
+          used = {u for u in used if not u.endswith("_FILE")}
+          undeclared = sorted(used - declared)
+          problems = []
+          if missing_doc:  problems.append(f"undocumented in configuration.md: {missing_doc}")
+          if missing_env:  problems.append(f"missing from .env.example: {missing_env}")
+          if undeclared:   problems.append(f"read in code but not declared in settings.FIELDS: {undeclared}")
+          if problems:
+              print("Configuration inventory is incomplete:")
+              for p in problems: print(f"  - {p}")
+              sys.exit(1)
+          print(f"Inventory complete: {len(declared)} settings, all documented.")
+          PY
+
+      - name: Invalid configuration is rejected (not silently accepted)
+        run: |
+          cd backend
+          set +e
+          MYMEAL_DISABLE_AUTH=maybe python3 -m app.config_check --ha-options /nonexistent >/dev/null 2>&1
+          [ $? -eq 1 ] || { echo "invalid boolean was ACCEPTED"; exit 1; }
+          MYMEAL_PORT=70000 python3 -m app.config_check --ha-options /nonexistent >/dev/null 2>&1
+          [ $? -eq 1 ] || { echo "out-of-range port was ACCEPTED"; exit 1; }
+          MYMEAL_SECRET_KEY=change-me-in-production python3 -m app.config_check --ha-options /nonexistent >/dev/null 2>&1
+          [ $? -eq 1 ] || { echo "placeholder secret was ACCEPTED"; exit 1; }
+          echo "invalid configurations correctly rejected"
+
+      - name: A minimal safe configuration validates
+        run: cd backend && python3 -m app.config_check --ha-options /nonexistent
+
+      - name: config_check never prints secrets
+        run: |
+          cd backend
+          out=$(MYMEAL_SECRET_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+                MYMEAL_OPENAI_API_KEY=sk-canary-must-not-appear \
+                python3 -m app.config_check --json --ha-options /nonexistent)
+          echo "$out" | grep -q "sk-canary-must-not-appear" && { echo "SECRET LEAKED"; exit 1; }
+          echo "$out" | grep -q "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" && { echo "SECRET LEAKED"; exit 1; }
+          echo "no secrets in config_check output"
+
+      - name: Entrypoint shell syntax
+        run: sh -n docker-entrypoint.sh
+
+      - name: Docker Compose config is valid
+        run: docker compose config -q
