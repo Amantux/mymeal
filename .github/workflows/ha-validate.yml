@@ -182,6 +182,14 @@ jobs:
           if not repo.get("url"):
               errors.append("repository.yaml: missing url")
 
+          # Every documentation URL must point at the repo that actually hosts
+          # this code, or HACS sends users somewhere that 404s.
+          expected = repo["url"].rstrip("/")
+          for label, url in (("documentation", man["documentation"]),
+                             ("issue_tracker", man["issue_tracker"])):
+              if not url.startswith(expected):
+                  errors.append(f"manifest.json {label} ({url}) does not point at {expected}")
+
           # Home Assistant renders these two files as the add-on's Documentation
           # and Changelog tabs. Missing = the add-on ships with empty tabs.
           import os as _os
@@ -216,14 +224,6 @@ jobs:
           o, _, r = owner_repo.partition("/")
           if f"owner={o}&repository={r}" not in readme:
               errors.append(f"README.md: HACS button does not point at {owner_repo}")
-
-          # Every documentation URL must point at the repo that actually hosts
-          # this code, or HACS sends users somewhere that 404s.
-          expected = repo["url"].rstrip("/")
-          for label, url in (("documentation", man["documentation"]),
-                             ("issue_tracker", man["issue_tracker"])):
-              if not url.startswith(expected):
-                  errors.append(f"manifest.json {label} ({url}) does not point at {expected}")
 
           if errors:
               print("HACS metadata INVALID:")
