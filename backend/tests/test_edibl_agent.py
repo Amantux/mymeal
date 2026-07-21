@@ -49,7 +49,7 @@ def test_edibl_tools_present_when_connected(monkeypatch):
     assert {"edibl_add_stock", "edibl_do_i_have", "edibl_record_consumption"} <= names
 
 
-def test_edibl_add_stock_returns_lot_and_undoless_chip(monkeypatch):
+def test_edibl_add_stock_chip_is_undoable_via_proxy(monkeypatch):
     _use_stub(monkeypatch)
     res = agent.execute_tool("gid", "edibl_add_stock",
                              {"name": "Milk", "quantity": 2, "unit": "L"})
@@ -57,6 +57,21 @@ def test_edibl_add_stock_returns_lot_and_undoless_chip(monkeypatch):
     chip = actions_from_trace(
         [{"tool": "edibl_add_stock", "args": {}, "result": res}])[0]
     assert chip["kind"] == "stock" and "Milk" in chip["label"]
+    # The chip carries a server-reversible undo descriptor (the browser can't
+    # reach Edibl; POST /ai/chat/undo does the delete).
+    assert chip["undo"] == {"kind": "edibl_stock", "id": "lot-1"}
+
+
+def test_edibl_add_stock_chip_has_no_undo_without_lot_id(monkeypatch):
+    """If Edibl didn't return a lot id, no undo is offered (nothing to reverse)."""
+    class _NoId(_StubClient):
+        def add_stock(self, name, **kw):
+            return {"ok": True, "data": {}}
+    monkeypatch.setattr(agent.EdiblClient, "from_settings",
+                        classmethod(lambda cls, *a, **k: _NoId()))
+    res = agent.execute_tool("gid", "edibl_add_stock", {"name": "Milk"})
+    chip = actions_from_trace(
+        [{"tool": "edibl_add_stock", "args": {}, "result": res}])[0]
     assert "undo" not in chip
 
 
@@ -81,3 +96,68 @@ def test_edibl_expiring_handles_bare_list(monkeypatch):
     _use_stub(monkeypatch)
     res = agent.execute_tool("gid", "edibl_expiring_soon", {"days": 3})
     assert res["items"] and res["items"][0]["name"] == "Yogurt"
+
+
+# --- the server undo-proxy (browser can't reach Edibl, so the backend does) ---
+def _make_app(tmp_path, name):
+    from app import create_app
+    return create_app(type("C", (), {
+        "DATA_DIR": str(tmp_path), "DATABASE_URL": f"sqlite:///{tmp_path/name}",
+        "MCP_ENABLED": False, "DISABLE_AUTH": True}))
+
+
+def test_undo_endpoint_deletes_edibl_lot(monkeypatch, tmp_path):
+    from app.services import edibl as edibl_mod
+    deleted = {}
+
+    class _Stub:
+        configured = True
+
+        def delete_stock(self, lot_id):
+            deleted["id"] = lot_id
+            return {"ok": True}
+
+    monkeypatch.setattr(edibl_mod.EdiblClient, "from_settings",
+                        classmethod(lambda cls, *a, **k: _Stub()))
+    c = _make_app(tmp_path, "u.db").test_client()
+    r = c.post("/api/v1/ai/chat/undo", json={"kind": "edibl_stock", "id": "lot-7"})
+    assert r.status_code == 200 and r.get_json()["undone"] is True
+    assert deleted["id"] == "lot-7"
+
+
+def test_undo_endpoint_treats_404_as_undone(monkeypatch, tmp_path):
+    from app.services import edibl as edibl_mod
+
+    class _Gone:
+        configured = True
+
+        def delete_stock(self, lot_id):
+            return {"ok": False, "reachable": True, "status": 404, "error": "HTTP 404"}
+
+    monkeypatch.setattr(edibl_mod.EdiblClient, "from_settings",
+                        classmethod(lambda cls, *a, **k: _Gone()))
+    c = _make_app(tmp_path, "u404.db").test_client()
+    r = c.post("/api/v1/ai/chat/undo", json={"kind": "edibl_stock", "id": "x"})
+    assert r.status_code == 200 and r.get_json()["undone"] is True
+
+
+def test_undo_endpoint_502_when_edibl_unreachable(monkeypatch, tmp_path):
+    from app.services import edibl as edibl_mod
+
+    class _Down:
+        configured = True
+
+        def delete_stock(self, lot_id):
+            return {"ok": False, "reachable": False, "error": "timeout"}
+
+    monkeypatch.setattr(edibl_mod.EdiblClient, "from_settings",
+                        classmethod(lambda cls, *a, **k: _Down()))
+    c = _make_app(tmp_path, "udown.db").test_client()
+    r = c.post("/api/v1/ai/chat/undo", json={"kind": "edibl_stock", "id": "x"})
+    assert r.status_code == 502 and r.get_json()["undone"] is False
+
+
+def test_undo_endpoint_rejects_unknown_kind(tmp_path):
+    c = _make_app(tmp_path, "ubad.db").test_client()
+    r = c.post("/api/v1/ai/chat/undo", json={"kind": "nope", "id": "x"})
+    assert r.status_code == 400

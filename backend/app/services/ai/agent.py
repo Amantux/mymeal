@@ -204,12 +204,16 @@ _ACTION_FORMATTERS = {
             if r.get("itemId") else {})}
         if r.get("added") else None
     ),
-    # Cross-app (Edibl) mutations — surfaced, but no undo chip: myMeal's undo
-    # runs in the browser and can't reach Edibl. Undo these from Edibl's chat.
+    # Cross-app (Edibl) mutations. `edibl_add_stock` is undoable via the server
+    # undo-proxy (POST /ai/chat/undo -> Edibl DELETE), because the browser can't
+    # reach Edibl. Consumption/shopping stay non-undoable here (reverse those
+    # from Edibl's own chat).
     "edibl_add_stock": lambda r: (
         {"label": f'Added {r.get("quantity", 1)} {r.get("unit", "")} '
                   f'{r["added"]} to the Edibl pantry'.replace("  ", " "),
-         "kind": "stock", "icon": "🥫"}
+         "kind": "stock", "icon": "🥫",
+         **({"undo": {"kind": "edibl_stock", "id": r["lotId"]}}
+            if r.get("lotId") else {})}
         if r.get("added") else None
     ),
     "edibl_record_consumption": lambda r: (

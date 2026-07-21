@@ -9,8 +9,11 @@ import { api } from '../api'
 // Maps a structured undo descriptor (from the server) to a known, safe API
 // call. The server never dictates an arbitrary method/path — it names a `kind`
 // and an id, and the reversal lives here, on the client, per kind.
+// Cross-app kinds (e.g. `edibl_stock`) can't be reversed from the browser — it
+// can't reach the sibling app — so they go through the server undo-proxy.
 const UNDO = {
   shopping_item: (id) => api.del(`/shopping-lists/items/${id}`),
+  edibl_stock: (id) => api.post('/ai/chat/undo', { kind: 'edibl_stock', id }),
 }
 
 const open = ref(false)

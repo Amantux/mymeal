@@ -7,6 +7,12 @@ whether to hit Update — not for developers reading a diff.
 Patch versions are minted automatically on every push to `main`; entries below
 without notes are build-only republishes with no user-visible change.
 
+## 1.1.1
+
+- **Undo pantry adds from myMeal's chat.** When myMeal adds stock to Edibl, the
+  action chip now has a one-tap **Undo** (routed through a server proxy, since
+  the browser can't reach Edibl directly).
+
 ## 1.1.0
 
 - **One assistant for the whole kitchen.** When Edibl (the food-inventory app)

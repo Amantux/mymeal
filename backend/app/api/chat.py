@@ -51,6 +51,38 @@ def delete_session(session_id):
     return "", 204
 
 
+def _undo_edibl_stock(obj_id):
+    """Reverse an `edibl_add_stock` chat action by deleting the lot in Edibl.
+    A 404 means the lot is already gone, which we treat as successfully undone."""
+    from ..services.edibl import EdiblClient
+    res = EdiblClient.from_settings().delete_stock(str(obj_id))
+    if res.get("ok") or res.get("status") == 404:
+        return True, None
+    return False, "Couldn't reach Edibl to undo — check the Edibl connection."
+
+
+# Undo kinds the SERVER must reverse because the browser can't reach the target
+# (a sibling app on the internal network). Client-reversible kinds like
+# `shopping_item` are handled in the frontend and never hit this endpoint.
+# Whitelisted — the client names a kind + id, never a method/path.
+_SERVER_UNDO = {"edibl_stock": _undo_edibl_stock}
+
+
+@bp.post("/ai/chat/undo")
+@login_required
+def undo_action():
+    """Reverse a cross-app chat action the browser cannot reverse itself.
+    Body: {kind, id}. Only whitelisted kinds are accepted."""
+    data = request.get_json(force=True) or {}
+    handler = _SERVER_UNDO.get(data.get("kind"))
+    if not handler:
+        return jsonify({"error": f"unknown undo kind {data.get('kind')}"}), 400
+    ok, err = handler(data.get("id"))
+    if ok:
+        return jsonify({"undone": True})
+    return jsonify({"undone": False, "error": err}), 502
+
+
 def _next_position(session) -> int:
     return (max((m.position for m in session.messages), default=-1)) + 1
 
