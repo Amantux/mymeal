@@ -91,6 +91,59 @@ def _supervisor_addon_hosts() -> list[str]:
     return hosts
 
 
+def _supervisor_addons() -> list[dict]:
+    """Raw add-on list from the Supervisor (empty outside HA / on error)."""
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    if not token:
+        return []
+    try:
+        r = httpx.get("http://supervisor/addons",
+                      headers={"Authorization": f"Bearer {token}"}, timeout=PROBE_TIMEOUT)
+        r.raise_for_status()
+        return (r.json().get("data") or {}).get("addons") or []
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("supervisor add-on query failed: %s", exc)
+        return []
+
+
+def discover_edibl() -> dict | None:
+    """Locate a companion Edibl add-on/instance.
+
+    Prefers the Supervisor add-on list (so it works with no manual URL); the
+    Edibl add-on is reachable from myMeal by its container hostname on the
+    internal network. Falls back to probing the usual addresses. Confirms a
+    candidate by hitting Edibl's health endpoint. Returns
+    {"url": ..., "via": "supervisor"|"probe"} or None. Never raises.
+    """
+    candidates: list[tuple[str, str]] = []
+    for addon in _supervisor_addons():
+        slug = str(addon.get("slug", ""))
+        name = str(addon.get("name", ""))
+        if "edibl" not in f"{slug} {name}".lower():
+            continue
+        hostname = addon.get("hostname") or slug.replace("_", "-")
+        # Edibl's app port (its add-on ingress port); default 8099 per its config.
+        for port in (8099, 8080, 7860):
+            candidates.append((f"http://{hostname}:{port}", "supervisor"))
+        if addon.get("ip_address"):
+            candidates.append((f"http://{addon['ip_address']}:8099", "supervisor"))
+
+    for host in ("http://edibl:8099", "http://homeassistant.local:8099",
+                 "http://localhost:8099"):
+        candidates.append((host, "probe"))
+
+    for url, via in candidates:
+        try:
+            r = httpx.get(f"{url.rstrip('/')}/api/v1/misc/health", timeout=PROBE_TIMEOUT)
+            if r.status_code < 500:  # reachable (200, or 401/403 if it wants auth)
+                logger.info("Discovered Edibl at %s (via %s)", url, via)
+                return {"url": url.rstrip("/"), "via": via,
+                        "needsAuth": r.status_code in (401, 403)}
+        except Exception:  # noqa: BLE001 - absence is normal
+            continue
+    return None
+
+
 def discover_ollama() -> dict | None:
     """Locate a reachable Ollama server.
 

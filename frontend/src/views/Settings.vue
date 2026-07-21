@@ -16,6 +16,12 @@ const discovering = ref(false)
 const form = reactive({ provider: '', baseUrl: '', model: '', apiKey: '' })
 const apiKeySet = ref(false)
 
+// --- Edibl (companion food-inventory app) connection ---
+const edibl = reactive({ url: '', token: '' })
+const ediblTokenSet = ref(false)
+const ediblStatus = ref(null)        // {configured, reachable} after a test
+const ediblBusy = ref(false)
+
 const labels = { '': 'Disabled', claude: 'Claude (Anthropic)', openai: 'OpenAI', ollama: 'Ollama (local)' }
 const needsKey = computed(() => form.provider === 'claude' || form.provider === 'openai')
 const needsHost = computed(() => form.provider === 'ollama')
@@ -46,6 +52,12 @@ async function load() {
     form.apiKey = ''
     apiKeySet.value = !!s.apiKeySet
     providers.value = p.providers
+    try {
+      const e = await api.get('/edibl/config')
+      edibl.url = e.url || ''
+      edibl.token = ''
+      ediblTokenSet.value = !!e.tokenSet
+    } catch (err) { /* edibl endpoints optional */ }
   } finally {
     loading.value = false
     await nextTick()               // let the watcher flush before re-arming it
@@ -97,6 +109,63 @@ async function clearKey() {
     ui.error(e.message || 'Could not clear key')
   } finally {
     saving.value = false
+  }
+}
+
+async function saveEdibl() {
+  ediblBusy.value = true
+  try {
+    const payload = { url: edibl.url }
+    if (edibl.token) payload.token = edibl.token
+    await api.put('/edibl/config', payload)
+    edibl.token = ''
+    ui.toast('Edibl connection saved')
+    await testEdibl()
+  } catch (e) {
+    ui.error(e.message || 'Could not save Edibl connection')
+  } finally {
+    ediblBusy.value = false
+  }
+}
+
+async function findEdibl() {
+  ediblBusy.value = true
+  try {
+    const res = await api.get('/edibl/discover')
+    if (res.found) {
+      edibl.url = res.url
+      ui.toast(`Found Edibl at ${res.url}`)
+    } else {
+      ui.error(res.hint || 'No Edibl found')
+    }
+  } finally {
+    ediblBusy.value = false
+  }
+}
+
+async function testEdibl() {
+  ediblBusy.value = true
+  try {
+    // Probe the typed URL WITHOUT persisting it — Test is a read action.
+    const q = edibl.url ? `?url=${encodeURIComponent(edibl.url)}` : ''
+    ediblStatus.value = await api.get(`/edibl/status${q}`)
+  } catch (e) {
+    ediblStatus.value = { configured: true, reachable: false, detail: e.message }
+  } finally {
+    ediblBusy.value = false
+  }
+}
+
+async function clearEdiblToken() {
+  ediblBusy.value = true
+  try {
+    const res = await api.put('/edibl/config', { clearToken: true })
+    ediblTokenSet.value = !!res.tokenSet   // from server truth (env token may remain)
+    ui.toast('Edibl token cleared')
+  } catch (e) {
+    ui.error(e.message || 'Could not clear token')
+  } finally {
+    ediblBusy.value = false
   }
 }
 
@@ -192,6 +261,49 @@ async function findOllama() {
       <div class="row" style="margin-top:8px">
         <button type="submit" :disabled="saving">{{ saving ? 'Saving…' : 'Save' }}</button>
       </div>
+    </form>
+  </div>
+
+  <div class="card" v-if="!loading">
+    <h2>Edibl — food inventory</h2>
+    <p class="muted">
+      Connect the companion <strong>Edibl</strong> app to power inventory-aware
+      cooking ("what can I cook") from your real, fresh stock. Running both as
+      Home Assistant add-ons? Click <em>Find Edibl</em> — no token needed.
+    </p>
+    <form class="ai-form" @submit.prevent="saveEdibl">
+      <label class="field">
+        <span class="lbl">Edibl URL</span>
+        <div class="row">
+          <input v-model="edibl.url" class="fill" placeholder="http://edibl:8099" />
+          <button type="button" class="secondary" :disabled="ediblBusy" @click="findEdibl">
+            {{ ediblBusy ? '…' : 'Find Edibl' }}
+          </button>
+        </div>
+      </label>
+      <label class="field">
+        <span class="lbl">API token <span class="muted">(only if Edibl requires auth)</span></span>
+        <input
+          v-model="edibl.token"
+          type="password"
+          class="fill"
+          :placeholder="ediblTokenSet ? '•••••••• (saved — leave blank to keep)' : 'Usually not needed behind HA ingress'"
+          autocomplete="off"
+        />
+        <span class="help">
+          <button v-if="ediblTokenSet" type="button" class="linkish" @click="clearEdiblToken">Clear saved token</button>
+        </span>
+      </label>
+      <div class="row" style="margin-top:8px">
+        <button type="submit" :disabled="ediblBusy">Save</button>
+        <button type="button" class="secondary" :disabled="ediblBusy || !edibl.url" @click="testEdibl">
+          Test connection
+        </button>
+      </div>
+      <p v-if="ediblStatus" class="help" :style="{ color: ediblStatus.reachable ? 'var(--success)' : 'var(--danger)' }">
+        {{ ediblStatus.reachable ? '✓ Connected to Edibl' : '✕ Not reachable' }}
+        <span v-if="ediblStatus.detail" class="muted"> — {{ ediblStatus.detail }}</span>
+      </p>
     </form>
   </div>
 

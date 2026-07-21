@@ -33,11 +33,22 @@ class EdiblClient:
 
     @classmethod
     def from_settings(cls, settings=None) -> "EdiblClient":
+        """Build from the effective config: this group's DB overrides (set in
+        the UI) merged onto the env / add-on defaults, so a connection set in
+        Home Assistant OR the UI is honored."""
         from .ai.settings_access import resolved
+        from .edibl_config import effective
 
         cfg = resolved(settings)
-        return cls(cfg.EDIBL_URL, cfg.EDIBL_API_TOKEN,
-                   timeout=float(cfg.HTTP_TIMEOUT_SECONDS))
+        gid = None
+        try:
+            from flask import g, has_request_context
+            gid = g.current_group.id if (has_request_context()
+                                         and getattr(g, "current_group", None)) else None
+        except Exception:  # noqa: BLE001
+            gid = None
+        eff = effective(cfg, gid)
+        return cls(eff["url"], eff["token"], timeout=float(cfg.HTTP_TIMEOUT_SECONDS))
 
     @property
     def configured(self) -> bool:

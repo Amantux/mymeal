@@ -76,6 +76,21 @@ Recipe import tries the page's embedded structured data **first** and only falls
 back to the AI when a site doesn't publish any — so most imports cost nothing
 even with a paid provider configured.
 
+## Connect Edibl (food inventory)
+
+If you also run the companion **Edibl** app, connecting it powers
+inventory-aware cooking — "what can I cook right now?" from your real, fresh
+stock.
+
+**Easiest path (both as Home Assistant add-ons):** open myMeal → **Settings →
+Edibl** → **Find Edibl**. myMeal asks the Supervisor for the Edibl add-on and
+fills in its address. Because both run behind ingress, **no token is needed** —
+click **Save** and you're connected. **Test connection** confirms it.
+
+Running Edibl standalone (with its own login)? Enter its URL and paste an Edibl
+API token (Edibl → its tokens screen). The token is stored on this server only
+and never shown again.
+
 ## Voice control with Assist
 
 The add-on exposes an MCP server on port `7851`. To let Assist cook with it:

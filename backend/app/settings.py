@@ -210,12 +210,14 @@ FIELDS: tuple[Field, ...] = (
 
     # --- Edibl (sibling food-inventory app) ---
     Field("EDIBL_URL", as_str, "",
-          "Base URL of a companion Edibl instance (e.g. http://edibl:8080). "
+          "Base URL of a companion Edibl instance (e.g. http://edibl:8099). "
           "Blank disables the integration. When set, myMeal can pull real stock "
-          "and push meal-plan ingredients."),
+          "and push meal-plan ingredients. Can also be set in the UI (remembered).",
+          ha_option="edibl_url"),
     Field("EDIBL_API_TOKEN", as_str, "",
           "API token myMeal presents to Edibl (Edibl tokens API). Sent as a "
-          "Bearer token.", secret=True, supports_file=True),
+          "Bearer token. Not needed when Edibl runs behind HA ingress with auth "
+          "disabled.", secret=True, supports_file=True, ha_option="edibl_token"),
 
     # --- MCP ---
     Field("MCP_ENABLED", parse_bool, True,
