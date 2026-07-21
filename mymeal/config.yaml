@@ -38,6 +38,7 @@ options:
   disable_auth: true
   allow_registration: false
   enable_mcp: true
+  mcp_server_token: ""
   ai_provider: ""
   ollama_host: ""
   ollama_model: ""
@@ -51,6 +52,9 @@ schema:
   disable_auth: bool
   allow_registration: bool
   enable_mcp: bool
+  # Token Home Assistant's MCP Client must present. Leave blank on a trusted
+  # network; set it before mapping the MCP port to the LAN.
+  mcp_server_token: "password?"
   ai_provider: "list(|claude|ollama|openai)?"
   # AI provider config can be set here OR in the app UI (the app remembers UI
   # changes and they override these). Keys use HA's masked password type.

@@ -93,6 +93,30 @@ class EdiblClient:
             f"{self.base_url}{path}", json=payload,
             headers=self._headers(), timeout=self.timeout))
 
+    def _put(self, path: str, payload: dict) -> dict:
+        return self._finish(lambda: httpx.put(
+            f"{self.base_url}{path}", json=payload,
+            headers=self._headers(), timeout=self.timeout))
+
+    def _delete(self, path: str) -> dict:
+        """DELETE returns 204 with no body, so don't run it through ``_finish``
+        (which parses JSON). Classified the same {ok, reachable, ...} way."""
+        if not self.configured:
+            return {"ok": False, "configured": False, "reachable": False}
+        try:
+            r = httpx.delete(f"{self.base_url}{path}",
+                             headers=self._headers(), timeout=self.timeout)
+            r.raise_for_status()
+            return {"ok": True, "configured": True, "reachable": True}
+        except httpx.HTTPStatusError as exc:
+            logger.warning("edibl DELETE -> HTTP %s", exc.response.status_code)
+            return {"ok": False, "configured": True, "reachable": True,
+                    "error": f"HTTP {exc.response.status_code}",
+                    "status": exc.response.status_code}
+        except httpx.HTTPError as exc:
+            logger.warning("edibl DELETE failed: %s", exc)
+            return {"ok": False, "configured": True, "reachable": False, "error": str(exc)}
+
     # -- operations --------------------------------------------------------
 
     def status(self) -> dict:
@@ -165,3 +189,69 @@ class EdiblClient:
                 "expiresAt": row.get("expiryDate") or row.get("expiresAt"),
             })
         return {"ok": True, "configured": True, "reachable": True, "items": items}
+
+    # -- management (only reached when the user has connected Edibl) --------
+
+    def have(self, ingredient: str) -> dict:
+        """Do we have an ingredient, how much, where? Wraps Edibl's /have."""
+        return self._get("/api/v1/have", {"ingredient": ingredient})
+
+    def expiring(self, days: int = 5) -> dict:
+        """Items expiring within N days (Edibl's /dashboard/expiring)."""
+        return self._get("/api/v1/dashboard/expiring", {"days": days})
+
+    def _location_id(self, location: str):
+        """Resolve a location NAME to its id (Edibl's POST/PUT want locationId)."""
+        if not location:
+            return None
+        res = self._get("/api/v1/locations")
+        if not res.get("ok"):
+            return None
+        for loc in (res.get("data") or []):
+            if (loc.get("name") or "").lower() == location.lower():
+                return loc.get("id")
+        return None
+
+    def find_lot(self, name: str) -> dict | None:
+        """Soonest-to-expire active lot whose product name contains `name`
+        (Edibl returns /stock soonest-expiry first). Mirrors edibl_mcp._find_lot."""
+        res = self._get("/api/v1/stock")
+        if not res.get("ok"):
+            return None
+        q = (name or "").lower()
+        for it in (res.get("data") or {}).get("items", []):
+            prod = it.get("product") or {}
+            if prod.get("name") and q in prod["name"].lower():
+                return it
+        return None
+
+    def add_stock(self, name: str, quantity: float = 1, unit: str = "count",
+                  category: str = "other", storage_method: str = "refrigerated",
+                  location: str = "", freshness: str = "", source: str = "") -> dict:
+        """Add a lot to Edibl. Returns the {ok, data} envelope (data is the lot,
+        with an id for undo). Expiry is auto-estimated server-side."""
+        body = {"productName": name, "quantity": quantity, "unit": unit,
+                "category": category, "storageMethod": storage_method,
+                "freshness": freshness, "source": source}
+        loc = self._location_id(location)
+        if loc:
+            body["locationId"] = loc
+        return self._post("/api/v1/stock", body)
+
+    def update_stock(self, lot_id: str, fields: dict) -> dict:
+        """Edit an existing lot by id (only the given fields)."""
+        return self._put(f"/api/v1/stock/{lot_id}", fields)
+
+    def consume(self, lot_id: str, quantity: float = 1, outcome: str = "eaten") -> dict:
+        """Record consumption from a lot (feeds runout + shelf-life learning)."""
+        return self._post(f"/api/v1/stock/{lot_id}/consume",
+                          {"quantity": quantity, "outcome": outcome})
+
+    def delete_stock(self, lot_id: str) -> dict:
+        """Remove a lot by id (used to undo an add)."""
+        return self._delete(f"/api/v1/stock/{lot_id}")
+
+    def add_shopping(self, name: str, quantity: float = 1, unit: str = "count") -> dict:
+        """Add an item to Edibl's shopping list."""
+        return self._post("/api/v1/shopping",
+                          {"name": name, "quantity": quantity, "unit": unit})

@@ -40,6 +40,7 @@ from typing import Any, Callable
 # Settings the operator must never see echoed back, in logs or diagnostics.
 SECRET_FIELDS = frozenset({
     "SECRET_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "MCP_API_TOKEN",
+    "MCP_SERVER_TOKEN",
 })
 
 PLACEHOLDER_SECRETS = frozenset({
@@ -230,6 +231,10 @@ FIELDS: tuple[Field, ...] = (
     Field("MCP_API_TOKEN", as_str, "",
           "Token the MCP server uses when app auth is enabled.",
           secret=True, supports_file=True),
+    Field("MCP_SERVER_TOKEN", as_str, "",
+          "Bearer token Home Assistant must present to reach the MCP server. "
+          "Blank leaves it unauthenticated (only safe on a trusted network).",
+          ha_option="mcp_server_token", secret=True, supports_file=True),
     Field("MCP_REQUIRED", parse_bool, False,
           "Treat a dead MCP process as making the whole app UNREADY."),
 

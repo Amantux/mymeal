@@ -26,6 +26,12 @@ SYSTEM = (
     "they ask you to suggest something new. Keep answers concise and useful."
 )
 
+_EDIBL_PROMPT = (
+    " Edibl (the food-inventory app) is connected, so you can also check what's on "
+    "hand, add or use up pantry stock, and add to Edibl's shopping list using the "
+    "edibl_* tools."
+)
+
 TOOLS = [
     {
         "name": "search_recipes",
@@ -98,6 +104,8 @@ def execute_tool(gid: str, name: str, args: dict):
     # The model may emit a non-dict (array/scalar) as arguments — never trust it.
     if not isinstance(args, dict):
         args = {}
+    if name.startswith("edibl_"):
+        return _edibl_tool(name, args)
     if name == "search_recipes":
         like = f"%{(args.get('query') or '').strip()}%"
         rows = (
@@ -196,6 +204,24 @@ _ACTION_FORMATTERS = {
             if r.get("itemId") else {})}
         if r.get("added") else None
     ),
+    # Cross-app (Edibl) mutations — surfaced, but no undo chip: myMeal's undo
+    # runs in the browser and can't reach Edibl. Undo these from Edibl's chat.
+    "edibl_add_stock": lambda r: (
+        {"label": f'Added {r.get("quantity", 1)} {r.get("unit", "")} '
+                  f'{r["added"]} to the Edibl pantry'.replace("  ", " "),
+         "kind": "stock", "icon": "🥫"}
+        if r.get("added") else None
+    ),
+    "edibl_record_consumption": lambda r: (
+        {"label": f'Recorded {r["consumed"]} {r.get("outcome", "eaten")} in Edibl',
+         "kind": "consume", "icon": "🍽️"}
+        if r.get("consumed") else None
+    ),
+    "edibl_add_to_shopping": lambda r: (
+        {"label": f'Added {r["addedToShopping"]} to Edibl\'s shopping list',
+         "kind": "shopping", "icon": "🛒"}
+        if r.get("addedToShopping") else None
+    ),
 }
 
 
@@ -212,6 +238,136 @@ def actions_from_trace(trace: list[dict]) -> list[dict]:
     return actions
 
 
+# --------------------------------------------------------------------------- #
+# Edibl bridge — pantry management, ONLY advertised when Edibl is connected.
+# A standalone myMeal never sees these tools, so there is no dependency on the
+# two apps being deployed together. Each call is bounded and degrades to an
+# {available: False} message when Edibl is unreachable. Cross-app mutations are
+# surfaced as action chips but are NOT undoable here (myMeal's undo runs in the
+# browser, which can't reach Edibl — undo those from Edibl's own chat).
+# --------------------------------------------------------------------------- #
+_EDIBL_TOOLS = [
+    {"name": "edibl_do_i_have",
+     "description": "Check whether an ingredient is on hand in Edibl (how much, where).",
+     "parameters": {"type": "object", "properties": {
+         "ingredient": {"type": "string"}}, "required": ["ingredient"]}},
+    {"name": "edibl_whats_in_stock",
+     "description": "List what food is on hand in Edibl (optionally filtered by name).",
+     "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}},
+    {"name": "edibl_expiring_soon",
+     "description": "List Edibl items expiring within N days.",
+     "parameters": {"type": "object", "properties": {"days": {"type": "integer"}}}},
+    {"name": "edibl_add_stock",
+     "description": "Add food to the Edibl pantry (e.g. after shopping). Expiry auto-estimated.",
+     "parameters": {"type": "object", "properties": {
+         "name": {"type": "string"}, "quantity": {"type": "number"},
+         "unit": {"type": "string"}, "category": {"type": "string"},
+         "storage_method": {"type": "string"}, "location": {"type": "string"},
+         "freshness": {"type": "string"}}, "required": ["name"]}},
+    {"name": "edibl_record_consumption",
+     "description": "Record that Edibl food was eaten, spoiled, expired, or discarded.",
+     "parameters": {"type": "object", "properties": {
+         "name": {"type": "string"}, "quantity": {"type": "number"},
+         "outcome": {"type": "string"}}, "required": ["name"]}},
+    {"name": "edibl_add_to_shopping",
+     "description": "Add an item to Edibl's shopping list.",
+     "parameters": {"type": "object", "properties": {
+         "name": {"type": "string"}, "quantity": {"type": "number"},
+         "unit": {"type": "string"}}, "required": ["name"]}},
+]
+
+
+def _edibl_connected() -> bool:
+    try:
+        return EdiblClient.from_settings().configured
+    except Exception:  # noqa: BLE001 — no config/context
+        return False
+
+
+def _sibling_tools() -> list[dict]:
+    """Edibl tools, only when Edibl is connected — standalone myMeal shows none."""
+    return _EDIBL_TOOLS if _edibl_connected() else []
+
+
+def _edibl_reason(res: dict) -> str:
+    if res.get("reachable"):
+        return f"Edibl responded with an error ({res.get('error')})."
+    return f"Edibl is unreachable ({res.get('error')})."
+
+
+def _to_int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _edibl_tool(name: str, args: dict):
+    """Execute one Edibl management tool via the sibling client."""
+    client = EdiblClient.from_settings()
+    if not client.configured:
+        return {"available": False, "message": "Edibl (inventory) isn't connected."}
+
+    if name == "edibl_do_i_have":
+        res = client.have(str(args.get("ingredient", "")))
+        return res.get("data") if res.get("ok") else {
+            "available": False, "message": _edibl_reason(res)}
+
+    if name == "edibl_whats_in_stock":
+        stock = client.get_stock()
+        if not stock.get("ok"):
+            return {"available": False, "message": _edibl_reason(stock)}
+        items = stock["items"]
+        q = str(args.get("query", "")).strip().lower()
+        if q:
+            items = [i for i in items if q in (i.get("name") or "").lower()]
+        return {"items": items[:60]}
+
+    if name == "edibl_expiring_soon":
+        res = client.expiring(_to_int(args.get("days"), 5))
+        if not res.get("ok"):
+            return {"available": False, "message": _edibl_reason(res)}
+        data = res.get("data") or {}
+        # Edibl may return a bare list or {"items": [...]} — handle both.
+        items = data if isinstance(data, list) else data.get("items", [])
+        return {"items": items}
+
+    if name == "edibl_add_stock":
+        res = client.add_stock(
+            str(args.get("name", "")).strip(),
+            quantity=args.get("quantity") or 1, unit=args.get("unit") or "count",
+            category=args.get("category") or "other",
+            storage_method=args.get("storage_method") or "refrigerated",
+            location=args.get("location") or "", freshness=args.get("freshness") or "")
+        if not res.get("ok"):
+            return {"error": _edibl_reason(res)}
+        lot = res.get("data") or {}
+        return {"added": args.get("name"), "quantity": args.get("quantity") or 1,
+                "unit": args.get("unit") or "count", "lotId": lot.get("id")}
+
+    if name == "edibl_record_consumption":
+        lot = client.find_lot(str(args.get("name", "")))
+        if not lot:
+            return {"error": f"No Edibl stock matching '{args.get('name')}'."}
+        res = client.consume(lot["id"], quantity=args.get("quantity") or 1,
+                             outcome=args.get("outcome") or "eaten")
+        if not res.get("ok"):
+            return {"error": _edibl_reason(res)}
+        return {"consumed": (lot.get("product") or {}).get("name") or args.get("name"),
+                "quantity": args.get("quantity") or 1,
+                "outcome": args.get("outcome") or "eaten"}
+
+    if name == "edibl_add_to_shopping":
+        res = client.add_shopping(str(args.get("name", "")).strip(),
+                                  quantity=args.get("quantity") or 1,
+                                  unit=args.get("unit") or "count")
+        if not res.get("ok"):
+            return {"error": _edibl_reason(res)}
+        return {"addedToShopping": args.get("name")}
+
+    return {"error": f"unknown edibl tool {name}"}
+
+
 def run_chat(
     gid: str,
     provider: AIProvider,
@@ -226,9 +382,14 @@ def run_chat(
     """
     messages = list(history) + [{"role": "user", "content": user_message}]
     trace: list[dict] = []
+    # Add Edibl tools only when Edibl is connected, so standalone myMeal is
+    # unchanged and never depends on Edibl being deployed alongside it.
+    connected = _edibl_connected()
+    tools = TOOLS + _EDIBL_TOOLS if connected else TOOLS
+    system = SYSTEM + _EDIBL_PROMPT if connected else SYSTEM
 
     for _ in range(max_iters):
-        result = provider.chat(messages, system=SYSTEM, tools=TOOLS)
+        result = provider.chat(messages, system=system, tools=tools)
         if not result.tool_calls:
             return {"reply": result.content or "", "trace": trace}
         # Record the assistant's intent, then run each tool and feed results back.
@@ -253,5 +414,5 @@ def run_chat(
                 }
             )
     # Exhausted the loop — ask once more for a plain answer.
-    final = provider.chat(messages, system=SYSTEM)
+    final = provider.chat(messages, system=system)
     return {"reply": final.content or "", "trace": trace}

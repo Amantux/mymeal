@@ -61,7 +61,16 @@ python3 ha_discovery.py \
 # ---------------------------------------------------------------------------
 MCP_PID=""
 if [ "$RESOLVED_MCP_ENABLED" = "true" ] && [ -f mcp_server.py ]; then
-  MYMEAL_MCP_API="$RESOLVED_MCP_API" python3 mcp_server.py &
+  # The MCP server token is a SECRET, so capture it with command substitution
+  # (data, never eval'd) rather than through the RESOLVED_* eval block above —
+  # an operator-controlled value must not be able to inject shell.
+  # `|| true` so a hiccup reading the (optional) token never aborts startup
+  # under `set -e` — the MCP server is optional and must not take the app down.
+  MCP_SERVER_TOKEN="$(python3 -c 'from app.settings import load_settings; print(load_settings().MCP_SERVER_TOKEN)' 2>/dev/null || true)"
+  MYMEAL_MCP_API="$RESOLVED_MCP_API" \
+    MYMEAL_MCP_PORT="$RESOLVED_MCP_PORT" \
+    MYMEAL_MCP_SERVER_TOKEN="$MCP_SERVER_TOKEN" \
+    python3 mcp_server.py &
   MCP_PID=$!
   echo "myMeal: MCP server started (pid $MCP_PID) on :${RESOLVED_MCP_PORT}/sse"
 fi

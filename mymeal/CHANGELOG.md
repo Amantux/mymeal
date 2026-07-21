@@ -7,6 +7,22 @@ whether to hit Update — not for developers reading a diff.
 Patch versions are minted automatically on every push to `main`; entries below
 without notes are build-only republishes with no user-visible change.
 
+## 1.1.0
+
+- **One assistant for the whole kitchen.** When Edibl (the food-inventory app)
+  is connected, myMeal's chat can now also **manage your pantry** — check what's
+  on hand, add or use up stock, and add to Edibl's shopping list — not just read
+  it. It's optional and auto-detected: with no Edibl connected these tools don't
+  appear and standalone myMeal is unchanged.
+- **More voice/Assist tools.** The MCP server can now **create recipes, plan and
+  un-plan meals, and remove shopping items** (not just read), so Home Assistant
+  Assist can manage myMeal end to end. Register Edibl's and HomeHoard's MCP
+  servers alongside it and one Assist pipeline spans meals, pantry, and household
+  inventory.
+- **MCP server auth.** New `mcp_server_token` option — set a bearer token Home
+  Assistant must present. Blank stays unauthenticated (safe only while the port
+  is internal); set it before mapping port 7851 to your LAN.
+
 ## 1.0.6
 
 Build-only republish; no user-visible change.

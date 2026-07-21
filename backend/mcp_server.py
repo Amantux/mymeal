@@ -51,6 +51,12 @@ def _post(path: str, json: dict | None = None):
     return r.json()
 
 
+def _delete(path: str) -> bool:
+    r = _HTTP.delete(path)
+    r.raise_for_status()
+    return True
+
+
 def _resolve_recipe(name_or_id: str):
     """Find one recipe by id/slug (direct) or name (first search hit)."""
     try:
@@ -199,7 +205,108 @@ def next_step(name_or_id: str) -> str:
     return f"Step {session['index'] + 1}: {steps[session['index']]}"
 
 
+@mcp.tool()
+def add_recipe(name: str, ingredients: list | None = None,
+               steps: list | None = None, servings: int | None = None) -> str:
+    """Create a new recipe. `ingredients` and `steps` are lists of plain strings."""
+    body: dict = {"name": name}
+    if ingredients:
+        body["ingredients"] = [{"display": str(x)} for x in ingredients]
+    if steps:
+        body["steps"] = [{"text": str(x)} for x in steps]
+    if servings is not None:
+        body["servings"] = servings
+    r = _post("/recipes", body)
+    return f"Added recipe '{r.get('name', name)}'."
+
+
+@mcp.tool()
+def plan_meal(name_or_id: str, day: str = "", meal_type: str = "dinner") -> str:
+    """Add a recipe to the meal plan for a day (YYYY-MM-DD, defaults to today)."""
+    when = day or datetime.date.today().isoformat()
+    recipe = _resolve_recipe(name_or_id)
+    body = {"date": when, "mealType": meal_type}
+    if recipe:
+        body["recipeId"] = recipe["id"]
+        label = recipe["name"]
+    else:
+        body["title"] = name_or_id  # free-text meal when there's no saved recipe
+        label = name_or_id
+    _post("/mealplans", body)
+    return f"Planned {label} for {meal_type} on {when}."
+
+
+@mcp.tool()
+def remove_planned_meal(day: str = "", meal_type: str = "") -> str:
+    """Remove planned meal(s) for a day (optionally only one meal type)."""
+    when = day or datetime.date.today().isoformat()
+    entries = _get("/mealplans", {"start": when, "end": when}).get("items", [])
+    if meal_type:
+        entries = [e for e in entries if e.get("mealType") == meal_type]
+    if not entries:
+        return f"Nothing planned to remove for {when}."
+    removed = 0
+    for e in entries:
+        try:
+            _delete(f"/mealplans/{e['id']}")
+            removed += 1
+        except httpx.HTTPError:  # tolerate a mid-loop failure, report the truth
+            pass
+    return f"Removed {removed} of {len(entries)} planned meal(s) for {when}."
+
+
+@mcp.tool()
+def remove_from_shopping_list(item: str) -> str:
+    """Remove item(s) from the shopping list by (partial) name."""
+    sl = _default_list()
+    q = item.strip().lower()
+    matches = [i for i in sl.get("items", []) if q in (i.get("display") or "").lower()]
+    if not matches:
+        return f"No shopping item matching '{item}'."
+    removed = 0
+    for i in matches:
+        try:
+            _delete(f"/shopping-lists/items/{i['id']}")
+            removed += 1
+        except httpx.HTTPError:  # tolerate a mid-loop failure, report the truth
+            pass
+    return f"Removed {removed} of {len(matches)} item(s) from {sl['name']}."
+
+
+def _require_token(asgi_app, token: str):
+    """ASGI wrapper: reject HTTP requests without `Authorization: Bearer <token>`.
+    Mirrors Edibl/HomeHoard so Home Assistant can authenticate to the MCP server
+    (important now that it can create recipes and delete meal plans)."""
+    import hmac
+    expected = f"Bearer {token}".encode()
+
+    async def wrapper(scope, receive, send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers") or [])
+            # Compare on bytes: a non-ASCII Authorization header would make the
+            # str form of compare_digest raise (500) instead of cleanly 401ing.
+            if not hmac.compare_digest(headers.get(b"authorization", b""), expected):
+                await send({"type": "http.response.start", "status": 401,
+                            "headers": [(b"content-type", b"text/plain")]})
+                await send({"type": "http.response.body", "body": b"unauthorized"})
+                return
+        await asgi_app(scope, receive, send)
+
+    return wrapper
+
+
 if __name__ == "__main__":
-    mcp.settings.host = os.environ.get("MYMEAL_MCP_HOST", "0.0.0.0")
-    mcp.settings.port = int(os.environ.get("MYMEAL_MCP_PORT", "7851"))
-    mcp.run(transport="sse")
+    import sys
+
+    host = os.environ.get("MYMEAL_MCP_HOST", "0.0.0.0")
+    port = int(os.environ.get("MYMEAL_MCP_PORT", "7851"))
+    server_token = os.environ.get("MYMEAL_MCP_SERVER_TOKEN", "")
+    app = mcp.sse_app()
+    if server_token:
+        app = _require_token(app, server_token)
+    else:
+        print("WARNING: MYMEAL_MCP_SERVER_TOKEN unset — MCP endpoint is "
+              "UNAUTHENTICATED (fine only on a trusted internal network).",
+              file=sys.stderr)
+    import uvicorn
+    uvicorn.run(app, host=host, port=port)

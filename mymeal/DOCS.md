@@ -33,6 +33,7 @@ gatekeeper. It is *not* safe on a port exposed to your network — see
 | `disable_auth` | `true` | No login prompt behind ingress. Turn OFF only if you expose port 7850 directly and want myMeal's own login. |
 | `allow_registration` | `false` | Whether strangers can create accounts. Irrelevant while `disable_auth` is on. |
 | `enable_mcp` | `true` | Runs the MCP server on port 7851 so Assist can use myMeal as a tool. |
+| `mcp_server_token` | _(blank)_ | Bearer token Home Assistant must present to the MCP server. Blank is fine while the port stays internal; set it before mapping 7851 to your LAN. |
 | `ai_provider` | _(blank)_ | `claude`, `ollama`, or `openai`. Blank = AI features off; everything else still works. |
 
 ### Turning on the AI features
@@ -91,6 +92,13 @@ Running Edibl standalone (with its own login)? Enter its URL and paste an Edibl
 API token (Edibl → its tokens screen). The token is stored on this server only
 and never shown again.
 
+**One chat, both apps.** Once Edibl is connected, myMeal's chat can also *manage*
+your pantry — "do we have eggs?", "add 2 L milk to the pantry", "we ate the
+leftovers" — not just read it. And Edibl's chat gains myMeal tools too (look up
+recipes, plan meals, manage its shopping list). It's fully optional: if the other
+app isn't connected, neither chat shows the other's tools, and each app is
+completely standalone.
+
 ## Voice control with Assist
 
 The add-on runs an MCP server on port `7851`. To let Assist cook with it:
@@ -106,10 +114,16 @@ http://<mymeal-addon-hostname>:7851/sse
 
 Prefer a fixed address, or connecting from another machine? Open the add-on's
 **Network** tab, give port `7851` a host port, and use
-`http://<your-ha-host>:7851/sse` instead.
+`http://<your-ha-host>:7851/sse` instead. If you map the port to the LAN, set
+`mcp_server_token` first and give Assist the same token.
 
-Ask things like *"what's for dinner?"*, *"add milk to my shopping list"*, or
-*"what can I cook with what I have?"*.
+Ask things like *"what's for dinner?"*, *"add milk to my shopping list"*,
+*"plan carbonara for Friday"*, or *"what can I cook with what I have?"*.
+
+**One assistant across every app.** Add an MCP Client entry for each app you run —
+myMeal (`:7851`), Edibl (`:7767`), HomeHoard (`:7766`) — and point a single Assist
+pipeline at them. One voice/chat agent then spans meals, pantry, and household
+inventory: *"what's expiring, what can I cook, and where's the drill?"*
 
 For entities (sensors, a meal-plan calendar, services), also install the
 companion **myMeal integration** from HACS — see the repository README. The
