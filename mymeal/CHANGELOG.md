@@ -7,6 +7,10 @@ whether to hit Update — not for developers reading a diff.
 Patch versions are minted automatically on every push to `main`; entries below
 without notes are build-only republishes with no user-visible change.
 
+## 1.1.5
+
+Build-only republish; no user-visible change.
+
 ## 1.1.4
 
 - **One-paste connect links.** The Home Assistant → API keys panel can now copy a
