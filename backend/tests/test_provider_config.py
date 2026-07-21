@@ -150,8 +150,10 @@ def test_provider_config_is_isolated_between_groups(app):
     with app.app_context():
         from app.models import Group
         from app.extensions import db
-        g1 = Group(name="A"); g2 = Group(name="B")
-        db.session.add_all([g1, g2]); db.session.commit()
+        g1 = Group(name="A")
+        g2 = Group(name="B")
+        db.session.add_all([g1, g2])
+        db.session.commit()
         set_overrides(g1.id, provider="openai", api_key="sk-group1")
         set_overrides(g2.id, provider="ollama", base_url="http://g2:11434")
         base = app.config["SETTINGS"]
