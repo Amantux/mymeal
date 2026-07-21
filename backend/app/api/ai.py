@@ -4,6 +4,7 @@ More AI features (meal planning, pantry suggestions, the cooking agent) attach
 to this blueprint in later milestones.
 """
 import json
+import re
 from datetime import date, timedelta
 
 import httpx
@@ -50,6 +51,83 @@ def discover_ollama_endpoint():
 @login_required
 def providers():
     return jsonify({"providers": list_providers()})
+
+
+def _base_settings():
+    from flask import current_app
+    return current_app.config["SETTINGS"]
+
+
+@bp.get("/ai/settings")
+@login_required
+def get_ai_settings():
+    """Editable AI-provider config for the UI. Never returns the API key —
+    only whether one is set."""
+    from ..services.ai.provider_config import settings_view
+
+    return jsonify(settings_view(_base_settings(), current_group().id))
+
+
+@bp.put("/ai/settings")
+@login_required
+def put_ai_settings():
+    """Persist the AI provider config (overrides the env / add-on default, and
+    is remembered across restarts).
+
+    Body: {provider?, baseUrl?, model?, apiKey?}. A field left out is unchanged;
+    an empty string CLEARS that override (falls back to the env default). A
+    blank/omitted apiKey leaves the stored key untouched.
+    """
+    from ..services.ai.provider_config import (
+        VALID_PROVIDERS, set_overrides, settings_view,
+    )
+
+    data = request.get_json(silent=True) or {}
+    provider = data.get("provider")
+    if provider is not None and str(provider) not in VALID_PROVIDERS:
+        return jsonify({"error": f"unknown provider {provider!r}"}), 422
+
+    # A non-empty base URL must be http(s). It is operator-set config, but the
+    # DB path bypasses the env-layer URL parser, so validate here to avoid
+    # storing a scheme (file:, gopher:, javascript:) that a later server-side
+    # httpx call would act on.
+    base_url = data.get("baseUrl")
+    if base_url and not re.match(r"^https?://", str(base_url).strip()):
+        return jsonify({"error": "baseUrl must start with http:// or https://"}), 422
+
+    kwargs = {}
+    if "provider" in data:
+        kwargs["provider"] = str(data["provider"] or "")
+    if "baseUrl" in data:
+        kwargs["base_url"] = str(data["baseUrl"] or "")
+    if "model" in data:
+        kwargs["model"] = str(data["model"] or "")
+    # Only touch the key when a non-empty value is sent, so re-saving the form
+    # (which never receives the stored key back) does not wipe it. An explicit
+    # clearApiKey removes it (the only way to delete a wrong key).
+    if data.get("clearApiKey"):
+        kwargs["clear_api_key"] = True
+    elif data.get("apiKey"):
+        kwargs["api_key"] = str(data["apiKey"])
+
+    set_overrides(current_group().id, **kwargs)
+    return jsonify(settings_view(_base_settings(), current_group().id))
+
+
+@bp.post("/ai/models")
+@login_required
+def list_ai_models():
+    """List models available on the provider, for the UI picker. Probes the
+    values in the request body (provider/baseUrl/apiKey) WITHOUT persisting, so
+    'List models' does not save the form as a side effect. Best-effort — returns
+    [] rather than erroring."""
+    from ..services.ai.provider_config import list_models, probe_config
+
+    data = request.get_json(silent=True) or {}
+    eff = probe_config(_base_settings(), current_group().id,
+                       provider=data.get("provider"), base_url=data.get("baseUrl"),
+                       api_key=data.get("apiKey"))
+    return jsonify({"provider": eff.AI_PROVIDER, "models": list_models(eff)})
 
 
 @bp.post("/ai/import")

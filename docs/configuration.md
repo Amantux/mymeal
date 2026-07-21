@@ -68,13 +68,13 @@ docker compose run --rm app python3 -m app.config_check
 | Variable | Type | Default | Secret | Restart | Notes |
 |---|---|---|---|---|---|
 | `MYMEAL_AI_PROVIDER` | enum/int | `_(empty)_` | no | yes | Which AI backend to use. Blank disables AI features cleanly. HA option: `ai_provider`. |
-| `MYMEAL_ANTHROPIC_API_KEY` | string | `_(empty)_` | **yes** | yes | API key for the claude provider. Supports `MYMEAL_ANTHROPIC_API_KEY_FILE`. |
-| `MYMEAL_CLAUDE_MODEL` | string | `claude-opus-4-8` | no | yes | Model for the claude provider. |
-| `MYMEAL_OPENAI_API_KEY` | string | `_(empty)_` | **yes** | yes | API key for the openai provider. Supports `MYMEAL_OPENAI_API_KEY_FILE`. |
-| `MYMEAL_OPENAI_MODEL` | string | `gpt-4o-mini` | no | yes | Model for the openai provider. |
+| `MYMEAL_ANTHROPIC_API_KEY` | string | `_(empty)_` | **yes** | yes | API key for the claude provider. HA option: `anthropic_api_key`. Supports `MYMEAL_ANTHROPIC_API_KEY_FILE`. |
+| `MYMEAL_CLAUDE_MODEL` | string | `claude-opus-4-8` | no | yes | Model for the claude provider. HA option: `claude_model`. |
+| `MYMEAL_OPENAI_API_KEY` | string | `_(empty)_` | **yes** | yes | API key for the openai provider. HA option: `openai_api_key`. Supports `MYMEAL_OPENAI_API_KEY_FILE`. |
+| `MYMEAL_OPENAI_MODEL` | string | `gpt-4o-mini` | no | yes | Model for the openai provider. HA option: `openai_model`. |
 | `MYMEAL_OPENAI_BASE_URL` | string | `_(empty)_` | no | yes | Override the OpenAI API base URL (for compatible gateways). |
-| `MYMEAL_OLLAMA_HOST` | url | `http://localhost:11434` | no | yes | Base URL of the Ollama server. Local, so no API key is needed. |
-| `MYMEAL_OLLAMA_MODEL` | string | `llama3.1` | no | yes | Model for the ollama provider. |
+| `MYMEAL_OLLAMA_HOST` | url | `http://localhost:11434` | no | yes | Base URL of the Ollama server. Local, so no API key is needed. HA option: `ollama_host`. |
+| `MYMEAL_OLLAMA_MODEL` | string | `llama3.1` | no | yes | Model for the ollama provider. HA option: `ollama_model`. |
 | `MYMEAL_AI_TIMEOUT_SECONDS` | enum/int | `60` | no | yes | Per-request timeout for AI provider calls. |
 
 ### MCP (Home Assistant Assist)

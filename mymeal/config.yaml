@@ -30,8 +30,22 @@ options:
   allow_registration: false
   enable_mcp: true
   ai_provider: ""
+  ollama_host: ""
+  ollama_model: ""
+  claude_model: ""
+  openai_model: ""
+  anthropic_api_key: ""
+  openai_api_key: ""
 schema:
   disable_auth: bool
   allow_registration: bool
   enable_mcp: bool
   ai_provider: "list(|claude|ollama|openai)?"
+  # AI provider config can be set here OR in the app UI (the app remembers UI
+  # changes and they override these). Keys use HA's masked password type.
+  ollama_host: "str?"
+  ollama_model: "str?"
+  claude_model: "str?"
+  openai_model: "str?"
+  anthropic_api_key: "password?"
+  openai_api_key: "password?"
