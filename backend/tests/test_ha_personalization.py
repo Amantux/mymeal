@@ -81,3 +81,36 @@ def test_legacy_local_owner_does_not_lock_out_first_ha_user(noauth_app):
     first = c.get("/api/v1/users/self", headers=_hdr("real1", "Real One"),
                   environ_overrides=SUP).get_json()["item"]
     assert first["isOwner"] is True     # real HA user gets owner despite the legacy one
+
+
+def test_docker_gateway_snat_is_not_trusted(noauth_app):
+    """Host-published-port traffic is SNAT'd to the bridge gateway (172.30.32.1),
+    which is NOT the Supervisor (.2) — forged headers from it must be ignored."""
+    c = noauth_app.test_client()
+    r = c.get("/api/v1/users/self", headers=_hdr("attacker"),
+              environ_overrides={"REMOTE_ADDR": "172.30.32.1"})
+    assert r.get_json()["item"]["email"] == "local@mymeal"   # not trusted
+
+
+def test_xff_spoof_behind_proxy_is_not_trusted(tmp_path):
+    """With TRUSTED_PROXY_COUNT set, ProxyFix rewrites remote_addr from
+    X-Forwarded-For. An attacker sending XFF=172.30.32.2 must still NOT be
+    trusted — we check the unproxied peer."""
+    from app import create_app
+    app = create_app(type("C", (), {
+        "DATA_DIR": str(tmp_path), "DATABASE_URL": f"sqlite:///{tmp_path/'p.db'}",
+        "MCP_ENABLED": False, "DISABLE_AUTH": True, "TRUSTED_PROXY_COUNT": 1}))
+    c = app.test_client()
+    r = c.get("/api/v1/users/self",
+              headers={**_hdr("spoofer"), "X-Forwarded-For": "172.30.32.2"},
+              environ_overrides={"REMOTE_ADDR": "192.168.1.9"})  # real peer
+    assert r.get_json()["item"]["email"] == "local@mymeal"      # spoof rejected
+
+
+def test_missing_name_header_does_not_overwrite_stored_name(noauth_app):
+    c = noauth_app.test_client()
+    c.get("/api/v1/users/self", headers=_hdr("dave", "Dave"), environ_overrides=SUP)
+    # a later request from the same user with NO name header must keep "Dave"
+    again = c.get("/api/v1/users/self",
+                  headers={"X-Remote-User-Id": "dave"}, environ_overrides=SUP).get_json()["item"]
+    assert again["name"] == "Dave"

@@ -9,7 +9,6 @@ Supports two modes:
   Assistant ingress, which already authenticates the user.
 """
 import functools
-import ipaddress
 from datetime import datetime, timezone
 
 import jwt
@@ -71,18 +70,31 @@ def _default_user() -> User:
     return user
 
 
-# Home Assistant's Supervisor/ingress proxy sits on the internal hassio network.
-# Ingress requests reach the add-on FROM the Supervisor, so their source IP is
-# in this range. We trust the X-Remote-User-* identity headers ONLY for such
-# requests — on a directly-published port a client could forge them.
-_SUPERVISOR_NET = ipaddress.ip_network("172.30.32.0/23")
+# Ingress requests reach the add-on FROM the Home Assistant Supervisor, whose
+# address on the hassio network is 172.30.32.2. We trust the X-Remote-User-*
+# identity headers ONLY from that exact peer:
+#   * NOT the whole 172.30.32.0/23 — the bridge gateway (.1) is in that range,
+#     and traffic to a host-PUBLISHED add-on port is SNAT'd to the gateway, so
+#     a /23 check would trust forged headers from a directly-exposed port. The
+#     specific-host check excludes the gateway (and every sibling add-on).
+#   * We read the UNPROXIED peer, so ProxyFix rewriting remote_addr from a
+#     client-supplied X-Forwarded-For (when TRUSTED_PROXY_COUNT is set) can't be
+#     used to spoof the Supervisor address.
+# Fail-closed: an unrecognised peer just falls back to the shared local user.
+_INGRESS_SOURCE = "172.30.32.2"
 
 
 def _request_from_ingress() -> bool:
-    try:
-        return ipaddress.ip_address(request.remote_addr or "") in _SUPERVISOR_NET
-    except ValueError:
+    # If a reverse proxy is trusted, ProxyFix derives remote_addr from the
+    # client-supplied X-Forwarded-For, so it can no longer be trusted as the
+    # ingress source (an attacker could set XFF to the Supervisor address).
+    # Ingress and an extra trusted proxy are mutually exclusive for identity:
+    # HA ingress needs no TRUSTED_PROXY_COUNT, and a standalone-behind-proxy
+    # deployment isn't behind ingress and gets no X-Remote-User-* headers anyway.
+    settings = current_app.config.get("SETTINGS")
+    if settings is not None and getattr(settings, "TRUSTED_PROXY_COUNT", 0):
         return False
+    return request.remote_addr == _INGRESS_SOURCE
 
 
 def _ingress_user():
@@ -103,13 +115,17 @@ def _ingress_user():
         return None
 
     user = db.session.query(User).filter_by(ha_user_id=ha_id).first()
-    display = (request.headers.get("X-Remote-User-Display-Name")
-               or request.headers.get("X-Remote-User-Name") or "Home Assistant user").strip()
+    # Only a REAL name header refreshes the stored name — never let the fallback
+    # literal overwrite a good name on a request that happens to omit the header
+    # (that would flap the name and write on every toggle).
+    real_name = (request.headers.get("X-Remote-User-Display-Name")
+                 or request.headers.get("X-Remote-User-Name") or "").strip()
     if user:
-        if display and user.name != display:   # keep the display name fresh
-            user.name = display
+        if real_name and user.name != real_name:
+            user.name = real_name
             db.session.commit()
         return user
+    display = real_name or "Home Assistant user"
 
     # Provision into the shared household. First user in the group = owner.
     group = db.session.query(Group).order_by(Group.created_at.asc()).first()
