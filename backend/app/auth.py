@@ -9,6 +9,7 @@ Supports two modes:
   Assistant ingress, which already authenticates the user.
 """
 import functools
+import ipaddress
 from datetime import datetime, timezone
 
 import jwt
@@ -70,10 +71,79 @@ def _default_user() -> User:
     return user
 
 
+# Home Assistant's Supervisor/ingress proxy sits on the internal hassio network.
+# Ingress requests reach the add-on FROM the Supervisor, so their source IP is
+# in this range. We trust the X-Remote-User-* identity headers ONLY for such
+# requests — on a directly-published port a client could forge them.
+_SUPERVISOR_NET = ipaddress.ip_network("172.30.32.0/23")
+
+
+def _request_from_ingress() -> bool:
+    try:
+        return ipaddress.ip_address(request.remote_addr or "") in _SUPERVISOR_NET
+    except ValueError:
+        return False
+
+
+def _ingress_user():
+    """Resolve (provisioning if needed) the myMeal user for the Home Assistant
+    user behind an ingress request.
+
+    Trust boundary: only consult X-Remote-User-* when the request actually came
+    from the Supervisor ingress proxy — otherwise a forged header could
+    impersonate. Returns None when there is no trusted ingress identity, so the
+    caller falls back to the shared local user.
+
+    All HA users share one household (group); the FIRST one seen becomes owner.
+    """
+    if not _request_from_ingress():
+        return None
+    ha_id = (request.headers.get("X-Remote-User-Id") or "").strip()
+    if not ha_id:
+        return None
+
+    user = db.session.query(User).filter_by(ha_user_id=ha_id).first()
+    display = (request.headers.get("X-Remote-User-Display-Name")
+               or request.headers.get("X-Remote-User-Name") or "Home Assistant user").strip()
+    if user:
+        if display and user.name != display:   # keep the display name fresh
+            user.name = display
+            db.session.commit()
+        return user
+
+    # Provision into the shared household. First user in the group = owner.
+    group = db.session.query(Group).order_by(Group.created_at.asc()).first()
+    if group is None:
+        group = Group(name=DEFAULT_GROUP)
+        db.session.add(group)
+        db.session.flush()
+    # Count owners among REAL HA users only — a legacy synthetic local user
+    # (ha_user_id NULL, is_owner=True from single-user mode) must not lock the
+    # first real HA user out of owner on a migrated install.
+    has_owner = db.session.query(User).filter(
+        User.group_id == group.id,
+        User.is_owner.is_(True),
+        User.ha_user_id.isnot(None),
+    ).count() > 0
+    user = User(
+        name=display or "Home Assistant user",
+        email=f"ha:{ha_id}",              # synthetic, unique; not a login email
+        password_hash=hash_password("unused"),
+        is_owner=not has_owner,
+        ha_user_id=ha_id,
+        group_id=group.id,
+    )
+    db.session.add(user)
+    db.session.commit()
+    return user
+
+
 def load_current_user():
     """Resolve the current user, honoring the DISABLE_AUTH toggle."""
     if current_app.config["DISABLE_AUTH"]:
-        return _default_user()
+        # Behind ingress each HA user gets their own identity; fall back to the
+        # shared local user only when there's no trusted ingress identity.
+        return _ingress_user() or _default_user()
 
     header = request.headers.get("Authorization", "")
     if not header.startswith("Bearer "):
@@ -108,6 +178,23 @@ def login_required(fn):
         user = load_current_user()
         if user is None:
             return jsonify({"error": "unauthorized"}), 401
+        g.current_user = user
+        g.current_group = user.group
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def owner_required(fn):
+    """Like login_required, but 403s a non-owner. For household config that
+    members shouldn't change (AI provider, Edibl connection, user management)."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        user = load_current_user()
+        if user is None:
+            return jsonify({"error": "unauthorized"}), 401
+        if not user.is_owner:
+            return jsonify({"error": "owner privileges required"}), 403
         g.current_user = user
         g.current_group = user.group
         return fn(*args, **kwargs)

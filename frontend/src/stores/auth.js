@@ -10,6 +10,7 @@ export const useAuth = defineStore('auth', {
   }),
   getters: {
     isAuthed: (s) => !!s.user || s.authDisabled,
+    isOwner: (s) => !!s.user?.isOwner,
   },
   actions: {
     async bootstrap() {

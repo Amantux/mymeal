@@ -18,7 +18,7 @@ from datetime import date
 
 from flask import Blueprint, jsonify, request
 
-from ..auth import login_required, current_group
+from ..auth import login_required, owner_required, current_group
 from ..extensions import db
 from ..models import MealPlanEntry
 from ..services.edibl import EdiblClient
@@ -34,7 +34,7 @@ def _base_settings():
 
 
 @bp.get("/edibl/config")
-@login_required
+@owner_required
 def get_config():
     """Redacted connection config for the UI. Never returns the token."""
     from ..services.edibl_config import config_view
@@ -43,7 +43,7 @@ def get_config():
 
 
 @bp.put("/edibl/config")
-@login_required
+@owner_required
 def put_config():
     """Persist the Edibl connection (overrides env/add-on, remembered).
     Body: {url?, token?, clearToken?}. Blank/omitted token keeps the stored one."""
@@ -69,7 +69,7 @@ def put_config():
 
 
 @bp.get("/edibl/discover")
-@login_required
+@owner_required
 def discover():
     """Auto-find a companion Edibl add-on (Supervisor) so the user needn't type
     a URL. In the Home Assistant add-on case both apps sit behind ingress, so no

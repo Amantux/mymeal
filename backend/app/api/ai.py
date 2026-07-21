@@ -12,7 +12,7 @@ from flask import Blueprint, request, jsonify
 
 from ..extensions import db
 from ..models import Recipe, MealPlanEntry
-from ..auth import login_required, current_group
+from ..auth import login_required, owner_required, current_group
 from ..schemas.serializers import recipe_out, mealplan_entry_out
 from ..utils import unique_slug
 from ..services.ai.base import ProviderError
@@ -24,7 +24,7 @@ bp = Blueprint("ai", __name__)
 
 
 @bp.get("/ai/discover-ollama")
-@login_required
+@owner_required
 def discover_ollama_endpoint():
     """Find a local Ollama server so the user does not type a URL.
 
@@ -59,7 +59,7 @@ def _base_settings():
 
 
 @bp.get("/ai/settings")
-@login_required
+@owner_required
 def get_ai_settings():
     """Editable AI-provider config for the UI. Never returns the API key —
     only whether one is set."""
@@ -69,7 +69,7 @@ def get_ai_settings():
 
 
 @bp.put("/ai/settings")
-@login_required
+@owner_required
 def put_ai_settings():
     """Persist the AI provider config (overrides the env / add-on default, and
     is remembered across restarts).
@@ -115,7 +115,7 @@ def put_ai_settings():
 
 
 @bp.post("/ai/models")
-@login_required
+@owner_required
 def list_ai_models():
     """List models available on the provider, for the UI picker. Probes the
     values in the request body (provider/baseUrl/apiKey) WITHOUT persisting, so

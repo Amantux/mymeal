@@ -164,7 +164,10 @@ def _migrate(app):
     if not db.engine.url.get_backend_name().startswith("sqlite"):
         return
     inspector = inspect(db.engine)
-    wanted: dict[str, dict[str, str]] = {}
+    wanted: dict[str, dict[str, str]] = {
+        # Per-HA-user identity (ingress personalization). Additive on existing DBs.
+        "users": {"ha_user_id": "VARCHAR(64)"},
+    }
     for table, columns in wanted.items():
         if not inspector.has_table(table):
             continue

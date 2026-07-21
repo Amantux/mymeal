@@ -7,6 +7,14 @@ whether to hit Update — not for developers reading a diff.
 Patch versions are minted automatically on every push to `main`; entries below
 without notes are build-only republishes with no user-visible change.
 
+## 1.1.4
+
+- **One-paste connect links.** The Home Assistant → API keys panel can now copy a
+  **connect link** that bundles myMeal's address + the key, and the Edibl
+  connection form accepts an Edibl connect link to fill its URL + token in one
+  step — so pairing myMeal and Edibl standalone / across the network is a single
+  paste instead of copying two fields. (Behind HA Ingress no key is needed.)
+
 ## 1.1.3
 
 Build-only republish; no user-visible change.

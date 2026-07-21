@@ -14,6 +14,10 @@ class User(IDMixin, TimestampMixin, db.Model):
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False)
     is_owner: Mapped[bool] = mapped_column(Boolean, default=False)
     activated_on: Mapped[str] = mapped_column(String(64), nullable=True)
+    # Home Assistant user id (from the ingress X-Remote-User-Id header). Lets a
+    # single household have a distinct myMeal identity per HA user. NULL for
+    # password/standalone accounts and the legacy shared local user.
+    ha_user_id: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
 
     group_id: Mapped[str] = mapped_column(String(36), ForeignKey("groups.id"))
     group = relationship("Group", back_populates="users")

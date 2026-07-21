@@ -19,7 +19,7 @@ const routes = [
   { path: '/plan', component: MealPlan },
   { path: '/pantry', redirect: '/' },  // pantry removed; inventory is owned by Edibl
   { path: '/shopping', component: ShoppingList },
-  { path: '/settings', component: Settings },
+  { path: '/settings', component: Settings, meta: { owner: true } },
   { path: '/home-assistant', component: HomeAssistant },
   { path: '/login', component: Login, meta: { public: true } },
 ]
@@ -31,6 +31,7 @@ router.beforeEach(async (to) => {
   if (!auth.ready) await auth.bootstrap()
   if (!to.meta.public && !auth.isAuthed) return '/login'
   if (to.path === '/login' && auth.isAuthed) return '/'
+  if (to.meta.owner && !auth.isOwner) return '/'
 })
 
 export default router

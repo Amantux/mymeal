@@ -27,6 +27,14 @@ function copy(text) {
   navigator.clipboard?.writeText(text)
   ui.toast('Copied')
 }
+
+// A one-paste "connect link" bundling this myMeal's address + a key, for a
+// sibling app (e.g. Edibl) to consume. Frontend-only, mirrors Edibl's format.
+function connectLink(token) {
+  const url = typeof window !== 'undefined' ? window.location.origin : ''
+  const payload = JSON.stringify({ app: 'mymeal', url, token, v: 1 })
+  return 'mymeal-connect:' + btoa(unescape(encodeURIComponent(payload)))
+}
 </script>
 
 <template>
@@ -49,7 +57,9 @@ function copy(text) {
       <div class="row">
         <code style="flex:1;word-break:break-all">{{ newToken }}</code>
         <button class="secondary sm" @click="copy(newToken)">Copy</button>
+        <button class="sm" @click="copy(connectLink(newToken))">🔗 Connect link</button>
       </div>
+      <p class="muted" style="font-size:.78rem;margin:8px 0 0">The <strong>connect link</strong> bundles this myMeal address + key — paste it into <em>Edibl → Settings → myMeal</em> to connect in one step.</p>
     </div>
   </div>
 

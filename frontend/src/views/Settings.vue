@@ -112,6 +112,19 @@ async function clearKey() {
   }
 }
 
+// Decode an Edibl "connect link" (from Edibl → Access & keys) into url + token.
+function pasteEdiblConnect(e) {
+  const str = (e.target.value || '').trim()
+  e.target.value = ''
+  const m = /^([a-z]+)-connect:(.+)$/.exec(str)
+  let obj = null
+  try { if (m) obj = JSON.parse(decodeURIComponent(escape(atob(m[2])))) } catch (err) { obj = null }
+  if (!obj || obj.app !== 'edibl') { ui.toast('That doesn’t look like an Edibl connect link', 'error'); return }
+  edibl.url = obj.url || edibl.url
+  edibl.token = obj.token || ''
+  ui.toast('Filled from the connect link — Save to connect')
+}
+
 async function saveEdibl() {
   ediblBusy.value = true
   try {
@@ -272,6 +285,11 @@ async function findOllama() {
       Home Assistant add-ons? Click <em>Find Edibl</em> — no token needed.
     </p>
     <form class="ai-form" @submit.prevent="saveEdibl">
+      <label class="field">
+        <span class="lbl">Paste an Edibl <strong>connect link</strong> <span class="muted">(fills URL + token)</span></span>
+        <input class="fill" placeholder="edibl-connect:… — from Edibl → Settings → Access &amp; keys"
+          @change="pasteEdiblConnect($event)" />
+      </label>
       <label class="field">
         <span class="lbl">Edibl URL</span>
         <div class="row">
