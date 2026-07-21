@@ -1,5 +1,5 @@
 name: myMeal
-version: "1.0.6"
+version: "1.1.0"
 slug: mymeal
 description: Recipes, AI meal planning & smart shopping lists with a Home Assistant cooking assistant
 url: https://github.com/Amantux/mymeal
