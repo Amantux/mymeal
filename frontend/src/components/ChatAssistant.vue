@@ -9,11 +9,14 @@ import { api } from '../api'
 // Maps a structured undo descriptor (from the server) to a known, safe API
 // call. The server never dictates an arbitrary method/path — it names a `kind`
 // and an id, and the reversal lives here, on the client, per kind.
-// Cross-app kinds (e.g. `edibl_stock`) can't be reversed from the browser — it
-// can't reach the sibling app — so they go through the server undo-proxy.
+// Each fn receives the whole undo descriptor. Cross-app kinds (`edibl_*`) can't
+// be reversed from the browser — it can't reach the sibling app — so they post
+// the descriptor to the server undo-proxy, which does the reversal.
 const UNDO = {
-  shopping_item: (id) => api.del(`/shopping-lists/items/${id}`),
-  edibl_stock: (id) => api.post('/ai/chat/undo', { kind: 'edibl_stock', id }),
+  shopping_item: (u) => api.del(`/shopping-lists/items/${u.id}`),
+  edibl_stock: (u) => api.post('/ai/chat/undo', u),
+  edibl_shopping: (u) => api.post('/ai/chat/undo', u),
+  edibl_unconsume: (u) => api.post('/ai/chat/undo', u),
 }
 
 const open = ref(false)
@@ -46,7 +49,7 @@ async function undo(action) {
   if (!fn || action.undoing || action.undone) return
   action.undoing = true
   try {
-    await fn(action.undo.id)
+    await fn(action.undo)
     action.undone = true
   } catch (e) {
     // Most likely the item was already removed elsewhere; treat as undone

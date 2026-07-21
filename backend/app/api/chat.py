@@ -51,33 +51,80 @@ def delete_session(session_id):
     return "", 204
 
 
-def _undo_edibl_stock(obj_id):
-    """Reverse an `edibl_add_stock` chat action by deleting the lot in Edibl.
-    A 404 means the lot is already gone, which we treat as successfully undone."""
-    from ..services.edibl import EdiblClient
-    res = EdiblClient.from_settings().delete_stock(str(obj_id))
+_EDIBL_UNREACHABLE = "Couldn't reach Edibl to undo — check the Edibl connection."
+_INVALID_ID = "Invalid undo reference."
+
+
+def _safe_id(value):
+    """An id that goes into a sibling URL path segment must be a plain id — never
+    a path. Reject anything with `/` or `..` so the id can't smuggle a different
+    resource into the request (the whitelist names a kind + id, not a path)."""
+    s = str(value or "")
+    return s if (s and "/" not in s and ".." not in s) else None
+
+
+def _reversed(res):
+    """Reversal succeeded, or the target was already gone (404) — either way the
+    action is undone. Anything else is a real failure."""
     if res.get("ok") or res.get("status") == 404:
         return True, None
-    return False, "Couldn't reach Edibl to undo — check the Edibl connection."
+    return False, _EDIBL_UNREACHABLE
+
+
+def _undo_edibl_stock(data):
+    """Undo an `edibl_add_stock` by deleting the lot in Edibl."""
+    from ..services.edibl import EdiblClient
+    lot_id = _safe_id(data.get("id"))
+    if not lot_id:
+        return False, _INVALID_ID
+    return _reversed(EdiblClient.from_settings().delete_stock(lot_id))
+
+
+def _undo_edibl_shopping(data):
+    """Undo an `edibl_add_to_shopping` by deleting the Edibl shopping item."""
+    from ..services.edibl import EdiblClient
+    item_id = _safe_id(data.get("id"))
+    if not item_id:
+        return False, _INVALID_ID
+    return _reversed(EdiblClient.from_settings().delete_shopping(item_id))
+
+
+def _undo_edibl_unconsume(data):
+    """Undo an `edibl_record_consumption` by restoring the amount to the lot and
+    deleting the consumption event in Edibl. Idempotent on the Edibl side."""
+    from ..services.edibl import EdiblClient
+    lot_id = _safe_id(data.get("lotId"))
+    if not lot_id:
+        return False, _INVALID_ID
+    # consumptionId/amount travel in the JSON body, not the URL — no path risk.
+    return _reversed(EdiblClient.from_settings().unconsume(
+        lot_id, data.get("consumptionId"), data.get("amount") or 0))
 
 
 # Undo kinds the SERVER must reverse because the browser can't reach the target
 # (a sibling app on the internal network). Client-reversible kinds like
 # `shopping_item` are handled in the frontend and never hit this endpoint.
-# Whitelisted — the client names a kind + id, never a method/path.
-_SERVER_UNDO = {"edibl_stock": _undo_edibl_stock}
+# Whitelisted — the client names a kind + the ids to reverse, never a path.
+_SERVER_UNDO = {
+    "edibl_stock": _undo_edibl_stock,
+    "edibl_shopping": _undo_edibl_shopping,
+    "edibl_unconsume": _undo_edibl_unconsume,
+}
 
 
 @bp.post("/ai/chat/undo")
 @login_required
 def undo_action():
     """Reverse a cross-app chat action the browser cannot reverse itself.
-    Body: {kind, id}. Only whitelisted kinds are accepted."""
+    Body: {kind, ...ids}. Only whitelisted kinds are accepted."""
     data = request.get_json(force=True) or {}
     handler = _SERVER_UNDO.get(data.get("kind"))
     if not handler:
         return jsonify({"error": f"unknown undo kind {data.get('kind')}"}), 400
-    ok, err = handler(data.get("id"))
+    try:
+        ok, err = handler(data)
+    except Exception:  # noqa: BLE001 — undo must never 500; degrade to 502
+        ok, err = False, _EDIBL_UNREACHABLE
     if ok:
         return jsonify({"undone": True})
     return jsonify({"undone": False, "error": err}), 502

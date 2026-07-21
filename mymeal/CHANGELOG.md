@@ -7,6 +7,13 @@ whether to hit Update — not for developers reading a diff.
 Patch versions are minted automatically on every push to `main`; entries below
 without notes are build-only republishes with no user-visible change.
 
+## 1.1.2
+
+- **Full undo parity for pantry actions.** Recording that food was eaten/spoiled
+  and adding to Edibl's shopping list from myMeal's chat are now **undoable** too
+  (previously only adding stock was) — every cross-app pantry change has a
+  one-tap Undo, matching myMeal's own actions.
+
 ## 1.1.1
 
 - **Undo pantry adds from myMeal's chat.** When myMeal adds stock to Edibl, the

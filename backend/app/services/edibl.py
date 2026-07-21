@@ -243,15 +243,28 @@ class EdiblClient:
         return self._put(f"/api/v1/stock/{lot_id}", fields)
 
     def consume(self, lot_id: str, quantity: float = 1, outcome: str = "eaten") -> dict:
-        """Record consumption from a lot (feeds runout + shelf-life learning)."""
+        """Record consumption from a lot (feeds runout + shelf-life learning).
+        The response's data carries `consumptionId`/`consumedAmount` for undo."""
         return self._post(f"/api/v1/stock/{lot_id}/consume",
                           {"quantity": quantity, "outcome": outcome})
+
+    def unconsume(self, lot_id: str, consumption_id=None, amount: float = 0) -> dict:
+        """Reverse a consumption: restore `amount` to the lot and delete the
+        ConsumptionEvent (used to undo a record-consumption)."""
+        body = {"amount": amount}
+        if consumption_id:
+            body["consumptionId"] = consumption_id
+        return self._post(f"/api/v1/stock/{lot_id}/unconsume", body)
 
     def delete_stock(self, lot_id: str) -> dict:
         """Remove a lot by id (used to undo an add)."""
         return self._delete(f"/api/v1/stock/{lot_id}")
 
     def add_shopping(self, name: str, quantity: float = 1, unit: str = "count") -> dict:
-        """Add an item to Edibl's shopping list."""
+        """Add an item to Edibl's shopping list. Response data carries the item id."""
         return self._post("/api/v1/shopping",
                           {"name": name, "quantity": quantity, "unit": unit})
+
+    def delete_shopping(self, item_id: str) -> dict:
+        """Remove an Edibl shopping item by id (used to undo an add)."""
+        return self._delete(f"/api/v1/shopping/{item_id}")

@@ -94,8 +94,8 @@ and never shown again.
 
 **One chat, both apps.** Once Edibl is connected, myMeal's chat can also *manage*
 your pantry — "do we have eggs?", "add 2 L milk to the pantry", "we ate the
-leftovers" — not just read it. Adding pantry stock shows a one-tap **Undo** just
-like myMeal's own actions. And Edibl's chat gains myMeal tools too (look up
+leftovers" — not just read it. Every pantry change it makes shows a one-tap
+**Undo**, just like myMeal's own actions. And Edibl's chat gains myMeal tools too (look up
 recipes, plan meals, manage its shopping list). It's fully optional: if the other
 app isn't connected, neither chat shows the other's tools, and each app is
 completely standalone.

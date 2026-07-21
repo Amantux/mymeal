@@ -27,10 +27,17 @@ class _StubClient:
         return {"id": "lot-9", "product": {"name": name}}
 
     def consume(self, lot_id, **kw):
-        return {"ok": True, "data": {}}
+        return {"ok": True, "data": {"consumptionId": "ce-1",
+                                     "consumedAmount": kw.get("quantity", 1)}}
+
+    def unconsume(self, lot_id, consumption_id=None, amount=0):
+        return {"ok": True}
 
     def add_shopping(self, name, **kw):
-        return {"ok": True, "data": {}}
+        return {"ok": True, "data": {"id": "si-1"}}
+
+    def delete_shopping(self, item_id):
+        return {"ok": True}
 
 
 def _use_stub(monkeypatch, configured=True):
@@ -75,14 +82,25 @@ def test_edibl_add_stock_chip_has_no_undo_without_lot_id(monkeypatch):
     assert "undo" not in chip
 
 
-def test_edibl_consumption_surfaced_without_undo(monkeypatch):
+def test_edibl_consumption_chip_is_undoable(monkeypatch):
     _use_stub(monkeypatch)
     res = agent.execute_tool("gid", "edibl_record_consumption",
                              {"name": "Milk", "quantity": 1, "outcome": "eaten"})
     assert res["consumed"] == "Milk"
     chip = actions_from_trace(
         [{"tool": "edibl_record_consumption", "args": {}, "result": res}])[0]
-    assert chip["kind"] == "consume" and "undo" not in chip
+    assert chip["kind"] == "consume"
+    assert chip["undo"] == {"kind": "edibl_unconsume", "lotId": "lot-9",
+                            "consumptionId": "ce-1", "amount": 1}
+
+
+def test_edibl_shopping_chip_is_undoable(monkeypatch):
+    _use_stub(monkeypatch)
+    res = agent.execute_tool("gid", "edibl_add_to_shopping", {"name": "Butter"})
+    assert res["addedToShopping"] == "Butter" and res["shoppingId"] == "si-1"
+    chip = actions_from_trace(
+        [{"tool": "edibl_add_to_shopping", "args": {}, "result": res}])[0]
+    assert chip["undo"] == {"kind": "edibl_shopping", "id": "si-1"}
 
 
 def test_edibl_tool_degrades_when_not_configured(monkeypatch):
@@ -157,7 +175,67 @@ def test_undo_endpoint_502_when_edibl_unreachable(monkeypatch, tmp_path):
     assert r.status_code == 502 and r.get_json()["undone"] is False
 
 
+def test_undo_endpoint_deletes_edibl_shopping(monkeypatch, tmp_path):
+    from app.services import edibl as edibl_mod
+    called = {}
+
+    class _Stub:
+        configured = True
+
+        def delete_shopping(self, item_id):
+            called["id"] = item_id
+            return {"ok": True}
+
+    monkeypatch.setattr(edibl_mod.EdiblClient, "from_settings",
+                        classmethod(lambda cls, *a, **k: _Stub()))
+    c = _make_app(tmp_path, "ushop.db").test_client()
+    r = c.post("/api/v1/ai/chat/undo", json={"kind": "edibl_shopping", "id": "si-9"})
+    assert r.status_code == 200 and r.get_json()["undone"] is True
+    assert called["id"] == "si-9"
+
+
+def test_undo_endpoint_reverses_consumption(monkeypatch, tmp_path):
+    from app.services import edibl as edibl_mod
+    called = {}
+
+    class _Stub:
+        configured = True
+
+        def unconsume(self, lot_id, consumption_id=None, amount=0):
+            called.update(lot=lot_id, event=consumption_id, amount=amount)
+            return {"ok": True}
+
+    monkeypatch.setattr(edibl_mod.EdiblClient, "from_settings",
+                        classmethod(lambda cls, *a, **k: _Stub()))
+    c = _make_app(tmp_path, "uncon.db").test_client()
+    r = c.post("/api/v1/ai/chat/undo", json={
+        "kind": "edibl_unconsume", "lotId": "lot-2",
+        "consumptionId": "ce-2", "amount": 3})
+    assert r.status_code == 200 and r.get_json()["undone"] is True
+    assert called == {"lot": "lot-2", "event": "ce-2", "amount": 3}
+
+
 def test_undo_endpoint_rejects_unknown_kind(tmp_path):
     c = _make_app(tmp_path, "ubad.db").test_client()
     r = c.post("/api/v1/ai/chat/undo", json={"kind": "nope", "id": "x"})
     assert r.status_code == 400
+
+
+def test_undo_endpoint_rejects_path_traversal_id(monkeypatch, tmp_path):
+    """An id must not be able to smuggle a path into the Edibl URL."""
+    from app.services import edibl as edibl_mod
+    called = {"n": 0}
+
+    class _Stub:
+        configured = True
+
+        def delete_shopping(self, item_id):
+            called["n"] += 1
+            return {"ok": True}
+
+    monkeypatch.setattr(edibl_mod.EdiblClient, "from_settings",
+                        classmethod(lambda cls, *a, **k: _Stub()))
+    c = _make_app(tmp_path, "utrav.db").test_client()
+    r = c.post("/api/v1/ai/chat/undo",
+               json={"kind": "edibl_shopping", "id": "../stock/victim"})
+    assert r.status_code == 502 and called["n"] == 0  # rejected before any call

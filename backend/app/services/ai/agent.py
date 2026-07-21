@@ -204,10 +204,9 @@ _ACTION_FORMATTERS = {
             if r.get("itemId") else {})}
         if r.get("added") else None
     ),
-    # Cross-app (Edibl) mutations. `edibl_add_stock` is undoable via the server
-    # undo-proxy (POST /ai/chat/undo -> Edibl DELETE), because the browser can't
-    # reach Edibl. Consumption/shopping stay non-undoable here (reverse those
-    # from Edibl's own chat).
+    # Cross-app (Edibl) mutations — all undoable via the server undo-proxy
+    # (POST /ai/chat/undo -> Edibl), because the browser can't reach Edibl. The
+    # undo descriptor is present only when we have the ids needed to reverse.
     "edibl_add_stock": lambda r: (
         {"label": f'Added {r.get("quantity", 1)} {r.get("unit", "")} '
                   f'{r["added"]} to the Edibl pantry'.replace("  ", " "),
@@ -218,12 +217,17 @@ _ACTION_FORMATTERS = {
     ),
     "edibl_record_consumption": lambda r: (
         {"label": f'Recorded {r["consumed"]} {r.get("outcome", "eaten")} in Edibl',
-         "kind": "consume", "icon": "🍽️"}
+         "kind": "consume", "icon": "🍽️",
+         **({"undo": {"kind": "edibl_unconsume", "lotId": r["lotId"],
+                      "consumptionId": r["consumptionId"], "amount": r.get("amount")}}
+            if r.get("lotId") and r.get("consumptionId") else {})}
         if r.get("consumed") else None
     ),
     "edibl_add_to_shopping": lambda r: (
         {"label": f'Added {r["addedToShopping"]} to Edibl\'s shopping list',
-         "kind": "shopping", "icon": "🛒"}
+         "kind": "shopping", "icon": "🛒",
+         **({"undo": {"kind": "edibl_shopping", "id": r["shoppingId"]}}
+            if r.get("shoppingId") else {})}
         if r.get("addedToShopping") else None
     ),
 }
@@ -357,9 +361,12 @@ def _edibl_tool(name: str, args: dict):
                              outcome=args.get("outcome") or "eaten")
         if not res.get("ok"):
             return {"error": _edibl_reason(res)}
+        data = res.get("data") or {}
         return {"consumed": (lot.get("product") or {}).get("name") or args.get("name"),
                 "quantity": args.get("quantity") or 1,
-                "outcome": args.get("outcome") or "eaten"}
+                "outcome": args.get("outcome") or "eaten",
+                "lotId": lot["id"], "consumptionId": data.get("consumptionId"),
+                "amount": data.get("consumedAmount")}
 
     if name == "edibl_add_to_shopping":
         res = client.add_shopping(str(args.get("name", "")).strip(),
@@ -367,7 +374,8 @@ def _edibl_tool(name: str, args: dict):
                                   unit=args.get("unit") or "count")
         if not res.get("ok"):
             return {"error": _edibl_reason(res)}
-        return {"addedToShopping": args.get("name")}
+        item = res.get("data") or {}
+        return {"addedToShopping": args.get("name"), "shoppingId": item.get("id")}
 
     return {"error": f"unknown edibl tool {name}"}
 
