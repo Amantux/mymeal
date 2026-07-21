@@ -93,14 +93,20 @@ and never shown again.
 
 ## Voice control with Assist
 
-The add-on exposes an MCP server on port `7851`. To let Assist cook with it:
-
+The add-on runs an MCP server on port `7851`. To let Assist cook with it:
 **Settings → Devices & Services → Add Integration → Model Context Protocol**,
-then use:
+then point it at the SSE endpoint.
+
+By default the port is **internal only** — Home Assistant reaches it over its
+own network, so use the add-on's hostname:
 
 ```
-http://<your-ha-host>:7851/sse
+http://<mymeal-addon-hostname>:7851/sse
 ```
+
+Prefer a fixed address, or connecting from another machine? Open the add-on's
+**Network** tab, give port `7851` a host port, and use
+`http://<your-ha-host>:7851/sse` instead.
 
 Ask things like *"what's for dinner?"*, *"add milk to my shopping list"*, or
 *"what can I cook with what I have?"*.
@@ -108,6 +114,24 @@ Ask things like *"what's for dinner?"*, *"add milk to my shopping list"*, or
 For entities (sensors, a meal-plan calendar, services), also install the
 companion **myMeal integration** from HACS — see the repository README. The
 integration auto-discovers this add-on, so you should not need to type a URL.
+
+## Network & ports
+
+Out of the box myMeal is **fully internal**: the web UI is reached through the
+Home Assistant sidebar (ingress), and the MCP server is reached by Home
+Assistant over its internal network. **No ports are published to your network**,
+which is the recommended, most secure setup.
+
+If you want direct LAN access, open the add-on's **Network** tab and assign a
+host port:
+
+| Port | Give it a host port when you want to… |
+|---|---|
+| `7850` | reach the REST API directly from the LAN, or let the HACS integration connect over the network instead of the internal one |
+| `7851` | reach the MCP server from a machine other than Home Assistant |
+
+Leave a port blank to keep it internal-only. You can change the host port here
+at any time.
 
 ## Data and backups
 

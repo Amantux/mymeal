@@ -21,10 +21,17 @@ discovery:
 # Query the Supervisor to auto-discover a companion Edibl add-on.
 hassio_api: true
 # Expose the MCP server (SSE) so the Home Assistant MCP Client can connect.
+# Ports are INTERNAL-ONLY by default (null = not published to the host). myMeal
+# is used via the sidebar (ingress), and Home Assistant reaches the MCP server
+# on the internal network — neither needs a host port. To allow LAN access
+# (e.g. the MCP Client from another machine, or the HACS integration over the
+# network), set a host port for the relevant line in the add-on's Network tab.
 ports:
-  7851/tcp: 7851
+  7850/tcp: null
+  7851/tcp: null
 ports_description:
-  7851/tcp: myMeal MCP server (SSE) for the Home Assistant MCP Client
+  7850/tcp: myMeal REST API — map only for direct LAN / HACS-over-network access (Ingress does not need it)
+  7851/tcp: myMeal MCP server (SSE) — map only to reach it from outside Home Assistant
 map:
   - share:rw
 options:
