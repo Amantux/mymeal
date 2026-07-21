@@ -18,6 +18,8 @@ panel_title: myMeal
 # Advertise to Home Assistant so the companion integration auto-discovers us.
 discovery:
   - mymeal
+# Query the Supervisor to auto-discover a companion Edibl add-on.
+hassio_api: true
 # Expose the MCP server (SSE) so the Home Assistant MCP Client can connect.
 ports:
   7851/tcp: 7851

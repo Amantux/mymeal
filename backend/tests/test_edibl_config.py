@@ -105,3 +105,69 @@ def test_edibl_config_isolated_between_groups(app):
         assert effective(base, g2.id)["url"] == "http://g2:8099"
         assert effective(base, g1.id)["token"] == "tok1"
         assert effective(base, g2.id)["token"] == ""   # g2 never set one; no bleed
+
+
+def test_discover_edibl_via_supervisor(monkeypatch):
+    """Auto-discovery on a Supervised install: query /addons, resolve the
+    hash-prefixed edibl slug to its real hostname:ingress_port, probe status."""
+    import httpx
+    from app.services.ai import discovery as d
+
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "tok")
+    responses = {
+        "http://supervisor/addons": {"data": {"addons": [
+            {"slug": "a0d7b954_edibl", "name": "Edibl"},
+            {"slug": "core_mosquitto", "name": "Mosquitto"}]}},
+        "http://supervisor/addons/a0d7b954_edibl/info":
+            {"data": {"hostname": "a0d7b954-edibl", "ingress_port": 7746}},
+    }
+
+    class Resp:
+        def __init__(self, status=200, data=None):
+            self.status_code, self._d = status, data
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError("x", request=None, response=None)
+        def json(self):
+            return self._d
+
+    def fake_get(url, headers=None, timeout=None):
+        if url in responses:
+            return Resp(data=responses[url])
+        if url == "http://a0d7b954-edibl:7746/api/v1/status":
+            return Resp(status=200)
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(d.httpx, "get", fake_get)
+    found = d.discover_edibl()
+    assert found == {"url": "http://a0d7b954-edibl:7746", "via": "supervisor",
+                     "needsAuth": False}
+
+
+def test_discover_edibl_flags_needs_auth(monkeypatch):
+    """A reachable Edibl that answers 401 is found, flagged needsAuth."""
+    import httpx
+    from app.services.ai import discovery as d
+
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "tok")
+
+    class Resp:
+        def __init__(self, status=200, data=None):
+            self.status_code, self._d = status, data
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError("x", request=None, response=None)
+        def json(self):
+            return self._d
+
+    def fake_get(url, headers=None, timeout=None):
+        if url == "http://supervisor/addons":
+            return Resp(data={"data": {"addons": [{"slug": "edibl", "name": "Edibl"}]}})
+        if url == "http://supervisor/addons/edibl/info":
+            return Resp(data={"data": {"hostname": "edibl", "ingress_port": 7746}})
+        if url == "http://edibl:7746/api/v1/status":
+            return Resp(status=401)
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(d.httpx, "get", fake_get)
+    assert d.discover_edibl()["needsAuth"] is True

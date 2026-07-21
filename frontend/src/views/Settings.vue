@@ -275,7 +275,7 @@ async function findOllama() {
       <label class="field">
         <span class="lbl">Edibl URL</span>
         <div class="row">
-          <input v-model="edibl.url" class="fill" placeholder="http://edibl:8099" />
+          <input v-model="edibl.url" class="fill" placeholder="http://edibl:7746" />
           <button type="button" class="secondary" :disabled="ediblBusy" @click="findEdibl">
             {{ ediblBusy ? '…' : 'Find Edibl' }}
           </button>

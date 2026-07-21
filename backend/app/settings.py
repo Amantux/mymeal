@@ -210,7 +210,7 @@ FIELDS: tuple[Field, ...] = (
 
     # --- Edibl (sibling food-inventory app) ---
     Field("EDIBL_URL", as_str, "",
-          "Base URL of a companion Edibl instance (e.g. http://edibl:8099). "
+          "Base URL of a companion Edibl instance (e.g. http://edibl:7746). "
           "Blank disables the integration. When set, myMeal can pull real stock "
           "and push meal-plan ingredients. Can also be set in the UI (remembered).",
           ha_option="edibl_url"),

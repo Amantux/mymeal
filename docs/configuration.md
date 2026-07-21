@@ -92,7 +92,7 @@ docker compose run --rm app python3 -m app.config_check
 
 | Variable | Type | Default | Secret | Restart | Notes |
 |---|---|---|---|---|---|
-| `MYMEAL_EDIBL_URL` | string | `_(empty)_` | no | yes | Base URL of a companion Edibl instance (e.g. http://edibl:8099). Blank disables the integration. When set, myMeal can pull real stock and push meal-plan ingredients. Can also be set in the UI (remembered). HA option: `edibl_url`. |
+| `MYMEAL_EDIBL_URL` | string | `_(empty)_` | no | yes | Base URL of a companion Edibl instance (e.g. http://edibl:7746). Blank disables the integration. When set, myMeal can pull real stock and push meal-plan ingredients. Can also be set in the UI (remembered). HA option: `edibl_url`. |
 | `MYMEAL_EDIBL_API_TOKEN` | string | `_(empty)_` | **yes** | yes | API token myMeal presents to Edibl (Edibl tokens API). Sent as a Bearer token. Not needed when Edibl runs behind HA ingress with auth disabled. HA option: `edibl_token`. Supports `MYMEAL_EDIBL_API_TOKEN_FILE`. |
 
 ### Serving

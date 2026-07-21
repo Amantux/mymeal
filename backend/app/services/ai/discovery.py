@@ -91,56 +91,74 @@ def _supervisor_addon_hosts() -> list[str]:
     return hosts
 
 
-def _supervisor_addons() -> list[dict]:
-    """Raw add-on list from the Supervisor (empty outside HA / on error)."""
+# Edibl's REST API listens on its add-on ingress port; this is the default in
+# Edibl's add-on config. Used only as a fallback when the Supervisor doesn't
+# report the port.
+EDIBL_DEFAULT_PORT = 7746
+# Edibl's health/status path (its api is under /api/v1, misc exposes /status).
+EDIBL_HEALTH_PATH = "/api/v1/status"
+
+
+def _supervisor_get(path: str):
+    """GET a Supervisor endpoint with the add-on token. Returns parsed JSON
+    ``data`` or None. Requires ``hassio_api: true`` in the add-on config."""
     token = os.environ.get("SUPERVISOR_TOKEN")
     if not token:
-        return []
+        return None
     try:
-        r = httpx.get("http://supervisor/addons",
+        r = httpx.get(f"http://supervisor{path}",
                       headers={"Authorization": f"Bearer {token}"}, timeout=PROBE_TIMEOUT)
         r.raise_for_status()
-        return (r.json().get("data") or {}).get("addons") or []
+        return r.json().get("data")
     except Exception as exc:  # noqa: BLE001
-        logger.debug("supervisor add-on query failed: %s", exc)
-        return []
+        logger.debug("supervisor GET %s failed: %s", path, exc)
+        return None
 
 
-def discover_edibl() -> dict | None:
-    """Locate a companion Edibl add-on/instance.
+def _supervisor_addons() -> list[dict]:
+    data = _supervisor_get("/addons")
+    return (data or {}).get("addons") or []
 
-    Prefers the Supervisor add-on list (so it works with no manual URL); the
-    Edibl add-on is reachable from myMeal by its container hostname on the
-    internal network. Falls back to probing the usual addresses. Confirms a
-    candidate by hitting Edibl's health endpoint. Returns
-    {"url": ..., "via": "supervisor"|"probe"} or None. Never raises.
+
+def _edibl_candidates() -> list[tuple[str, str]]:
+    """(base_url, via) candidates for an Edibl instance, best first.
+
+    Asks the Supervisor for installed add-ons whose slug/name mentions Edibl,
+    then fetches each one's info for the real container hostname + ingress port
+    (the add-on is reachable at that hostname:port on the internal network).
     """
-    candidates: list[tuple[str, str]] = []
+    out: list[tuple[str, str]] = []
     for addon in _supervisor_addons():
         slug = str(addon.get("slug", ""))
         name = str(addon.get("name", ""))
         if "edibl" not in f"{slug} {name}".lower():
             continue
-        hostname = addon.get("hostname") or slug.replace("_", "-")
-        # Edibl's app port (its add-on ingress port); default 8099 per its config.
-        for port in (8099, 8080, 7860):
-            candidates.append((f"http://{hostname}:{port}", "supervisor"))
-        if addon.get("ip_address"):
-            candidates.append((f"http://{addon['ip_address']}:8099", "supervisor"))
+        info = _supervisor_get(f"/addons/{slug}/info") or {}
+        hostname = info.get("hostname") or addon.get("hostname") or slug.replace("_", "-")
+        port = info.get("ingress_port") or EDIBL_DEFAULT_PORT
+        out.append((f"http://{hostname}:{port}", "supervisor"))
+        if info.get("ip_address"):
+            out.append((f"http://{info['ip_address']}:{port}", "supervisor"))
+    # Fixed fallbacks (local add-on hostname, mDNS, bare service name).
+    for host in ("http://local-edibl", "http://edibl", "http://homeassistant.local"):
+        out.append((f"{host}:{EDIBL_DEFAULT_PORT}", "probe"))
+    return out
 
-    for host in ("http://edibl:8099", "http://homeassistant.local:8099",
-                 "http://localhost:8099"):
-        candidates.append((host, "probe"))
 
-    for url, via in candidates:
+def discover_edibl() -> dict | None:
+    """Locate a companion Edibl add-on/instance. Confirms a candidate by hitting
+    Edibl's status endpoint. Returns {"url", "via", "needsAuth"} or None. Never
+    raises. (Requires hassio_api for the Supervisor path; the fixed fallbacks
+    work without it if the hostnames happen to match.)"""
+    for url, via in _edibl_candidates():
+        base = url.rstrip("/")
         try:
-            r = httpx.get(f"{url.rstrip('/')}/api/v1/misc/health", timeout=PROBE_TIMEOUT)
-            if r.status_code < 500:  # reachable (200, or 401/403 if it wants auth)
-                logger.info("Discovered Edibl at %s (via %s)", url, via)
-                return {"url": url.rstrip("/"), "via": via,
-                        "needsAuth": r.status_code in (401, 403)}
-        except Exception:  # noqa: BLE001 - absence is normal
+            r = httpx.get(f"{base}{EDIBL_HEALTH_PATH}", timeout=PROBE_TIMEOUT)
+        except Exception:  # noqa: BLE001 - absence is the normal case
             continue
+        if r.status_code < 500:  # answered (200, or 401/403 if it wants auth)
+            logger.info("Discovered Edibl at %s (via %s)", base, via)
+            return {"url": base, "via": via, "needsAuth": r.status_code in (401, 403)}
     return None
 
 
