@@ -149,7 +149,19 @@ async function findEdibl() {
       edibl.url = res.url
       ui.toast(`Found Edibl at ${res.url}`)
     } else {
-      ui.error(res.hint || 'No Edibl found')
+      // Surface WHY it failed, using the debug endpoint — the most common cause
+      // is the add-on lacking the manager role to see sibling add-ons.
+      let why = res.hint || 'No Edibl found'
+      try {
+        const dbg = await api.get('/edibl/discover/debug')
+        if (dbg.supervisorAddonsQuery === 'denied-need-manager-role') {
+          why = "Can't see other add-ons — the myMeal add-on needs the 'manager' " +
+                'role. Update the add-on, or enter the Edibl URL manually.'
+        } else if (dbg.supervisorAddonsQuery === 'no-supervisor-token') {
+          why = 'Not running as a Home Assistant add-on — enter the Edibl URL manually.'
+        }
+      } catch (e) { /* debug is best-effort */ }
+      ui.error(why)
     }
   } finally {
     ediblBusy.value = false

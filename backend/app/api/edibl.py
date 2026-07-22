@@ -81,9 +81,20 @@ def discover():
         return jsonify({
             "found": False,
             "hint": "No Edibl add-on found. Install the Edibl add-on, or enter "
-                    "its URL manually.",
+                    "its URL manually. Use 'Why?' (discover/debug) to see what "
+                    "was tried.",
         })
     return jsonify({"found": True, **found})
+
+
+@bp.get("/edibl/discover/debug")
+@owner_required
+def discover_debug():
+    """Diagnose a failed 'Find Edibl': Supervisor token/role state, matched
+    add-ons, and every host probed. No secrets. Mirrors Edibl's endpoint."""
+    from ..services.ai.discovery import discover_edibl_debug
+
+    return jsonify(discover_edibl_debug())
 
 
 @bp.get("/edibl/status")

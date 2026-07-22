@@ -120,46 +120,107 @@ def _supervisor_addons() -> list[dict]:
     return (data or {}).get("addons") or []
 
 
-def _edibl_candidates() -> list[tuple[str, str]]:
-    """(base_url, via) candidates for an Edibl instance, best first.
+def _edibl_internal_port(info: dict) -> int:
+    """Edibl's internal port: prefer ingress_port, else the first mapped
+    container port, else the default."""
+    if info.get("ingress_port"):
+        return info["ingress_port"]
+    for container_port in (info.get("network") or {}):
+        try:
+            return int(str(container_port).split("/")[0])
+        except (ValueError, TypeError):
+            continue
+    return EDIBL_DEFAULT_PORT
 
-    Asks the Supervisor for installed add-ons whose slug/name mentions Edibl,
-    then fetches each one's info for the real container hostname + ingress port
-    (the add-on is reachable at that hostname:port on the internal network).
+
+def _probe_edibl(url: str) -> dict:
+    """Probe a candidate URL. reachable = any status < 500 (a 401/403 still means
+    'something is there', just wants auth)."""
+    try:
+        r = httpx.get(f"{url.rstrip('/')}{EDIBL_HEALTH_PATH}", timeout=PROBE_TIMEOUT)
+        return {"reachable": r.status_code < 500, "status": r.status_code, "error": None}
+    except Exception as exc:  # noqa: BLE001 - absence is the normal case
+        return {"reachable": False, "status": None, "error": type(exc).__name__}
+
+
+def _edibl_candidate_hosts() -> list[tuple[str, str, bool | None]]:
+    """(url, slug, running) candidates to try, deduped. Combines the Supervisor
+    add-on list (when permitted) with fixed internal hostnames, so discovery
+    works even when the Supervisor denies reading a *sibling* add-on's info
+    (which needs the manager role). Reachability is NOT checked here.
+
+    Copied from Edibl's discover_mymeal so both apps find each other the same
+    way, incl. the `local-<slug>` / dashed-slug hostname variants.
     """
-    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    out: list[tuple[str, str, bool | None]] = []
+
+    def add(host: str, port: int, slug: str = "", running: bool | None = None):
+        if not host:
+            return
+        url = f"http://{host}:{port}"
+        if url in seen:
+            return
+        seen.add(url)
+        out.append((url, slug, running))
+
     for addon in _supervisor_addons():
         slug = str(addon.get("slug", ""))
         name = str(addon.get("name", ""))
-        if "edibl" not in f"{slug} {name}".lower():
+        if "edibl" not in f"{name} {slug}".lower():
             continue
+        # /info on a SIBLING add-on needs the manager role; tolerate its absence.
         info = _supervisor_get(f"/addons/{slug}/info") or {}
-        hostname = info.get("hostname") or addon.get("hostname") or slug.replace("_", "-")
-        port = info.get("ingress_port") or EDIBL_DEFAULT_PORT
-        out.append((f"http://{hostname}:{port}", "supervisor"))
-        if info.get("ip_address"):
-            out.append((f"http://{info['ip_address']}:{port}", "supervisor"))
-    # Fixed fallbacks (local add-on hostname, mDNS, bare service name).
-    for host in ("http://local-edibl", "http://edibl", "http://homeassistant.local"):
-        out.append((f"{host}:{EDIBL_DEFAULT_PORT}", "probe"))
+        running = addon.get("state") == "started"
+        port = _edibl_internal_port(info) if info else EDIBL_DEFAULT_PORT
+        add(info.get("hostname") or addon.get("hostname"), port, slug, running)
+        if slug:
+            add(f"local-{slug}", port, slug, running)
+            add(slug.replace("_", "-"), port, slug, running)
+
+    for host in ("local-edibl", "edibl", "homeassistant.local"):
+        add(host, EDIBL_DEFAULT_PORT)
     return out
 
 
 def discover_edibl() -> dict | None:
-    """Locate a companion Edibl add-on/instance. Confirms a candidate by hitting
-    Edibl's status endpoint. Returns {"url", "via", "needsAuth"} or None. Never
-    raises. (Requires hassio_api for the Supervisor path; the fixed fallbacks
-    work without it if the hostnames happen to match.)"""
-    for url, via in _edibl_candidates():
-        base = url.rstrip("/")
-        try:
-            r = httpx.get(f"{base}{EDIBL_HEALTH_PATH}", timeout=PROBE_TIMEOUT)
-        except Exception:  # noqa: BLE001 - absence is the normal case
-            continue
-        if r.status_code < 500:  # answered (200, or 401/403 if it wants auth)
-            logger.info("Discovered Edibl at %s (via %s)", base, via)
-            return {"url": base, "via": via, "needsAuth": r.status_code in (401, 403)}
+    """Find a companion Edibl on the internal add-on network. Returns the first
+    candidate whose status endpoint actually answers (so it works even when the
+    Supervisor denies cross-add-on queries and never returns a dead host), or
+    None. Never raises. Shape kept back-compatible: {"url", "via", "needsAuth"}.
+    """
+    for url, slug, _running in _edibl_candidate_hosts():
+        probe = _probe_edibl(url)
+        if probe["reachable"]:
+            logger.info("Discovered Edibl at %s", url)
+            return {"url": url, "via": "supervisor" if slug else "probe",
+                    "needsAuth": probe["status"] in (401, 403)}
     return None
+
+
+def discover_edibl_debug() -> dict:
+    """Read-only diagnostics for the 'Find Edibl' button: is the Supervisor
+    token present, was the add-on list readable (and if not, is it a
+    missing-manager-role problem), which add-ons matched, and every host tried
+    with its probe result. Contains no secrets. Copied from Edibl."""
+    token = bool(os.environ.get("SUPERVISOR_TOKEN"))
+    # /addons/self/info is readable by the DEFAULT role, so it isolates the
+    # failure mode: self works but /addons doesn't => needs manager role.
+    self_info = _supervisor_get("/addons/self/info") or {}
+    addons = _supervisor_get("/addons")
+    if not token:
+        addons_state = "no-supervisor-token"
+    elif addons is None:
+        addons_state = "denied-need-manager-role" if self_info else "denied-or-unreachable"
+    else:
+        addons_state = "ok"
+    matched = [{"slug": a.get("slug"), "name": a.get("name"), "state": a.get("state")}
+               for a in (addons or {}).get("addons", [])
+               if "edibl" in f"{a.get('name', '')} {a.get('slug', '')}".lower()]
+    tried = [{"url": url, **_probe_edibl(url)} for url, _s, _r in _edibl_candidate_hosts()]
+    return {"supervisorToken": token, "supervisorAddonsQuery": addons_state,
+            "selfHostname": self_info.get("hostname"), "matchedAddons": matched,
+            "tried": tried, "found": [t["url"] for t in tried if t["reachable"]]}
 
 
 def discover_ollama() -> dict | None:

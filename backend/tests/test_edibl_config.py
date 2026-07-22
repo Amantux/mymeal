@@ -171,3 +171,68 @@ def test_discover_edibl_flags_needs_auth(monkeypatch):
 
     monkeypatch.setattr(d.httpx, "get", fake_get)
     assert d.discover_edibl()["needsAuth"] is True
+
+
+def test_discover_works_without_sibling_info_via_fixed_host(monkeypatch):
+    """Manager role denied (/addons unreadable) must NOT break discovery — a
+    fixed hostname (edibl:7746) still resolves. This is the Edibl-copied
+    robustness the old version lacked."""
+    import httpx
+    from app.services.ai import discovery as d
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "tok")
+
+    def fake_get(url, headers=None, timeout=None, params=None):
+        class R:
+            def __init__(s, c): s.status_code = c
+            def raise_for_status(s):
+                if s.status_code >= 400:
+                    raise httpx.HTTPStatusError("x", request=None, response=None)
+            def json(s): return {}
+        if url.startswith("http://supervisor"):
+            raise httpx.HTTPStatusError("403", request=None, response=None)
+        if url == "http://edibl:7746/api/v1/status":
+            return R(200)
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(d.httpx, "get", fake_get)
+    assert d.discover_edibl()["url"] == "http://edibl:7746"
+
+
+def test_discover_debug_flags_missing_manager_role(monkeypatch):
+    """/addons/self/info readable but /addons denied => needs manager role."""
+    import httpx
+    from app.services.ai import discovery as d
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "tok")
+
+    def fake_get(url, headers=None, timeout=None, params=None):
+        class R:
+            def __init__(s, c, data=None):
+                s.status_code = c
+                s._d = data or {}
+            def raise_for_status(s):
+                if s.status_code >= 400:
+                    raise httpx.HTTPStatusError("x", request=None, response=None)
+            def json(s): return s._d
+        if url == "http://supervisor/addons/self/info":
+            return R(200, {"data": {"hostname": "local-mymeal"}})
+        if url == "http://supervisor/addons":
+            raise httpx.HTTPStatusError("403", request=None, response=None)
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(d.httpx, "get", fake_get)
+    dbg = d.discover_edibl_debug()
+    assert dbg["supervisorAddonsQuery"] == "denied-need-manager-role"
+    assert dbg["selfHostname"] == "local-mymeal"
+    assert "tried" in dbg and isinstance(dbg["tried"], list)
+
+
+def test_discover_debug_endpoint_is_owner_only(noauth_app):
+    c = noauth_app.test_client()
+    SUP = {"REMOTE_ADDR": "172.30.32.2"}
+    c.get("/api/v1/users/self", headers={"X-Remote-User-Id": "own"}, environ_overrides=SUP)
+    c.get("/api/v1/users/self", headers={"X-Remote-User-Id": "mem"}, environ_overrides=SUP)
+    owner = c.get("/api/v1/edibl/discover/debug",
+                  headers={"X-Remote-User-Id": "own"}, environ_overrides=SUP)
+    member = c.get("/api/v1/edibl/discover/debug",
+                   headers={"X-Remote-User-Id": "mem"}, environ_overrides=SUP)
+    assert owner.status_code == 200 and member.status_code == 403

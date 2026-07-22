@@ -20,6 +20,9 @@ discovery:
   - mymeal
 # Query the Supervisor to auto-discover a companion Edibl add-on.
 hassio_api: true
+# manager role is needed to LIST/inspect sibling add-ons (e.g. Edibl) via the
+# Supervisor — the default role can only read this add-on's own info.
+hassio_role: manager
 # Expose the MCP server (SSE) so the Home Assistant MCP Client can connect.
 # Ports are INTERNAL-ONLY by default (null = not published to the host). myMeal
 # is used via the sidebar (ingress), and Home Assistant reaches the MCP server
