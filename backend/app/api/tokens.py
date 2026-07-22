@@ -3,7 +3,7 @@ from flask import Blueprint, request, jsonify, abort
 
 from ..extensions import db
 from ..models import ApiToken, generate_raw_token, hash_token
-from ..auth import login_required, current_group, current_user
+from ..auth import owner_required, current_group, current_user
 from ..schemas.serializers import iso
 
 bp = Blueprint("tokens", __name__)
@@ -20,7 +20,7 @@ def _token_out(t):
 
 
 @bp.get("/tokens")
-@login_required
+@owner_required
 def list_tokens():
     tokens = (
         db.session.query(ApiToken).filter_by(group_id=current_group().id).all()
@@ -29,7 +29,7 @@ def list_tokens():
 
 
 @bp.post("/tokens")
-@login_required
+@owner_required
 def create_token_():
     data = request.get_json(silent=True) or {}
     raw = generate_raw_token()
@@ -47,7 +47,7 @@ def create_token_():
 
 
 @bp.delete("/tokens/<token_id>")
-@login_required
+@owner_required
 def delete_token(token_id):
     token = db.session.get(ApiToken, token_id)
     if not token or token.group_id != current_group().id:

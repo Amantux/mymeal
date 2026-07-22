@@ -49,7 +49,7 @@ const nav = [
         <router-link v-if="auth.isOwner" to="/settings" class="nav-link">
           <span class="ico">⚙️</span> Settings
         </router-link>
-        <router-link to="/home-assistant" class="nav-link">
+        <router-link v-if="auth.isOwner" to="/home-assistant" class="nav-link">
           <span class="ico">🔌</span> Home Assistant
         </router-link>
         <div class="spacer"></div>

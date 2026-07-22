@@ -20,7 +20,7 @@ const routes = [
   { path: '/pantry', redirect: '/' },  // pantry removed; inventory is owned by Edibl
   { path: '/shopping', component: ShoppingList },
   { path: '/settings', component: Settings, meta: { owner: true } },
-  { path: '/home-assistant', component: HomeAssistant },
+  { path: '/home-assistant', component: HomeAssistant, meta: { owner: true } },
   { path: '/login', component: Login, meta: { public: true } },
 ]
 
