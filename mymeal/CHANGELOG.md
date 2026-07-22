@@ -4,24 +4,37 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
-Patch versions are minted automatically on every push to `main`; entries below
-without notes are build-only republishes with no user-visible change.
-
 ## 1.1.8
 
-Build-only republish; no user-visible change.
+- **Manage API keys from Settings.** Creating, viewing, and revoking API keys
+  (for the Home Assistant integration, the MCP server, or a companion app) is
+  now in **Settings → API keys** — the obvious place — instead of tucked inside
+  the Home Assistant page.
+- **Make other people admins.** The first user can now promote other Home
+  Assistant users to **admin** (or remove it) under **Settings → Household
+  members**. Admins manage settings and keys; everyone else just uses the app.
+  There's always at least one admin.
+- **Fixed** a rare first-start crash on a brand-new database (a race between
+  worker processes creating the tables).
 
 ## 1.1.7
 
-Build-only republish; no user-visible change.
+- **API keys are now admin-only.** Minting or revoking keys is a household-admin
+  action, consistent with the other settings.
 
 ## 1.1.6
 
-Build-only republish; no user-visible change.
+- **"Find Edibl" is more reliable**, and now tells you *why* when it can't find
+  it (e.g. the add-on needs the "manager" role, or you're not running under
+  Home Assistant) instead of just failing. It also finds Edibl even when Home
+  Assistant won't let add-ons list each other, by trying the usual addresses.
 
 ## 1.1.5
 
-Build-only republish; no user-visible change.
+- **Everyone gets their own profile.** Behind Home Assistant, each signed-in HA
+  user is now a distinct person in myMeal (so chat history is per-person)
+  instead of one shared account — while still sharing the same recipes, plan,
+  and shopping list. The first user becomes the admin.
 
 ## 1.1.4
 
@@ -66,27 +79,41 @@ Build-only republish; no user-visible change.
 
 ## 1.0.6
 
-Build-only republish; no user-visible change.
+- **Ports are internal-only by default.** myMeal is used via the sidebar
+  (Ingress) and Home Assistant reaches the MCP server internally, so nothing is
+  published to your network out of the box — the safer default. To allow LAN
+  access, assign a host port for `7850` (API) or `7851` (MCP) in the add-on's
+  **Network** tab.
 
 ## 1.0.5
 
-Build-only republish; no user-visible change.
+- **"Find Edibl" now works on Home Assistant Supervised.** The add-on requests
+  the Supervisor access it needs, and looks for Edibl on the right port. (If it
+  still comes up empty, the URL can be entered manually.)
 
 ## 1.0.4
 
-Build-only republish; no user-visible change.
+- **Connect Edibl in a couple of clicks.** New **Settings → Edibl** section with
+  a **Find Edibl** button (auto-discovers the add-on — no token needed when both
+  run behind Home Assistant), a **Test connection** button, and a manual URL for
+  standalone setups.
 
 ## 1.0.3
 
-Build-only republish; no user-visible change.
+- **Set up AI in the app.** Choose your provider (Claude, OpenAI, or Ollama) and
+  enter its key/host right in **Settings** — remembered across restarts — instead
+  of only via environment variables. Also settable from the add-on options.
 
 ## 1.0.2
 
-Build-only republish; no user-visible change.
+- **Reuse the Ollama you already run for Home Assistant.** Clearer guidance and a
+  helper to point myMeal at the same local Ollama server (no second copy of the
+  model in memory).
 
 ## 1.0.1
 
-Build-only republish; no user-visible change.
+- **Works on phones.** Added a navigation drawer so Settings and every page are
+  reachable on mobile (previously the menu was hidden on small screens).
 
 ## 1.0.0
 
@@ -108,84 +135,8 @@ Feature milestone (and first stable release).
   otherwise cleanly unavailable. **On upgrade, the old local pantry table is
   removed and its rows are discarded** (that data now lives in Edibl).
 
-## 0.5.12
+## 0.5.x
 
-Build-only republish; no user-visible change.
-
-## 0.5.11
-
-Build-only republish; no user-visible change.
-
-## 0.5.10
-
-Build-only republish; no user-visible change.
-
-## 0.5.9
-
-Build-only republish; no user-visible change.
-
-## 0.5.8
-
-Build-only republish; no user-visible change.
-
-## 0.5.7
-
-Build-only republish; no user-visible change.
-
-## 0.5.6
-
-Build-only republish; no user-visible change.
-
-## 0.5.5
-
-### Added
-- Add-on documentation (this changelog and the Documentation tab), plus
-  one-click **Add to My Home Assistant** buttons for both the add-on repository
-  and the HACS integration.
-
-## 0.5.4
-
-### Added
-- Brand artwork: add-on icon and logo, plus a banner used by the repository and
-  the HACS store panel.
-
-### Fixed
-- Declared the `http` dependency in the integration manifest. Without it, Home
-  Assistant could set up myMeal *before* `http` was ready, and the integration
-  would fail to load while serving the Lovelace card.
-- Removed an invalid key from `hacs.json` that made HACS validation fail.
-- Corrected integration manifest key ordering to satisfy hassfest.
-
-## 0.5.3
-
-### Fixed
-- **No sign-in prompt behind ingress.** The web UI previously *inferred* whether
-  login was required from whether an unauthenticated request happened to
-  succeed. Any transient error dropped you onto a login screen — which is
-  meaningless inside Home Assistant, since HA has already authenticated you.
-  The backend now states its auth mode explicitly and the UI honours it.
-
-  Auth is unchanged when running outside Home Assistant: it stays fully on.
-
-## 0.5.2
-
-### Changed
-- Repository moved to `github.com/Amantux/mymeal`; the container image is now
-  published as `ghcr.io/amantux/mymeal`. Earlier image references pointed at a
-  namespace that did not exist and could not be pulled.
-
-## 0.5.0 — first public release
-
-### Added
-- **Recipes** — structured ingredients and steps, images, categories, tags,
-  favourites, and search.
-- **AI meal planning** — weekly plan generation, pantry-aware "what can I cook",
-  and recipe import from a URL. Pluggable across Claude, Ollama, and OpenAI;
-  entirely optional, and off unless you configure a provider.
-- **Pantry** — track what you have, with expiry awareness.
-- **Smart shopping lists** — built from your meal plan, deduplicated and grouped
-  by aisle.
-- **Cooking assistant** — a chat agent that helps you build and cook recipes.
-- **Home Assistant integration** — ingress web UI with no separate login, an MCP
-  server for Assist voice control, a meal-plan calendar entity, sensors,
-  services, custom sentences, and a Lovelace card.
+Pre-1.0 development builds: the initial recipe manager, meal planning, smart
+shopping lists, the AI recipe importer and cooking chat, the Home Assistant
+add-on / HACS packaging, and brand artwork. See the Git history for details.

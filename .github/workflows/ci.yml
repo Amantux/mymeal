@@ -126,15 +126,24 @@ jobs:
               json.dump(man, f, indent=2); f.write("\n")
 
           # Keep the add-on changelog in lockstep. Home Assistant shows this file
-          # in the Changelog tab, so a version with no entry looks abandoned to
-          # anyone deciding whether to hit Update. Insert a stub above the newest
-          # entry; a human replaces the placeholder when the change is notable.
+          # in the Changelog tab. Derive a real note from the triggering commit's
+          # SUBJECT for user-facing work (feat/fix), so auto-minted versions get
+          # a meaningful line instead of a useless "build-only" stub; only
+          # chore/docs/ci/etc. fall back to build-only. A human can expand it.
+          import re as _re
+          subject = (os.environ.get("COMMIT_MSG", "").splitlines() or [""])[0].strip()
+          m = _re.match(r"^(feat|fix)(\([^)]*\))?!?:\s*(.+)$", subject, _re.I)
+          if m:
+              note = m.group(3).strip().rstrip(".")
+              note = note[:1].upper() + note[1:]
+              entry = f"\n## {new}\n\n- {note}.\n"
+          else:
+              entry = f"\n## {new}\n\nBuild-only republish; no user-visible change.\n"
           ch_path = "mymeal/CHANGELOG.md"
           ch = open(ch_path).read()
           if f"\n## {new}\n" not in ch:
               idx = ch.index("\n## ")
-              stub = f"\n## {new}\n\nBuild-only republish; no user-visible change.\n"
-              ch = ch[:idx] + stub + ch[idx:]
+              ch = ch[:idx] + entry + ch[idx:]
               open(ch_path, "w").write(ch)
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
