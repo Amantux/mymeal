@@ -1,7 +1,9 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { api } from '../api'
 import { useUI } from '../stores/ui'
+import ErrorState from '../components/ErrorState.vue'
+import { useLoader } from '../composables/useLoader'
 
 const ui = useUI()
 const entries = ref([])
@@ -45,8 +47,10 @@ async function load() {
   entries.value = plan.items
   recipes.value = recs.items
 }
-onMounted(load)
-watch(weekStart, load)
+const { loading, error, reload } = useLoader(load)
+watch(weekStart, reload)
+
+const totalEntries = computed(() => entries.value.length)
 
 function entriesFor(date) {
   return entries.value.filter((e) => e.date && e.date.slice(0, 10) === date)
@@ -60,14 +64,18 @@ async function addEntry(date) {
     await api.post('/mealplans', { date, ...form.value })
     form.value = { mealType: 'dinner', recipeId: '', title: '' }
     adding.value = null
-    await load()
+    await reload()
   } catch (e) {
     ui.error(e.message)
   }
 }
 async function del(id) {
-  await api.del(`/mealplans/${id}`)
-  await load()
+  try {
+    await api.del(`/mealplans/${id}`)
+    await reload()
+  } catch (e) {
+    ui.error(e.message)
+  }
 }
 
 async function generate() {
@@ -75,7 +83,7 @@ async function generate() {
   try {
     await api.post('/ai/plan', { start: iso(weekStart.value), days: 7 })
     ui.toast('Week planned')
-    await load()
+    await reload()
   } catch (e) {
     ui.error(e.message)
   } finally {
@@ -113,7 +121,13 @@ async function buildList() {
     <button class="secondary sm" @click="weekStart = addDays(weekStart, 7)">Next →</button>
   </div>
 
-  <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
+  <div v-if="loading" class="grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
+    <div v-for="n in 7" :key="n" class="skeleton" style="height:150px"></div>
+  </div>
+
+  <ErrorState v-else-if="error" :message="error" @retry="reload" />
+
+  <div v-else class="grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
     <div v-for="d in days" :key="d.date" class="card" style="padding:14px">
       <h3 style="margin-bottom:8px">{{ d.label }}</h3>
       <div v-for="e in entriesFor(d.date)" :key="e.id" class="row" style="margin-bottom:6px">
@@ -121,7 +135,7 @@ async function buildList() {
           <span class="badge">{{ e.mealType }}</span>
           {{ e.recipe ? e.recipe.name : e.title }}
         </span>
-        <button class="ghost sm danger" @click="del(e.id)">✕</button>
+        <button class="ghost sm danger" :aria-label="`Remove ${e.recipe ? e.recipe.name : e.title}`" @click="del(e.id)">✕</button>
       </div>
 
       <template v-if="adding === d.date">

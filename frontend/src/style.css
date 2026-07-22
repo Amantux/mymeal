@@ -151,6 +151,18 @@ input:focus, textarea:focus, select:focus {
   outline: none; border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
+/* Visible keyboard focus for EVERY interactive element (WCAG 2.4.7). Uses
+   :focus-visible so it shows for keyboard/AT users without ringing on mouse
+   clicks. Buttons, links, and click-cards had no focus indicator before. */
+a:focus-visible,
+button:focus-visible,
+[role="button"]:focus-visible,
+[tabindex]:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
 input[type="checkbox"] { width: auto; accent-color: var(--accent); }
 label.field { display: block; margin-bottom: 14px; }
 label.field > span {
@@ -299,5 +311,14 @@ label.field > span {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  /* Honour reduced-motion everywhere: no transitions, transforms, or animated
+     hovers. Belt-and-braces over the per-component rules. */
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
   .sidebar { transition: none; }
+  .item-card:hover { transform: none; }
 }

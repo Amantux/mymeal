@@ -1,21 +1,18 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
 import EmptyState from '../components/EmptyState.vue'
+import ErrorState from '../components/ErrorState.vue'
+import { useLoader } from '../composables/useLoader'
 
 const router = useRouter()
 const recipes = ref([])
-const loading = ref(true)
 
-onMounted(async () => {
-  try {
-    const res = await api.get('/recipes')
-    recipes.value = res.items
-  } finally {
-    loading.value = false
-  }
-})
+async function load() {
+  recipes.value = (await api.get('/recipes')).items
+}
+const { loading, error, reload } = useLoader(load)
 </script>
 
 <template>
@@ -41,6 +38,7 @@ onMounted(async () => {
   <div class="card">
     <h2>Recently added</h2>
     <div v-if="loading" class="skeleton" style="height:120px"></div>
+    <ErrorState v-else-if="error" :message="error" @retry="reload" />
     <EmptyState
       v-else-if="!recipes.length"
       icon="🍳"

@@ -1,35 +1,31 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
 import { useUI } from '../stores/ui'
 import EmptyState from '../components/EmptyState.vue'
+import ErrorState from '../components/ErrorState.vue'
+import { useLoader } from '../composables/useLoader'
+import Modal from '../components/Modal.vue'
 
 const router = useRouter()
 const ui = useUI()
 const recipes = ref([])
-const loading = ref(true)
 const q = ref('')
 const creating = ref(false)
 const newName = ref('')
 
 async function load() {
-  loading.value = true
-  try {
-    const res = await api.get('/recipes' + (q.value ? `?q=${encodeURIComponent(q.value)}` : ''))
-    recipes.value = res.items
-  } finally {
-    loading.value = false
-  }
+  const res = await api.get('/recipes' + (q.value ? `?q=${encodeURIComponent(q.value)}` : ''))
+  recipes.value = res.items
 }
+const { loading, error, reload } = useLoader(load)
 
 let t
 watch(q, () => {
   clearTimeout(t)
-  t = setTimeout(load, 200)
+  t = setTimeout(reload, 200)
 })
-
-onMounted(load)
 
 async function create() {
   const name = newName.value.trim()
@@ -59,6 +55,8 @@ async function create() {
     <div v-for="n in 4" :key="n" class="skeleton" style="height:200px"></div>
   </div>
 
+  <ErrorState v-else-if="error" :message="error" @retry="reload" />
+
   <EmptyState
     v-else-if="!recipes.length"
     icon="🍳"
@@ -73,7 +71,12 @@ async function create() {
       v-for="r in recipes"
       :key="r.id"
       class="item-card"
+      role="button"
+      tabindex="0"
+      :aria-label="`Open recipe ${r.name}`"
       @click="router.push(`/recipes/${r.id}`)"
+      @keydown.enter="router.push(`/recipes/${r.id}`)"
+      @keydown.space.prevent="router.push(`/recipes/${r.id}`)"
     >
       <div class="thumb">
         <img v-if="r.image" :src="r.image" alt="" />
@@ -92,18 +95,14 @@ async function create() {
     </div>
   </div>
 
-  <!-- Minimal create prompt -->
-  <div v-if="creating" class="center-screen" style="position:fixed;inset:0;background:rgba(28,25,23,0.5);z-index:100">
-    <div class="card auth-card">
-      <h2>New recipe</h2>
-      <label class="field">
-        <span>Name</span>
-        <input v-model="newName" placeholder="e.g. Roast Chicken" @keyup.enter="create" autofocus />
-      </label>
-      <div class="row" style="justify-content:flex-end">
-        <button class="secondary" @click="creating = false; newName = ''">Cancel</button>
-        <button @click="create">Create</button>
-      </div>
+  <Modal v-if="creating" title="New recipe" @close="creating = false; newName = ''">
+    <label class="field">
+      <span>Name</span>
+      <input v-model="newName" placeholder="e.g. Roast Chicken" @keyup.enter="create" />
+    </label>
+    <div class="row" style="justify-content:flex-end">
+      <button class="secondary" @click="creating = false; newName = ''">Cancel</button>
+      <button :disabled="!newName.trim()" @click="create">Create</button>
     </div>
-  </div>
+  </Modal>
 </template>

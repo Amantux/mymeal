@@ -1,25 +1,21 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed } from 'vue'
 import { api } from '../api'
 import { useUI } from '../stores/ui'
 import EmptyState from '../components/EmptyState.vue'
+import ErrorState from '../components/ErrorState.vue'
+import { useLoader } from '../composables/useLoader'
 
 const ui = useUI()
 const lists = ref([])
 const activeId = ref(null)
-const loading = ref(true)
 const newItem = ref('')
 
 async function load() {
-  loading.value = true
-  try {
-    lists.value = (await api.get('/shopping-lists')).items
-    if (!activeId.value && lists.value.length) activeId.value = lists.value[0].id
-  } finally {
-    loading.value = false
-  }
+  lists.value = (await api.get('/shopping-lists')).items
+  if (!activeId.value && lists.value.length) activeId.value = lists.value[0].id
 }
-onMounted(load)
+const { loading, error, reload } = useLoader(load)
 
 const active = computed(() => lists.value.find((l) => l.id === activeId.value) || null)
 
@@ -34,9 +30,13 @@ const grouped = computed(() => {
 })
 
 async function newList() {
-  const sl = await api.post('/shopping-lists', { name: 'Shopping List' })
-  activeId.value = sl.id
-  await load()
+  try {
+    const sl = await api.post('/shopping-lists', { name: 'Shopping List' })
+    activeId.value = sl.id
+    await reload()
+  } catch (e) {
+    ui.error(e.message)
+  }
 }
 async function addItem() {
   if (!newItem.value.trim() || !active.value) return
@@ -73,6 +73,7 @@ async function delList() {
   </div>
 
   <div v-if="loading" class="skeleton" style="height:120px"></div>
+  <ErrorState v-else-if="error" :message="error" @retry="reload" />
   <EmptyState v-else-if="!lists.length" icon="🛒" title="No shopping lists" hint="Create one, or build it from a meal plan.">
     <button @click="newList">＋ New list</button>
   </EmptyState>
@@ -100,7 +101,7 @@ async function delList() {
           <span class="fill" :style="item.checked ? 'text-decoration:line-through;color:var(--muted)' : ''">
             <span v-if="item.quantity" class="tnum">{{ item.quantity }} {{ item.unit }} </span>{{ item.display }}
           </span>
-          <button class="ghost sm danger" @click.prevent="del(item)">✕</button>
+          <button class="ghost sm danger" :aria-label="`Remove ${item.display}`" @click.prevent="del(item)">✕</button>
         </label>
       </div>
     </div>
