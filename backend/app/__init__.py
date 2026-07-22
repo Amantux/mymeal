@@ -142,14 +142,35 @@ def create_app(config_object=None):
 
     from . import models  # noqa: F401  (register models)
 
-    with app.app_context():
-        db.create_all()
-        _migrate(app)
+    # Serialize schema init across gunicorn workers. Each worker builds its own
+    # app and would otherwise run db.create_all() concurrently on a fresh DB —
+    # create_all's check-then-create is not atomic across processes, so two
+    # workers race and one dies with "table ... already exists". An exclusive
+    # file lock lets the first worker create the schema; the rest then find it
+    # already there and no-op.
+    _init_schema(app, settings.data_dir)
 
     _register_blueprints(app)
     _register_spa(app)
     _register_errors(app)
     return app
+
+
+def _init_schema(app, data_dir):
+    """Create tables + run additive migrations under an exclusive file lock, so
+    concurrent gunicorn workers don't race db.create_all() on a fresh DB."""
+    import fcntl
+
+    lock_path = os.path.join(data_dir, ".schema-init.lock")
+    with open(lock_path, "w") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        except OSError:
+            pass  # locking unsupported (rare FS) — fall through; create_all is
+                  # still checkfirst, so the race is only a first-boot edge.
+        with app.app_context():
+            db.create_all()
+            _migrate(app)
 
 
 def _migrate(app):

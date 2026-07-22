@@ -1,12 +1,14 @@
 from datetime import datetime, timezone
 
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify, current_app, abort
 
 from ..extensions import db
 from ..models import User, Group, GroupInvitation
 from ..auth import (
     login_required,
+    owner_required,
     current_user,
+    current_group,
     hash_password,
     verify_password,
     create_token,
@@ -133,6 +135,46 @@ def update_self():
         user.email = new_email
     db.session.commit()
     return jsonify({"item": user_out(user)})
+
+
+@bp.get("/users")
+@owner_required
+def list_household():
+    """Household members (owner-only). Lets the owner see who can be promoted."""
+    users = (db.session.query(User)
+             .filter_by(group_id=current_group().id)
+             .order_by(User.is_owner.desc(), User.created_at.asc()).all())
+    me = current_user().id
+    return jsonify([{**user_out(u), "isSelf": u.id == me,
+                     "haLinked": bool(u.ha_user_id)} for u in users])
+
+
+@bp.put("/users/<user_id>/role")
+@owner_required
+def set_role(user_id):
+    """Promote/demote a household member to admin (owner). Owner-only.
+
+    Guards: only members of the SAME household; never remove the last owner
+    (that would lock everyone out of config)."""
+    data = request.get_json(force=True) or {}
+    if "isOwner" not in data:
+        return jsonify({"error": "isOwner required"}), 422
+    make_owner = bool(data["isOwner"])
+
+    target = db.session.get(User, user_id)
+    if not target or target.group_id != current_group().id:
+        abort(404)
+
+    if not make_owner and target.is_owner:
+        # Don't allow demoting the last remaining owner.
+        owners = (db.session.query(User)
+                  .filter_by(group_id=current_group().id, is_owner=True).count())
+        if owners <= 1:
+            return jsonify({"error": "cannot remove the last admin"}), 409
+
+    target.is_owner = make_owner
+    db.session.commit()
+    return jsonify({**user_out(target), "haLinked": bool(target.ha_user_id)})
 
 
 @bp.put("/users/change-password")

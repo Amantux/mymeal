@@ -58,6 +58,8 @@ async function load() {
       edibl.token = ''
       ediblTokenSet.value = !!e.tokenSet
     } catch (err) { /* edibl endpoints optional */ }
+    await loadKeys()
+    await loadMembers()
   } finally {
     loading.value = false
     await nextTick()               // let the watcher flush before re-arming it
@@ -192,6 +194,64 @@ async function clearEdiblToken() {
   } finally {
     ediblBusy.value = false
   }
+}
+
+// --- Household members (owner can promote HA users to admin) ---
+const members = ref([])
+const membersBusy = ref(false)
+
+async function loadMembers() {
+  try { members.value = await api.get('/users') } catch (e) { members.value = [] }
+}
+
+async function setAdmin(m, makeAdmin) {
+  membersBusy.value = true
+  try {
+    await api.put(`/users/${m.id}/role`, { isOwner: makeAdmin })
+    await loadMembers()
+    ui.toast(makeAdmin ? `${m.name} is now an admin` : `${m.name} is no longer an admin`)
+  } catch (e) {
+    ui.error(e.status === 409
+      ? "Can't remove the last admin."
+      : (e.message || 'Could not change role'))
+    await loadMembers()
+  } finally {
+    membersBusy.value = false
+  }
+}
+
+// --- API keys (machine-client tokens: HACS integration, MCP, Edibl link) ---
+const keys = ref([])
+const newKeyName = ref('')
+const mintedKey = ref(null)          // raw token, shown once
+const keysBusy = ref(false)
+
+async function loadKeys() {
+  try { keys.value = await api.get('/tokens') } catch (e) { keys.value = [] }
+}
+
+async function mintKey() {
+  keysBusy.value = true
+  try {
+    const r = await api.post('/tokens', { name: newKeyName.value || 'Connected app' })
+    mintedKey.value = r.token
+    newKeyName.value = ''
+    await loadKeys()
+  } catch (e) {
+    ui.error(e.message || 'Could not create key')
+  } finally {
+    keysBusy.value = false
+  }
+}
+
+async function revokeKey(id) {
+  if (!confirm('Revoke this API key? Anything using it loses access.')) return
+  try { await api.del('/tokens/' + id); await loadKeys() }
+  catch (e) { ui.error(e.message || 'Revoke failed') }
+}
+
+function copyKey(text) {
+  navigator.clipboard?.writeText(text).then(() => ui.toast('Copied'), () => {})
 }
 
 async function findOllama() {
@@ -337,6 +397,82 @@ async function findOllama() {
     </form>
   </div>
 
+  <div class="card" v-if="!loading && members.length > 1">
+    <h2>Household members</h2>
+    <p class="muted">
+      Everyone signed in to Home Assistant who has opened myMeal. Make another
+      member an <strong>admin</strong> to let them change these settings and
+      manage API keys. There must always be at least one admin.
+    </p>
+    <div
+      v-for="m in members"
+      :key="m.id"
+      class="row"
+      style="padding:10px 0;border-bottom:1px solid var(--border)"
+    >
+      <div class="fill">
+        <div style="font-weight:600">
+          {{ m.name }}<span v-if="m.isSelf" class="muted"> (you)</span>
+        </div>
+        <div class="muted" style="font-size:0.78rem">{{ m.isOwner ? 'Admin' : 'Member' }}</div>
+      </div>
+      <span v-if="m.isSelf && m.isOwner" class="badge ok">Admin</span>
+      <button
+        v-else-if="m.isOwner"
+        type="button"
+        class="secondary sm danger"
+        :disabled="membersBusy"
+        @click="setAdmin(m, false)"
+      >Remove admin</button>
+      <button
+        v-else
+        type="button"
+        class="secondary sm"
+        :disabled="membersBusy"
+        @click="setAdmin(m, true)"
+      >Make admin</button>
+    </div>
+  </div>
+
+  <div class="card" v-if="!loading">
+    <h2>API keys</h2>
+    <p class="muted">
+      Long-lived keys for machine clients — the Home Assistant integration, the
+      MCP server, or a companion app connecting to myMeal. Shown once when
+      created; store it somewhere safe.
+    </p>
+
+    <div v-if="mintedKey" class="minted">
+      <div class="muted" style="font-size:0.8rem">New key (copy it now — it won't be shown again):</div>
+      <code class="keyval">{{ mintedKey }}</code>
+      <button type="button" class="secondary sm" @click="copyKey(mintedKey)">Copy</button>
+      <button type="button" class="linkish" @click="mintedKey = null">Done</button>
+    </div>
+
+    <div class="row" style="margin:12px 0;max-width:520px">
+      <input v-model="newKeyName" class="fill" placeholder="Name (e.g. Home Assistant)" />
+      <button type="button" :disabled="keysBusy" @click="mintKey">Create key</button>
+    </div>
+
+    <div v-if="!keys.length" class="muted" style="font-size:0.85rem">No API keys yet.</div>
+    <div
+      v-for="k in keys"
+      :key="k.id"
+      class="row"
+      style="padding:10px 0;border-bottom:1px solid var(--border)"
+    >
+      <div class="fill">
+        <div style="font-weight:600">{{ k.name || 'API key' }}</div>
+        <div class="muted" style="font-size:0.78rem">
+          {{ k.hint }} · created {{ (k.createdAt || '').slice(0, 10) }}
+          <span v-if="k.lastUsedAt"> · last used {{ (k.lastUsedAt || '').slice(0, 10) }}</span>
+          <span v-else> · never used</span>
+        </div>
+      </div>
+      <button type="button" class="linkish danger" @click="revokeKey(k.id)">Revoke</button>
+    </div>
+  </div>
+
   <div class="card" v-if="!loading">
     <h2>Provider status</h2>
     <div
@@ -364,4 +500,9 @@ async function findOllama() {
 .field select, .field input { width: 100%; }
 .row { display: flex; gap: 8px; align-items: center; }
 .row .fill { flex: 1; }
+
+.minted { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; background: var(--accent-soft); border-radius: var(--radius-sm); margin-bottom: 8px; }
+.keyval { font-family: monospace; font-size: 0.8rem; word-break: break-all; background: var(--surface); padding: 4px 8px; border-radius: 6px; }
+.sm { padding: 4px 10px; font-size: 0.78rem; }
+.danger { color: var(--danger); }
 </style>
