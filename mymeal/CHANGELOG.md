@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.1.11
+
+- Resilient async states, accessible modals & focus, cohesion.
+
 ## 1.1.10
 
 - Harden SQLite for concurrent workers (WAL + busy_timeout + FKs).
