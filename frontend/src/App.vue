@@ -3,12 +3,16 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuth } from './stores/auth'
 import { useUI } from './stores/ui'
+import { useLiveSync } from './composables/useLiveSync'
 import Toasts from './components/Toasts.vue'
 import ChatAssistant from './components/ChatAssistant.vue'
 
 const route = useRoute()
 const auth = useAuth()
 const ui = useUI()
+
+// One app-wide poller of the cheap change-cursor; drives live view updates.
+useLiveSync()
 
 const bare = computed(() => route.meta.public)
 
