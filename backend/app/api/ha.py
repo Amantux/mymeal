@@ -8,6 +8,7 @@
 from datetime import date, timedelta
 
 from flask import Blueprint, jsonify, request
+from sqlalchemy import func
 
 from ..extensions import db
 from ..models import Recipe, MealPlanEntry, ShoppingList, ShoppingListItem
@@ -77,6 +78,47 @@ def summary():
             ],
         }
     )
+
+
+@bp.get("/ha/version")
+@login_required
+def version():
+    """A cheap change-cursor for the household's view data.
+
+    The frontend polls this (far smaller than /summary) and only refetches real
+    data when the token changes — catching edits from the chat assistant, the
+    MCP server, Home Assistant, or another device, all of which write the same
+    DB. COUNT together with MAX(updated_at) detects inserts, updates (updated_at
+    has onupdate), AND deletes, across the tables the views render.
+    """
+    gid = current_group().id
+
+    def stamp(count, latest):
+        return f"{count}@{latest.isoformat() if latest else '0'}"
+
+    rc, ru = (
+        db.session.query(func.count(Recipe.id), func.max(Recipe.updated_at))
+        .filter(Recipe.group_id == gid)
+        .one()
+    )
+    mc, mu = (
+        db.session.query(
+            func.count(MealPlanEntry.id), func.max(MealPlanEntry.updated_at)
+        )
+        .filter(MealPlanEntry.group_id == gid)
+        .one()
+    )
+    sc, su = (
+        db.session.query(
+            func.count(ShoppingListItem.id), func.max(ShoppingListItem.updated_at)
+        )
+        .join(ShoppingList, ShoppingList.id == ShoppingListItem.shopping_list_id)
+        .filter(ShoppingList.group_id == gid)
+        .one()
+    )
+
+    token = "|".join((stamp(rc, ru), stamp(mc, mu), stamp(sc, su)))
+    return jsonify({"v": token})
 
 
 @bp.get("/ha/calendar")

@@ -29,6 +29,30 @@ def test_ha_calendar_returns_meal_entries(auth_client):
 def test_ha_endpoints_require_auth(client):
     assert client.get("/api/v1/ha/summary").status_code == 401
     assert client.get("/api/v1/ha/calendar").status_code == 401
+    assert client.get("/api/v1/ha/version").status_code == 401
+
+
+def test_ha_version_stable_when_nothing_changes(auth_client):
+    auth_client.get("/api/v1/recipes", json={})  # ensure group exists
+    v1 = auth_client.get("/api/v1/ha/version").get_json()["v"]
+    v2 = auth_client.get("/api/v1/ha/version").get_json()["v"]
+    assert v1 == v2
+
+
+def test_ha_version_changes_on_insert(auth_client):
+    auth_client.get("/api/v1/recipes", json={})
+    before = auth_client.get("/api/v1/ha/version").get_json()["v"]
+    auth_client.post("/api/v1/recipes", json={"name": "Chili"})
+    after = auth_client.get("/api/v1/ha/version").get_json()["v"]
+    assert after != before
+
+
+def test_ha_version_changes_on_delete(auth_client):
+    rid = auth_client.post("/api/v1/recipes", json={"name": "Temp"}).get_json()["id"]
+    before = auth_client.get("/api/v1/ha/version").get_json()["v"]
+    auth_client.delete(f"/api/v1/recipes/{rid}")
+    after = auth_client.get("/api/v1/ha/version").get_json()["v"]
+    assert after != before
 
 
 # --- Home Assistant ingress: no sign-in required ---------------------------
