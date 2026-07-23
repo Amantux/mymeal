@@ -6,7 +6,12 @@ whether to hit Update — not for developers reading a diff.
 
 ## 1.1.13
 
-Build-only republish; no user-visible change.
+- **The Home Assistant integration connects reliably.** The add-on now hands the
+  companion integration the exact address to reach it (its internal Home
+  Assistant hostname) plus a dedicated, revocable API key, so setting up the
+  integration "just works" from the auto-discovery prompt instead of failing to
+  connect. (The add-on's sidebar was never affected.) Manage or revoke the key
+  under **Settings → API keys**.
 
 ## 1.1.12
 
