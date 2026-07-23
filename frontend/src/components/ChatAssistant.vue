@@ -67,6 +67,7 @@ async function undo(action) {
   try {
     await fn(action.undo)
     action.undone = true
+    ui.dataChanged() // reverting a change is a change too — refresh live views
   } catch (e) {
     // Most likely the item was already removed elsewhere; treat as undone
     // rather than leaving a stuck spinner, but surface anything unexpected.
@@ -92,7 +93,11 @@ async function send(text) {
   try {
     const res = await api.post('/ai/chat', { sessionId: sessionId.value, message: content })
     sessionId.value = res.sessionId
-    msgs.value.push({ role: 'assistant', content: res.reply, actions: res.actions || [] })
+    const actions = res.actions || []
+    msgs.value.push({ role: 'assistant', content: res.reply, actions })
+    // If the assistant changed anything (planned a meal, added to the list, …),
+    // signal live views to refresh so the change shows without a manual reload.
+    if (actions.length) ui.dataChanged()
   } catch (e) {
     // 503 = no AI provider configured; surface the server's guidance inline.
     msgs.value.push({

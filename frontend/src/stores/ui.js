@@ -12,8 +12,15 @@ export const useUI = defineStore('ui', {
     assistantOpen: false,
     // Optional text to prefill/send when the assistant opens from elsewhere.
     assistantPrompt: null,
+    // Bumped whenever data is mutated in-app (e.g. a chat-assistant action) so
+    // every live view refetches instantly instead of waiting for the poll.
+    dataVersion: 0,
   }),
   actions: {
+    // Signal that shared data changed — live views (useLoader) refresh on this.
+    dataChanged() {
+      this.dataVersion++
+    },
     openAssistant(prompt = null) {
       this.assistantPrompt = prompt
       this.assistantOpen = true
