@@ -51,13 +51,22 @@ def decode_token(token: str):
 
 
 def _default_user() -> User:
-    """Return (creating if needed) the single local user for no-auth mode."""
+    """Return (creating if needed) the single local user for no-auth mode.
+
+    The local user JOINS the shared household — the earliest-created group, the
+    same one ingress users are provisioned into — rather than minting its own.
+    Otherwise a machine client bound to this user (the HA integration token)
+    would read a different, empty household than the real HA users populate.
+    Only when the install is still empty do we create the household group.
+    """
     user = db.session.query(User).filter_by(email=DEFAULT_EMAIL).first()
     if user:
         return user
-    group = Group(name=DEFAULT_GROUP)
-    db.session.add(group)
-    db.session.flush()
+    group = db.session.query(Group).order_by(Group.created_at.asc()).first()
+    if group is None:
+        group = Group(name=DEFAULT_GROUP)
+        db.session.add(group)
+        db.session.flush()
     user = User(
         name="Local User",
         email=DEFAULT_EMAIL,
@@ -155,23 +164,40 @@ def _ingress_user():
 
 
 def load_current_user():
-    """Resolve the current user, honoring the DISABLE_AUTH toggle."""
-    if current_app.config["DISABLE_AUTH"]:
-        # Behind ingress each HA user gets their own identity; fall back to the
-        # shared local user only when there's no trusted ingress identity.
-        return _ingress_user() or _default_user()
+    """Resolve the current user from three independent sources, in order.
 
+    The order matters: it lets a machine client (the Home Assistant integration,
+    the MCP server) authenticate by token whether or not ``DISABLE_AUTH`` is set,
+    while the browser keeps working behind ingress. ``DISABLE_AUTH`` then only
+    controls the open fallback (step 3), not whether tokens/ingress are honored.
+
+      1. An explicit ``Authorization: Bearer`` token — a long-lived API key or a
+         login JWT. A present-but-INVALID token is a 401, never a silent
+         downgrade to the shared user.
+      2. A trusted Home Assistant ingress identity (``X-Remote-User-*`` from the
+         Supervisor peer), provisioning the per-HA-user account.
+      3. In open mode (``DISABLE_AUTH``) only: the shared local user — covering
+         both a standalone open deployment and an ingress request that arrived
+         without identity headers.
+    """
     header = request.headers.get("Authorization", "")
-    if not header.startswith("Bearer "):
-        return None
-    token = header[len("Bearer "):].strip()
-    # Long-lived API keys are prefixed so we can route them without a JWT decode.
-    if token.startswith(TOKEN_PREFIX):
-        return _user_from_api_token(token)
-    user_id = decode_token(token)
-    if not user_id:
-        return None
-    return db.session.get(User, user_id)
+    if header.startswith("Bearer "):
+        token = header[len("Bearer "):].strip()
+        # Long-lived API keys are prefixed so we can route them without a JWT
+        # decode; either way an invalid token resolves to None (→ 401).
+        if token.startswith(TOKEN_PREFIX):
+            return _user_from_api_token(token)
+        user_id = decode_token(token)
+        return db.session.get(User, user_id) if user_id else None
+
+    ingress = _ingress_user()
+    if ingress is not None:
+        return ingress
+
+    if current_app.config["DISABLE_AUTH"]:
+        return _default_user()
+
+    return None
 
 
 def _user_from_api_token(raw: str):
