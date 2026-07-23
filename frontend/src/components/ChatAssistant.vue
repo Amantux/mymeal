@@ -3,8 +3,11 @@
 // from Edibl's ChatAssistant so the two apps share one chat experience. Reuses
 // myMeal's session-based /ai/chat backend (multi-turn within an open panel);
 // shows suggestion chips when empty and action chips for what the assistant did.
-import { ref, nextTick } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { api } from '../api'
+import { useUI } from '../stores/ui'
+
+const ui = useUI()
 
 // Maps a structured undo descriptor (from the server) to a known, safe API
 // call. The server never dictates an arbitrary method/path — it names a `kind`
@@ -19,7 +22,9 @@ const UNDO = {
   edibl_unconsume: (u) => api.post('/ai/chat/undo', u),
 }
 
-const open = ref(false)
+// Open state is shared via the ui store so any view can open the assistant
+// (e.g. a dashboard "Ask" card), not just the FAB.
+const open = computed(() => ui.assistantOpen)
 const msgs = ref([]) // {role, content, actions?, error?}
 const input = ref('')
 const busy = ref(false)
@@ -40,9 +45,20 @@ async function scrollDown() {
 }
 
 function toggle() {
-  open.value = !open.value
-  if (open.value) scrollDown()
+  ui.toggleAssistant()
 }
+
+// React to the panel being opened from anywhere. When another view opens it
+// with a prompt, send that prompt once the panel is up.
+watch(open, (isOpen) => {
+  if (!isOpen) return
+  scrollDown()
+  if (ui.assistantPrompt) {
+    const prompt = ui.assistantPrompt
+    ui.assistantPrompt = null
+    send(prompt)
+  }
+})
 
 async function undo(action) {
   const fn = action.undo && UNDO[action.undo.kind]

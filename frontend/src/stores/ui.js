@@ -6,8 +6,24 @@ export const useUI = defineStore('ui', {
   state: () => ({
     theme: localStorage.getItem('mymeal_theme') || 'auto',
     toasts: [],
+    // The ambient cooking assistant's open state lives here so any view (e.g.
+    // a dashboard "Ask the assistant" card) can open it — the FAB is not the
+    // only way in. ChatAssistant owns the panel; this is just the toggle.
+    assistantOpen: false,
+    // Optional text to prefill/send when the assistant opens from elsewhere.
+    assistantPrompt: null,
   }),
   actions: {
+    openAssistant(prompt = null) {
+      this.assistantPrompt = prompt
+      this.assistantOpen = true
+    },
+    closeAssistant() {
+      this.assistantOpen = false
+    },
+    toggleAssistant() {
+      this.assistantOpen = !this.assistantOpen
+    },
     applyTheme() {
       const resolved =
         this.theme === 'auto'
