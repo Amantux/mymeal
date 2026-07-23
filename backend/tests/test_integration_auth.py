@@ -116,9 +116,8 @@ def test_integration_token_binds_to_ingress_household(client, app):
         assert token.group_id == ingress_user.group_id
 
 
-def test_ingress_trust_disabled_when_trusted_proxy_configured(tmp_path):
-    # With a trusted reverse proxy, remote_addr is client-derived and can't be
-    # trusted as the Supervisor peer — ingress headers must NOT authenticate.
+def _proxy_app(tmp_path):
+    """App with ProxyFix active (a trusted reverse proxy in front)."""
     from app import create_app
     from app.config import Config
 
@@ -129,14 +128,130 @@ def test_ingress_trust_disabled_when_trusted_proxy_configured(tmp_path):
         TRUSTED_PROXY_COUNT = 1
         SECRET_KEY = "test-secret-key-that-is-long-enough-32b"
 
-    proxy_app = create_app(ProxyConfig)
-    resp = proxy_app.test_client().get(
-        SUMMARY,
-        headers={"X-Remote-User-Id": "ha-1", "X-Remote-User-Display-Name": "Alex"},
-        environ_overrides=SUP,
-    )
+    return create_app(ProxyConfig)
 
+
+def test_ingress_identity_honored_under_proxyfix(tmp_path):
+    # ProxyFix is active AND actually rewrites remote_addr (a legit client hop in
+    # X-Forwarded-For), but the real TCP peer IS the Supervisor — identity must
+    # still resolve off the unproxied peer. Load-bearing: if _raw_peer reverted
+    # to request.remote_addr it would read the rewritten client IP → 401.
+    resp = _proxy_app(tmp_path).test_client().get(
+        SUMMARY,
+        headers={
+            "X-Forwarded-For": "203.0.113.9",  # the browser behind ingress
+            "X-Remote-User-Id": "ha-1",
+            "X-Remote-User-Display-Name": "Alex",
+        },
+        environ_overrides=SUP,  # real TCP peer = the Supervisor
+    )
+    assert resp.status_code == 200
+
+
+def test_forged_xforwarded_for_supervisor_rejected(tmp_path):
+    # Load-bearing: ProxyFix rewrites remote_addr from a spoofed X-Forwarded-For,
+    # but the check reads the UNPROXIED peer — a LAN client forging the Supervisor
+    # address is NOT trusted. Fails loudly if _raw_peer reverts to remote_addr.
+    resp = _proxy_app(tmp_path).test_client().get(
+        SUMMARY,
+        headers={
+            "X-Forwarded-For": "172.30.32.2",  # spoofed Supervisor address
+            "X-Remote-User-Id": "ha-evil",
+            "X-Remote-User-Display-Name": "Mallory",
+        },
+        environ_overrides=LAN,
+    )
     assert resp.status_code == 401
+
+
+def _race(app, request_kwargs, n=8):
+    """Fire n barrier-synchronized parallel requests; return their status codes.
+    The barrier maximizes the overlap that triggers the provisioning collision."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    barrier = threading.Barrier(n)
+
+    def hit(_):
+        client = app.test_client()
+        barrier.wait()
+        return client.get(SUMMARY, **request_kwargs).status_code
+
+    with ThreadPoolExecutor(max_workers=n) as ex:
+        return list(ex.map(hit, range(n)))
+
+
+def test_default_user_provisioning_is_concurrency_safe(noauth_app):
+    from app.auth import DEFAULT_EMAIL
+    from app.extensions import db
+    from app.models import User
+
+    codes = _race(noauth_app, {})
+
+    assert codes == [200] * len(codes)  # the UNIQUE(email) race must not 500
+    with noauth_app.app_context():
+        assert db.session.query(User).filter_by(email=DEFAULT_EMAIL).count() == 1
+
+
+def test_ingress_user_provisioning_is_concurrency_safe(noauth_app):
+    from app.extensions import db
+    from app.models import User
+
+    kwargs = {
+        "headers": {"X-Remote-User-Id": "ha-race", "X-Remote-User-Display-Name": "R"},
+        "environ_overrides": SUP,
+    }
+    codes = _race(noauth_app, kwargs)
+
+    assert codes == [200] * len(codes)
+    with noauth_app.app_context():
+        assert db.session.query(User).filter_by(ha_user_id="ha-race").count() == 1
+
+
+def test_ingress_user_collision_rolls_back_and_rereads(noauth_app):
+    # Deterministic guard for the except-branch (the barrier tests above assert
+    # the outcome but can't force the collision). Inject the "winning" row
+    # mid-flow — during hash_password, which runs AFTER the handler's existence
+    # SELECT but BEFORE its commit — so the handler's own insert hits the
+    # UNIQUE(email) and must roll back + re-read rather than 500.
+    from sqlalchemy.orm import Session
+    from app import auth as authmod
+    from app.extensions import db
+    from app.models import User
+
+    client = noauth_app.test_client()
+    # Seed the household first so the racer collides only on the USER row.
+    client.get(SUMMARY, headers={"X-Remote-User-Id": "seed"}, environ_overrides=SUP)
+    with noauth_app.app_context():
+        gid = db.session.query(User).filter_by(ha_user_id="seed").first().group_id
+
+    real_hash = authmod.hash_password
+    injected = {"done": False}
+
+    def injecting_hash(pw):
+        if not injected["done"]:
+            injected["done"] = True
+            s = Session(bind=db.engine)  # independent connection = the "winner"
+            try:
+                s.add(User(name="Winner", email="ha:racer", password_hash="x",
+                           is_owner=False, ha_user_id="racer", group_id=gid))
+                s.commit()
+            finally:
+                s.close()
+        return real_hash(pw)
+
+    authmod.hash_password = injecting_hash
+    try:
+        resp = client.get(
+            SUMMARY, headers={"X-Remote-User-Id": "racer"}, environ_overrides=SUP
+        )
+    finally:
+        authmod.hash_password = real_hash
+
+    assert injected["done"]  # the except path was actually reached
+    assert resp.status_code == 200  # rolled back + re-read, did not 500
+    with noauth_app.app_context():
+        assert db.session.query(User).filter_by(ha_user_id="racer").count() == 1
 
 
 def test_valid_jwt_authenticates_through_reordered_branch(client):

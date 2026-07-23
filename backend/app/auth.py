@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import jwt
 from flask import current_app, g, request, jsonify
 from passlib.hash import bcrypt
+from sqlalchemy.exc import IntegrityError
 
 from .extensions import db
 from .models import User, Group, ApiToken, hash_token
@@ -62,21 +63,27 @@ def _default_user() -> User:
     user = db.session.query(User).filter_by(email=DEFAULT_EMAIL).first()
     if user:
         return user
-    group = db.session.query(Group).order_by(Group.created_at.asc()).first()
-    if group is None:
-        group = Group(name=DEFAULT_GROUP)
-        db.session.add(group)
-        db.session.flush()
-    user = User(
-        name="Local User",
-        email=DEFAULT_EMAIL,
-        password_hash=hash_password("unused"),
-        is_owner=True,
-        group_id=group.id,
-    )
-    db.session.add(user)
-    db.session.commit()
-    return user
+    try:
+        group = db.session.query(Group).order_by(Group.created_at.asc()).first()
+        if group is None:
+            group = Group(name=DEFAULT_GROUP)
+            db.session.add(group)
+            db.session.flush()
+        user = User(
+            name="Local User",
+            email=DEFAULT_EMAIL,
+            password_hash=hash_password("unused"),
+            is_owner=True,
+            group_id=group.id,
+        )
+        db.session.add(user)
+        db.session.commit()
+        return user
+    except IntegrityError:
+        # A parallel first-load request created it; the UNIQUE(email) collision
+        # means someone won the race — roll back and re-read the winner's row.
+        db.session.rollback()
+        return db.session.query(User).filter_by(email=DEFAULT_EMAIL).first()
 
 
 # Ingress requests reach the add-on FROM the Home Assistant Supervisor, whose
@@ -93,17 +100,29 @@ def _default_user() -> User:
 _INGRESS_SOURCE = "172.30.32.2"
 
 
+def _raw_peer():
+    """The true TCP peer, read BEFORE ProxyFix may have rewritten remote_addr
+    from a client-supplied X-Forwarded-For.
+
+    ProxyFix stashes the pre-rewrite originals in ``werkzeug.proxy_fix.orig``
+    (verified against the installed werkzeug 3.1.x: it writes that dict's
+    ``REMOTE_ADDR`` before applying XFF). When ProxyFix isn't installed
+    (TRUSTED_PROXY_COUNT=0) the key is absent and ``remote_addr`` is already the
+    real peer — so this is correct with or without a trusted proxy.
+    """
+    orig = request.environ.get("werkzeug.proxy_fix.orig")
+    if orig and orig.get("REMOTE_ADDR"):
+        return orig["REMOTE_ADDR"]
+    return request.remote_addr
+
+
 def _request_from_ingress() -> bool:
-    # If a reverse proxy is trusted, ProxyFix derives remote_addr from the
-    # client-supplied X-Forwarded-For, so it can no longer be trusted as the
-    # ingress source (an attacker could set XFF to the Supervisor address).
-    # Ingress and an extra trusted proxy are mutually exclusive for identity:
-    # HA ingress needs no TRUSTED_PROXY_COUNT, and a standalone-behind-proxy
-    # deployment isn't behind ingress and gets no X-Remote-User-* headers anyway.
-    settings = current_app.config.get("SETTINGS")
-    if settings is not None and getattr(settings, "TRUSTED_PROXY_COUNT", 0):
-        return False
-    return request.remote_addr == _INGRESS_SOURCE
+    # Compare the UNPROXIED peer to the Supervisor address, so a client-supplied
+    # X-Forwarded-For can never spoof it — even with ProxyFix active. This lets
+    # the add-on run ingress AND a trusted proxy simultaneously (for correct
+    # client IP / X-Forwarded-Proto) without the old footgun where setting
+    # TRUSTED_PROXY_COUNT silently disabled per-user ingress identity.
+    return _raw_peer() == _INGRESS_SOURCE
 
 
 def _ingress_user():
@@ -159,8 +178,14 @@ def _ingress_user():
         group_id=group.id,
     )
     db.session.add(user)
-    db.session.commit()
-    return user
+    try:
+        db.session.commit()
+        return user
+    except IntegrityError:
+        # Parallel first requests from the same HA user race to provision it;
+        # the loser rolls back and re-reads the winner's row.
+        db.session.rollback()
+        return db.session.query(User).filter_by(ha_user_id=ha_id).first()
 
 
 def load_current_user():
