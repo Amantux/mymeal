@@ -59,6 +59,7 @@ class MyMealConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def __init__(self) -> None:
         self._hassio_discovery: HassioServiceInfo | None = None
+        self._hassio_token: str = ""
 
     @staticmethod
     def async_get_options_flow(config_entry) -> MyMealOptionsFlow:
@@ -74,8 +75,11 @@ class MyMealConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         host = discovery_info.config.get(CONF_HOST, DEFAULT_HOST)
         port = int(discovery_info.config.get(CONF_PORT, DEFAULT_PORT))
+        # The add-on advertises a long-lived API key so the integration is
+        # authenticated on the direct (non-ingress) path.
+        self._hassio_token = str(discovery_info.config.get(CONF_TOKEN, "") or "")
         try:
-            await self._async_validate(host, port)
+            await self._async_validate(host, port, self._hassio_token)
         except (ClientError, asyncio.TimeoutError):
             return self.async_abort(reason="cannot_connect")
         return await self.async_step_hassio_confirm()
@@ -94,8 +98,9 @@ class MyMealConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_PORT: int(
                         self._hassio_discovery.config.get(CONF_PORT, DEFAULT_PORT)
                     ),
-                    # Add-on runs auth-disabled behind ingress — no token needed.
-                    CONF_TOKEN: "",
+                    # Long-lived API key advertised by the add-on; authenticates
+                    # the direct REST path (works with or without disable_auth).
+                    CONF_TOKEN: self._hassio_token,
                 },
             )
         self._set_confirm_only()
