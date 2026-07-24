@@ -17,7 +17,12 @@ from ..schemas.serializers import recipe_out, mealplan_entry_out
 from ..utils import unique_slug
 from ..services.ai.base import ProviderError
 from ..services.ai.registry import get_provider, list_providers
-from ..services.ai.recipe_import import import_recipe, UnsafeURLError
+from ..services.ai.recipe_import import (
+    import_recipe,
+    generate_recipe,
+    parse_ingredients,
+    UnsafeURLError,
+)
 from .recipes import _apply, download_image_to_recipe
 
 bp = Blueprint("ai", __name__)
@@ -182,6 +187,53 @@ def import_recipe_endpoint():
         download_image_to_recipe(recipe, payload["imageUrl"])
         db.session.commit()
     return jsonify(recipe_out(recipe)), 201
+
+
+@bp.post("/ai/generate")
+@login_required
+def generate_recipe_endpoint():
+    """Draft a recipe from a free-text idea and RETURN it (unsaved) so the recipe
+    builder can prefill a form the user edits before saving."""
+    data = request.get_json(silent=True) or {}
+    prompt = str(data.get("prompt") or "").strip()
+    if not prompt:
+        return jsonify({"error": "describe the recipe you'd like"}), 422
+    try:
+        provider = get_provider()
+    except ProviderError:
+        return jsonify({"error": "no AI provider is configured"}), 503
+    try:
+        servings = int(data.get("servings") or 0)
+    except (TypeError, ValueError):
+        servings = 0
+    try:
+        payload = generate_recipe(prompt, provider, servings=servings)
+    except ProviderError as exc:
+        return jsonify({"error": str(exc)}), 502
+    return jsonify(payload)
+
+
+@bp.post("/ai/parse-ingredients")
+@login_required
+def parse_ingredients_endpoint():
+    """Structure free-text ingredient lines (qty/unit/food/note) with the AI
+    provider — the ML-style matching Mealie does — and return them (unsaved) for
+    the builder to review."""
+    data = request.get_json(silent=True) or {}
+    lines = data.get("lines")
+    if isinstance(lines, str):
+        lines = lines.splitlines()
+    if not isinstance(lines, list) or not any(str(x).strip() for x in lines):
+        return jsonify({"error": "provide ingredient lines"}), 422
+    try:
+        provider = get_provider()
+    except ProviderError:
+        return jsonify({"error": "no AI provider is configured"}), 503
+    try:
+        result = parse_ingredients(lines, provider)
+    except ProviderError as exc:
+        return jsonify({"error": str(exc)}), 502
+    return jsonify({"ingredients": result})
 
 
 @bp.post("/ai/suggest")

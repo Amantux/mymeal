@@ -111,6 +111,31 @@ def test_ai_import_endpoint_text_with_provider(auth_client, monkeypatch):
     assert r.get_json()["name"] == "AI Pasta"
 
 
+def test_ai_generate_drafts_recipe_without_saving(auth_client, monkeypatch):
+    import app.api.ai as ai_api
+
+    monkeypatch.setattr(ai_api, "get_provider", lambda: _FakeProvider())
+    r = auth_client.post("/api/v1/ai/generate", json={"prompt": "a pasta dish", "servings": 2})
+    assert r.status_code == 200
+    assert r.get_json()["name"] == "AI Pasta"
+    # Generate returns a DRAFT — nothing is persisted (unlike import).
+    assert auth_client.get("/api/v1/recipes").get_json()["total"] == 0
+
+
+def test_ai_generate_requires_a_prompt(auth_client):
+    assert auth_client.post("/api/v1/ai/generate", json={}).status_code == 422
+
+
+def test_ai_generate_without_provider_is_503(auth_client, monkeypatch):
+    import app.api.ai as ai_api
+
+    def _no_provider():
+        raise ProviderError("none configured")
+
+    monkeypatch.setattr(ai_api, "get_provider", _no_provider)
+    assert auth_client.post("/api/v1/ai/generate", json={"prompt": "x"}).status_code == 503
+
+
 def test_ai_import_text_without_provider_is_503(auth_client, monkeypatch):
     import app.api.ai as ai_api
 

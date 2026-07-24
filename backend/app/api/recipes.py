@@ -7,7 +7,7 @@ from flask import Blueprint, request, jsonify, abort, current_app, send_file
 from sqlalchemy.orm import selectinload
 
 from ..extensions import db
-from ..models import Recipe, RecipeIngredient, RecipeStep, Category, Tag, Unit
+from ..models import Recipe, RecipeIngredient, RecipeStep, Category, Tag, Unit, Food
 from ..auth import login_required, current_group
 from ..schemas.serializers import recipe_out, recipe_summary
 from ..utils import unique_slug
@@ -35,20 +35,29 @@ def _get_by_id_or_slug(ident) -> Recipe:
     return recipe
 
 
-def _find_or_create_unit(gid: str, name: str):
-    """Find (case-insensitively) or create a Unit by canonical name in the group."""
+def _find_or_create(model, gid: str, name: str):
+    """Find (case-insensitively) or create a group-scoped ``model`` by name."""
+    name = (name or "").strip()
     if not name:
         return None
-    u = (
-        db.session.query(Unit)
-        .filter(Unit.group_id == gid, db.func.lower(Unit.name) == name.lower())
+    obj = (
+        db.session.query(model)
+        .filter(model.group_id == gid, db.func.lower(model.name) == name.lower())
         .first()
     )
-    if not u:
-        u = Unit(name=name, group_id=gid)
-        db.session.add(u)
+    if not obj:
+        obj = model(name=name, group_id=gid)
+        db.session.add(obj)
         db.session.flush()
-    return u.id
+    return obj.id
+
+
+def _find_or_create_unit(gid: str, name: str):
+    return _find_or_create(Unit, gid, name)
+
+
+def _find_or_create_food(gid: str, name: str):
+    return _find_or_create(Food, gid, name)
 
 
 def _set_ingredients(recipe: Recipe, rows):
@@ -62,15 +71,23 @@ def _set_ingredients(recipe: Recipe, rows):
     from ..services import units
 
     recipe.ingredients.clear()
+    gid = recipe.group_id
     for i, row in enumerate(rows or []):
         display = row.get("display", "")
         qty = row.get("quantity")
         unit_id = row.get("unitId") or None
-        if not unit_id and (qty in (None, 0, 0.0, "")) and display:
+        food_id = row.get("foodId") or None
+        # Structured unit/food NAMES (e.g. from the AI ingredient parser) win.
+        if not unit_id and row.get("unit"):
+            unit_id = _find_or_create_unit(gid, units.canonical_unit(row["unit"]) or row["unit"])
+        if not food_id and row.get("food"):
+            food_id = _find_or_create_food(gid, row["food"])
+        # Otherwise best-effort parse the free-text display for qty + unit.
+        if not unit_id and (qty in (None, 0, 0.0, "")) and not row.get("unit") and display:
             parsed = units.parse_line(display)
             qty = parsed["qty"] or 0
             if parsed["unit"]:
-                unit_id = _find_or_create_unit(recipe.group_id, parsed["unit"])
+                unit_id = _find_or_create_unit(gid, parsed["unit"])
         recipe.ingredients.append(
             RecipeIngredient(
                 display=display,
@@ -79,7 +96,7 @@ def _set_ingredients(recipe: Recipe, rows):
                 section=row.get("section", ""),
                 position=row.get("position", i),
                 unit_id=unit_id,
-                food_id=row.get("foodId") or None,
+                food_id=food_id,
             )
         )
 

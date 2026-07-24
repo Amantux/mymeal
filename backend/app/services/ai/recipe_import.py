@@ -328,6 +328,72 @@ def _fetch(url: str) -> str:
     raise UnsafeURLError("too many redirects")
 
 
+def _to_float(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+_PARSE_SYSTEM = (
+    "You parse cooking ingredient lines into structured parts — the machine-"
+    "learning-style matching a recipe manager uses. For each input line give the "
+    "numeric quantity (0 if none), the unit, the core food name, and any prep "
+    "note. Never invent or drop lines; keep them in order."
+)
+_PARSE_HINT = (
+    'Return JSON {"ingredients": [ {"display": string, "quantity": number, '
+    '"unit": string, "food": string, "note": string} ]} — exactly one object '
+    "per input line, in the same order."
+)
+
+
+def parse_ingredients(lines, provider: AIProvider) -> list[dict]:
+    """Structure free-text ingredient lines into {display, quantity, unit, food,
+    note} using the provider. On-demand (like Mealie's parser) — the caller
+    reviews before saving. Never raises for a partial/misshaped model reply."""
+    clean = [str(x).strip() for x in (lines or []) if str(x).strip()]
+    if not clean:
+        return []
+    payload = provider.complete_json(
+        _PARSE_HINT + "\n\nLines:\n" + "\n".join(clean), system=_PARSE_SYSTEM
+    )
+    parsed = _as_list(payload.get("ingredients") if isinstance(payload, dict) else payload)
+    out = []
+    for i, item in enumerate(parsed):
+        if not isinstance(item, dict):
+            continue
+        out.append({
+            "display": _text(item.get("display")) or (clean[i] if i < len(clean) else ""),
+            "quantity": _to_float(item.get("quantity")),
+            "unit": _text(item.get("unit")),
+            "food": _text(item.get("food")),
+            "note": _text(item.get("note")),
+        })
+    return out
+
+
+_GENERATE_SYSTEM = (
+    "You are an experienced home cook. Invent ONE practical, appealing recipe "
+    "that matches the user's request, and return it as structured data. Use "
+    "common household measurements, realistic times, and clear step-by-step "
+    "instructions. Add a few short tags (cuisine, course, diet, method)."
+)
+
+
+def generate_recipe(prompt: str, provider: AIProvider, servings: int = 0) -> dict:
+    """Draft a full recipe from a free-text idea ("a cozy vegetarian chili for
+    4"). Returns the normalized payload — NOT saved — so the builder can prefill
+    a form the user edits before saving."""
+    ask = _SCHEMA_HINT + f"\n\nRequest: {prompt.strip()}"
+    if servings:
+        ask += f"\nTarget servings: {servings}"
+    payload = _normalize_ai(provider.complete_json(ask, system=_GENERATE_SYSTEM))
+    if servings and not payload.get("servings"):
+        payload["servings"] = servings
+    return payload
+
+
 def import_recipe(
     *, url: str = "", text: str = "", provider: AIProvider | None = None
 ) -> dict:

@@ -75,6 +75,33 @@ def test_ingredients_parsed_to_structured_on_save(auth_client):
     assert ings[1]["quantity"] == 0 and ings[1]["unit"] is None  # unparseable → left blank
 
 
+def test_ai_parse_ingredients_endpoint(auth_client, monkeypatch):
+    import app.api.ai as ai_api
+
+    class _P:
+        def complete_json(self, prompt, system=""):
+            return {"ingredients": [
+                {"display": "2 cups flour", "quantity": 2, "unit": "cup",
+                 "food": "flour", "note": "sifted"}]}
+
+    monkeypatch.setattr(ai_api, "get_provider", lambda: _P())
+    r = auth_client.post("/api/v1/ai/parse-ingredients", json={"lines": ["2 cups flour"]})
+    assert r.status_code == 200
+    ing = r.get_json()["ingredients"][0]
+    assert ing["quantity"] == 2 and ing["unit"] == "cup" and ing["food"] == "flour"
+
+
+def test_structured_row_matches_unit_and_food_on_save(auth_client):
+    rid = auth_client.post("/api/v1/recipes", json={
+        "name": "Struct", "ingredients": [
+            {"display": "2 cups flour", "quantity": 2, "unit": "cup", "food": "flour"}],
+    }).get_json()["id"]
+    ing = auth_client.get(f"/api/v1/recipes/{rid}").get_json()["ingredients"][0]
+    assert ing["quantity"] == 2
+    assert ing["unit"]["name"] == "cup"
+    assert ing["food"]["name"] == "flour"
+
+
 def test_recipe_scaling_and_weight_view(auth_client):
     rid = auth_client.post("/api/v1/recipes", json={
         "name": "Pancakes", "servings": 2,

@@ -2,18 +2,13 @@
 import { ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
-import { useUI } from '../stores/ui'
 import EmptyState from '../components/EmptyState.vue'
 import ErrorState from '../components/ErrorState.vue'
 import { useLoader } from '../composables/useLoader'
-import Modal from '../components/Modal.vue'
 
 const router = useRouter()
-const ui = useUI()
 const recipes = ref([])
 const q = ref('')
-const creating = ref(false)
-const newName = ref('')
 
 async function load() {
   const res = await api.get('/recipes' + (q.value ? `?q=${encodeURIComponent(q.value)}` : ''))
@@ -27,24 +22,13 @@ watch(q, () => {
   t = setTimeout(reload, 200)
 })
 
-async function create() {
-  const name = newName.value.trim()
-  if (!name) return
-  try {
-    const r = await api.post('/recipes', { name })
-    ui.toast('Recipe created')
-    router.push(`/recipes/${r.id}`)
-  } catch (e) {
-    ui.error(e.message)
-  }
-}
 </script>
 
 <template>
   <div class="page-head">
     <h1>Recipes</h1>
     <div class="grow"></div>
-    <button @click="creating = true">＋ New recipe</button>
+    <button @click="router.push('/recipes/new')">＋ New recipe</button>
   </div>
 
   <div class="toolbar">
@@ -63,7 +47,7 @@ async function create() {
     :title="q ? 'No matches' : 'No recipes yet'"
     :hint="q ? 'Try a different search.' : 'Create your first recipe to get started.'"
   >
-    <button v-if="!q" @click="creating = true">＋ New recipe</button>
+    <button v-if="!q" @click="router.push('/recipes/new')">＋ New recipe</button>
   </EmptyState>
 
   <div v-else class="card-grid">
@@ -95,14 +79,4 @@ async function create() {
     </div>
   </div>
 
-  <Modal v-if="creating" title="New recipe" @close="creating = false; newName = ''">
-    <label class="field">
-      <span>Name</span>
-      <input v-model="newName" placeholder="e.g. Roast Chicken" @keyup.enter="create" />
-    </label>
-    <div class="row" style="justify-content:flex-end">
-      <button class="secondary" @click="creating = false; newName = ''">Cancel</button>
-      <button :disabled="!newName.trim()" @click="create">Create</button>
-    </div>
-  </Modal>
 </template>
