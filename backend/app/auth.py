@@ -8,12 +8,16 @@ Supports two modes:
   bound to a default user/group. This is intended for running behind Home
   Assistant ingress, which already authenticates the user.
 """
+import contextlib
+import fcntl
 import functools
+import os
 from datetime import datetime, timezone
 
 import jwt
 from flask import current_app, g, request, jsonify
 from passlib.hash import bcrypt
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from .extensions import db
@@ -22,6 +26,51 @@ from .models.api_token import TOKEN_PREFIX
 
 DEFAULT_EMAIL = "local@mymeal"
 DEFAULT_GROUP = "Home"
+
+# Stable app-wide key for the Postgres advisory lock guarding household creation.
+_HOUSEHOLD_ADVISORY_KEY = 0x6D796D6C  # 'myml'
+
+
+@contextlib.contextmanager
+def _household_bootstrap_lock():
+    """Serialize the create-the-first-household step across workers/processes.
+
+    Without it, two *different* users hitting a fresh install concurrently would
+    each read "no group" and each mint a household (the existing IntegrityError
+    guard only catches the SAME user racing itself). Postgres: a
+    transaction-scoped advisory lock. SQLite (single-host): an fcntl file lock.
+    """
+    bind = db.session.get_bind()
+    if bind.dialect.name == "postgresql":
+        db.session.execute(text("SELECT pg_advisory_xact_lock(:k)"),
+                           {"k": _HOUSEHOLD_ADVISORY_KEY})
+        yield  # released when this transaction ends (the commit below)
+        return
+    data_dir = current_app.config["SETTINGS"].data_dir
+    fh = open(os.path.join(data_dir, ".household.lock"), "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        fh.close()
+
+
+def _get_or_create_household() -> Group:
+    """The shared household: the earliest-created group. If the install is still
+    empty, create it under a lock and COMMIT inside the lock so a concurrent
+    bootstrapper sees it before the lock releases (correct on Postgres and, given
+    WAL cross-connection isolation, on SQLite too)."""
+    group = db.session.query(Group).order_by(Group.created_at.asc()).first()
+    if group is not None:
+        return group
+    with _household_bootstrap_lock():
+        group = db.session.query(Group).order_by(Group.created_at.asc()).first()
+        if group is None:
+            group = Group(name=DEFAULT_GROUP)
+            db.session.add(group)
+            db.session.commit()
+    return group
 
 
 def hash_password(password: str) -> str:
@@ -64,11 +113,7 @@ def _default_user() -> User:
     if user:
         return user
     try:
-        group = db.session.query(Group).order_by(Group.created_at.asc()).first()
-        if group is None:
-            group = Group(name=DEFAULT_GROUP)
-            db.session.add(group)
-            db.session.flush()
+        group = _get_or_create_household()
         user = User(
             name="Local User",
             email=DEFAULT_EMAIL,
@@ -156,11 +201,7 @@ def _ingress_user():
     display = real_name or "Home Assistant user"
 
     # Provision into the shared household. First user in the group = owner.
-    group = db.session.query(Group).order_by(Group.created_at.asc()).first()
-    if group is None:
-        group = Group(name=DEFAULT_GROUP)
-        db.session.add(group)
-        db.session.flush()
+    group = _get_or_create_household()
     # Count owners among REAL HA users only — a legacy synthetic local user
     # (ha_user_id NULL, is_owner=True from single-user mode) must not lock the
     # first real HA user out of owner on a migrated install.
