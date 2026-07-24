@@ -49,6 +49,13 @@ print(f"RESOLVED_LOGLEVEL={s.LOG_LEVEL.lower()}")
 PY
 )"
 
+# Shared PostgreSQL: when enabled, discover the add-on and provision our own
+# database (writes the DSN to /data/.database_url, which the app reads). Runs
+# before gunicorn so the engine is built against the right database. Best-effort
+# — it self-selects SQLite if anything is missing, so it never blocks startup.
+python3 -m app.pg_provision \
+  || echo "myMeal: shared-PostgreSQL provisioning skipped."
+
 # Best-effort Home Assistant discovery. Failure is logged, not silenced with
 # `|| true`: discovery is a convenience, but a silent failure is a mystery.
 python3 ha_discovery.py \

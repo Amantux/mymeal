@@ -164,6 +164,15 @@ FIELDS: tuple[Field, ...] = (
           "Full SQLAlchemy URL. Blank = SQLite inside DATA_DIR. Postgres is "
           "supported: postgresql+psycopg://user:pass@host:5432/dbname.",
           secret=True, ha_option="database_url", supports_file=True),
+    Field("USE_SHARED_POSTGRES", parse_bool, False,
+          "Home Assistant only: discover the Shared PostgreSQL add-on and use a "
+          "database it provisions for myMeal. Ignored when DATABASE_URL is set.",
+          ha_option="use_shared_postgres"),
+    Field("POSTGRES_PROVISION_TOKEN", as_str, "",
+          "Token for the Shared PostgreSQL add-on's provisioning API. Leave blank "
+          "to auto-obtain it via discovery; set it to the add-on's token if "
+          "discovery can't supply it.",
+          secret=True, ha_option="postgres_provision_token"),
 
     # --- security ---
     Field("SECRET_KEY", as_str, "",
@@ -294,8 +303,20 @@ class Settings:
 
     @property
     def sqlalchemy_uri(self) -> str:
+        # Explicit URL always wins.
         if self.values["DATABASE_URL"]:
             return self.values["DATABASE_URL"]
+        # Shared PostgreSQL: the entrypoint's provisioning step (pg_provision)
+        # writes the discovered DSN here; read it rather than routing a runtime
+        # value through the env/options precedence chain.
+        if self.values["USE_SHARED_POSTGRES"]:
+            try:
+                with open(os.path.join(self.data_dir, ".database_url")) as fh:
+                    url = fh.read().strip()
+                if url:
+                    return url
+            except OSError:
+                pass
         return f"sqlite:///{os.path.join(self.data_dir, 'mymeal.db')}"
 
     @property

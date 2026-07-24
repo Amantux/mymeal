@@ -52,6 +52,8 @@ options:
   edibl_url: ""
   edibl_token: ""
   database_url: ""
+  use_shared_postgres: false
+  postgres_provision_token: ""
 schema:
   disable_auth: bool
   allow_registration: bool
@@ -75,3 +77,7 @@ schema:
   # Postgres: postgresql+psycopg://user:pass@host:5432/dbname
   # Masked ("password?") because the URL normally embeds a password.
   database_url: "password?"
+  # Turn on to use the separate "Shared PostgreSQL" add-on (auto-discovered).
+  # Ignored if database_url is set. Leave the token blank to auto-obtain it.
+  use_shared_postgres: bool
+  postgres_provision_token: "password?"

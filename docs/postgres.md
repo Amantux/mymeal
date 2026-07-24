@@ -19,10 +19,14 @@ MYMEAL_DATABASE_URL=postgresql+psycopg://user:password@host:5432/dbname
   ```
   docker compose --profile postgres up
   ```
-- **Home Assistant add-on:** set **Configuration → `database_url`** to a reachable
-  Postgres — a separate Postgres add-on on the same box, or a server on your LAN.
-  (An HA add-on can't launch its own database container; that's why the DB is a
-  separate add-on/host.) Leave blank to keep SQLite.
+- **Home Assistant — shared add-on (easiest):** install the **Shared PostgreSQL**
+  add-on, then in myMeal set **Configuration → `use_shared_postgres`** on. myMeal
+  discovers the add-on and gets its own database automatically — no URL to type.
+  (Edibl and HomeHoard can share the same add-on the same way.) The provisioning
+  token is auto-obtained via discovery; if your setup can't supply it, copy the
+  add-on's token into `postgres_provision_token`.
+- **Home Assistant — external Postgres:** alternatively set **`database_url`** to
+  any reachable Postgres (a server on your LAN). Leave everything blank for SQLite.
 
 ## Notes
 
@@ -33,8 +37,5 @@ MYMEAL_DATABASE_URL=postgresql+psycopg://user:password@host:5432/dbname
   untouched (SQLite remains the default).
 - The database URL may contain a password — it's treated as a secret (never
   logged) and set via the masked add-on option or an env var / Docker secret.
-- Back up Postgres yourself (it lives outside the add-on's `/data`).
-
-> Coming next: an optional **Shared PostgreSQL** add-on with a one-tap
-> find-and-register flow, so myMeal / Edibl / HomeHoard can share one database on
-> Home Assistant without manual URLs.
+- Back up Postgres yourself (it lives outside myMeal's `/data`; the Shared
+  PostgreSQL add-on's data is in its own `/data` and is included in its backups).
