@@ -192,7 +192,7 @@ def test_image_download_rejects_private_host_best_effort(app):
 def test_image_download_swallows_invalid_url(app, monkeypatch):
     # Guard bypassed; an invalid port raises httpx.InvalidURL (not HTTPError) —
     # must be swallowed, never 500 the import.
-    monkeypatch.setattr("app.services.ai.recipe_import._assert_public_url", lambda u: None)
+    monkeypatch.setattr("app.services.ai.recipe_import.pinned_get_args", lambda u: (u, {}, {}))
     with app.app_context():
         r = _recipe(app)
         download_image_to_recipe(r, "http://127.0.0.1:notaport/x.jpg")
@@ -200,7 +200,7 @@ def test_image_download_swallows_invalid_url(app, monkeypatch):
 
 
 def test_image_download_success_saves_file(app, monkeypatch):
-    monkeypatch.setattr("app.services.ai.recipe_import._assert_public_url", lambda u: None)
+    monkeypatch.setattr("app.services.ai.recipe_import.pinned_get_args", lambda u: (u, {}, {}))
     with app.app_context():
         r = _recipe(app)
         with _image_server("image/png", b"\x89PNG\r\n\x1a\n" + b"x" * 100) as url:
@@ -210,7 +210,7 @@ def test_image_download_success_saves_file(app, monkeypatch):
 
 
 def test_image_download_rejects_non_image_content_type(app, monkeypatch):
-    monkeypatch.setattr("app.services.ai.recipe_import._assert_public_url", lambda u: None)
+    monkeypatch.setattr("app.services.ai.recipe_import.pinned_get_args", lambda u: (u, {}, {}))
     with app.app_context():
         r = _recipe(app)
         with _image_server("text/html", b"<html>not an image</html>") as url:
@@ -219,7 +219,7 @@ def test_image_download_rejects_non_image_content_type(app, monkeypatch):
 
 
 def test_image_download_respects_size_cap(app, monkeypatch):
-    monkeypatch.setattr("app.services.ai.recipe_import._assert_public_url", lambda u: None)
+    monkeypatch.setattr("app.services.ai.recipe_import.pinned_get_args", lambda u: (u, {}, {}))
     monkeypatch.setattr("app.api.recipes._MAX_IMAGE_BYTES", 50)
     with app.app_context():
         r = _recipe(app)

@@ -274,12 +274,18 @@ _MAX_FETCH_BYTES = 3_000_000
 _MAX_REDIRECTS = 5
 
 
-def _assert_public_url(url: str):
-    """Reject non-http(s) schemes and hosts that resolve to private ranges.
+def _assert_public_url(url: str) -> str:
+    """Reject non-http(s) schemes and hosts that resolve to private ranges, and
+    return the validated IP the connection MUST be pinned to.
 
     This is the SSRF guard: myMeal fetches user-supplied URLs server-side, and
     without this a group member could point it at localhost, the HA supervisor,
     a bundled Ollama, cloud metadata, or the LAN.
+
+    Returning the resolved IP lets the caller connect to that exact address
+    instead of re-resolving the hostname — closing the DNS-rebinding TOCTOU
+    window where a name resolves public here but private at connect time. ALL
+    resolved addresses are checked, so a multi-record rebind can't sneak one in.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -291,6 +297,7 @@ def _assert_public_url(url: str):
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror as exc:
         raise UnsafeURLError(f"could not resolve host: {exc}") from exc
+    pinned_ip = ""
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
         if (
@@ -302,6 +309,26 @@ def _assert_public_url(url: str):
             or ip.is_unspecified
         ):
             raise UnsafeURLError("refusing to fetch a private/internal address")
+        if not pinned_ip:
+            pinned_ip = info[4][0]
+    if not pinned_ip:
+        raise UnsafeURLError("could not resolve host")
+    return pinned_ip
+
+
+def pinned_get_args(url: str):
+    """Validate ``url`` (SSRF) and return ``(pinned_url, headers, extensions)``
+    for an httpx GET that connects to the ALREADY-VALIDATED IP — defeating DNS
+    rebinding, since the name is resolved exactly once (in the guard) and the
+    socket connects to that IP. TLS SNI + certificate verification still use the
+    original hostname (via the sni_hostname extension), so HTTPS stays verified.
+    """
+    ip = _assert_public_url(url)
+    u = httpx.URL(url)
+    pinned = str(u.copy_with(host=ip))
+    host_header = u.host + (f":{u.port}" if u.port else "")
+    extensions = {"sni_hostname": u.host} if u.scheme == "https" else {}
+    return pinned, {"Host": host_header}, extensions
 
 
 def _fetch(url: str) -> str:
@@ -310,8 +337,8 @@ def _fetch(url: str) -> str:
     current = url
     with httpx.Client(follow_redirects=False, timeout=20, headers=headers) as client:
         for _ in range(_MAX_REDIRECTS):
-            _assert_public_url(current)
-            with client.stream("GET", current) as r:
+            pinned, host_hdr, ext = pinned_get_args(current)
+            with client.stream("GET", pinned, headers=host_hdr, extensions=ext) as r:
                 if r.is_redirect and r.headers.get("location"):
                     current = urljoin(current, r.headers["location"])
                     continue

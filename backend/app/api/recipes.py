@@ -309,7 +309,7 @@ def download_image_to_recipe(recipe: Recipe, url: str):
     """Best-effort: fetch an external image URL and store it as the recipe's
     image (used by import). SSRF-guarded per redirect hop and size/type-capped;
     any failure is swallowed so a bad image never breaks the import."""
-    from ..services.ai.recipe_import import _assert_public_url
+    from ..services.ai.recipe_import import pinned_get_args
 
     url = (url or "").strip()
     if not url:
@@ -318,8 +318,8 @@ def download_image_to_recipe(recipe: Recipe, url: str):
         current = url
         with httpx.Client(follow_redirects=False, timeout=20) as client:
             for _ in range(5):
-                _assert_public_url(current)
-                with client.stream("GET", current) as r:
+                pinned, host_hdr, ext = pinned_get_args(current)
+                with client.stream("GET", pinned, headers=host_hdr, extensions=ext) as r:
                     if r.is_redirect and r.headers.get("location"):
                         current = urljoin(current, r.headers["location"])
                         continue

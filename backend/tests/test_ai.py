@@ -195,6 +195,26 @@ def test_ssrf_guard_blocks_private_and_nonhttp():
             recipe_import._assert_public_url(url)
 
 
+def test_pinned_get_args_pins_to_validated_ip(monkeypatch):
+    # Resolve once, here, to a public IP; the request must then target that IP
+    # (not the hostname) so a later re-resolution can't rebind to a private host.
+    def fake_getaddrinfo(host, *a, **k):
+        return [(2, 1, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(recipe_import.socket, "getaddrinfo", fake_getaddrinfo)
+    pinned, headers, ext = recipe_import.pinned_get_args("https://recipes.example.com/r/1")
+    assert pinned == "https://93.184.216.34/r/1"       # connects to the pinned IP
+    assert headers["Host"] == "recipes.example.com"    # server still routed correctly
+    assert ext == {"sni_hostname": "recipes.example.com"}  # TLS verifies the hostname
+
+
+def test_pinned_get_args_rejects_private_resolution(monkeypatch):
+    monkeypatch.setattr(recipe_import.socket, "getaddrinfo",
+                        lambda *a, **k: [(2, 1, 6, "", ("10.0.0.5", 0))])
+    with pytest.raises(recipe_import.UnsafeURLError):
+        recipe_import.pinned_get_args("https://sneaky.example.com/")
+
+
 def test_ai_import_non_string_url_is_not_500(auth_client):
     r = auth_client.post("/api/v1/ai/import", json={"url": 12345})
     # Coerced to a string, then rejected as an unsafe/invalid URL — never 500.
