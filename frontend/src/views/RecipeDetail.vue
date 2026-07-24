@@ -3,6 +3,7 @@ import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, apiUrl } from '../api'
 import { useUI } from '../stores/ui'
+import IngredientRows from '../components/IngredientRows.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -71,7 +72,46 @@ watch([viewServings, useWeight], refreshView)
 
 // Edit buffers (ingredients/steps edited as one line per row).
 const form = ref({})
-const ingredientsText = ref('')
+const editIngredients = ref([]) // structured rows for the edit-mode editor
+const structuring = ref(false)
+
+function rowToDisplay(r) {
+  const parts = [String(r.quantity ?? '').trim(), (r.unit || '').trim(), (r.food || '').trim()].filter(Boolean)
+  let d = parts.join(' ')
+  const note = (r.note || '').trim()
+  if (note) d = d ? `${d}, ${note}` : note
+  return d
+}
+const filledRows = () => editIngredients.value.filter(
+  (r) => (r.food || '').trim() || String(r.quantity ?? '').trim(),
+)
+
+// Turn stored ingredients into editor rows. Structured ones (with a food)
+// round-trip exactly; legacy free-text lines drop their whole display into the
+// food field so nothing is lost and the row can be restructured or AI-tidied.
+function ingredientToRow(i) {
+  if (i.food) {
+    return { quantity: i.quantity || '', unit: i.unit?.name || '', food: i.food.name, note: i.note || '' }
+  }
+  return { quantity: '', unit: '', food: i.display || '', note: '' }
+}
+
+async function tidyIngredients() {
+  const ls = filledRows().map(rowToDisplay).filter(Boolean)
+  if (!ls.length || structuring.value) return
+  structuring.value = true
+  try {
+    const res = await api.post('/ai/parse-ingredients', { lines: ls })
+    editIngredients.value = res.ingredients.map((r) => ({
+      quantity: r.quantity || '', unit: r.unit || '', food: r.food || '', note: r.note || '',
+    }))
+    ui.toast('Tidied ingredients')
+  } catch (e) {
+    ui.error(e.message || 'Could not tidy ingredients')
+  } finally {
+    structuring.value = false
+  }
+}
 const stepsText = ref('')
 
 async function load() {
@@ -105,7 +145,7 @@ async function createCategory() {
   }
 }
 
-function startEdit() {
+async function startEdit() {
   const r = recipe.value
   selectedCategoryIds.value = (r.categories || []).map((c) => c.id)
   nutritionForm.value = { ...(r.nutrition || {}) }
@@ -120,7 +160,25 @@ function startEdit() {
     sourceUrl: r.sourceUrl,
     notes: r.notes,
   }
-  ingredientsText.value = r.ingredients.map((i) => i.display).join('\n')
+  const rows = r.ingredients.map(ingredientToRow)
+  // Legacy free-text ingredients (no structured food) go through the
+  // deterministic parser so the editor shows tidy qty·unit·food rows, not the
+  // whole line crammed in the food field. Falls back to display-in-food.
+  const legacy = r.ingredients
+    .map((i, idx) => (!i.food && i.display ? { idx, display: i.display } : null))
+    .filter(Boolean)
+  if (legacy.length) {
+    try {
+      const res = await api.post('/recipes/parse', { lines: legacy.map((l) => l.display) })
+      res.ingredients.forEach((p, k) => {
+        const row = rows[legacy[k].idx]
+        row.quantity = p.quantity || ''
+        row.unit = p.unit || ''
+        row.food = p.food || row.food
+      })
+    } catch { /* keep the display-in-food fallback */ }
+  }
+  editIngredients.value = rows
   stepsText.value = r.steps.map((s) => s.text).join('\n\n')
   editing.value = true
 }
@@ -130,11 +188,10 @@ async function save() {
     ...form.value,
     categoryIds: selectedCategoryIds.value,
     nutrition: nutritionForm.value,
-    ingredients: ingredientsText.value
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .map((display, position) => ({ display, position })),
+    ingredients: filledRows().map((r, position) => ({
+      display: rowToDisplay(r), quantity: Number(r.quantity) || 0,
+      unit: r.unit || '', food: r.food || '', note: r.note || '', position,
+    })),
     steps: stepsText.value
       .split('\n\n')
       .map((l) => l.trim())
@@ -445,8 +502,13 @@ const imageSrc = computed(() =>
         </div>
       </div>
       <div class="card">
-        <h2>Ingredients <span class="muted" style="font-weight:400">— one per line</span></h2>
-        <textarea v-model="ingredientsText" rows="8" placeholder="2 cloves garlic, minced"></textarea>
+        <IngredientRows v-model="editIngredients" />
+        <div class="row" style="margin-top:10px">
+          <button class="ghost sm" :disabled="structuring || !filledRows().length" @click="tidyIngredients">
+            {{ structuring ? 'Structuring…' : '✨ Tidy up with AI' }}
+          </button>
+          <span class="muted" style="font-size:0.78rem">Splits each row into quantity · unit · food · note</span>
+        </div>
       </div>
       <div class="card">
         <h2>Steps <span class="muted" style="font-weight:400">— blank line between steps</span></h2>
