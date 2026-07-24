@@ -54,6 +54,19 @@ def test_revoked_token_stops_resolving(auth_client):
     assert auth_client.get(f"/api/v1/recipes/{rid}").get_json()["shareToken"] is None
 
 
+def test_public_view_neutralizes_javascript_source_url(auth_client):
+    # A javascript:/data: sourceUrl must never reach the (unauth) public page as
+    # a live href — it's blanked at the serializer boundary.
+    rid = _make_recipe(auth_client)["id"]
+    auth_client.put(f"/api/v1/recipes/{rid}", json={"sourceUrl": "javascript:alert(1)"})
+    token = auth_client.post(f"/api/v1/recipes/{rid}/share").get_json()["shareToken"]
+    anon = auth_client.application.test_client()
+    assert anon.get(f"/api/v1/public/recipes/{token}").get_json()["sourceUrl"] == ""
+    # A normal http(s) URL is preserved.
+    auth_client.put(f"/api/v1/recipes/{rid}", json={"sourceUrl": "https://ex.com/r"})
+    assert auth_client.get(f"/api/v1/recipes/{rid}").get_json()["sourceUrl"] == "https://ex.com/r"
+
+
 def test_cannot_share_another_groups_recipe(client):
     a = _token(client, "owner@a.com")
     client.environ_base["HTTP_AUTHORIZATION"] = a

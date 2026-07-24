@@ -81,12 +81,13 @@ def test_photo_endpoint_422_when_no_recipe_found(auth_client, monkeypatch):
     assert _upload(auth_client).status_code == 422
 
 
-def test_photo_endpoint_502_when_provider_has_no_vision(auth_client, monkeypatch):
+def test_photo_endpoint_422_when_provider_has_no_vision(auth_client, monkeypatch):
     class NoVision(VisionProvider):
         def complete_json_image(self, *a, **k):
             raise ProviderError("this AI provider does not support image input")
 
     monkeypatch.setattr(ai_api, "get_provider", lambda: NoVision({}))
     r = _upload(auth_client)
-    assert r.status_code == 502
+    # A non-vision provider is a config mismatch, not an upstream failure.
+    assert r.status_code == 422
     assert "image" in r.get_json()["error"]

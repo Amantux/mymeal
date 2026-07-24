@@ -302,7 +302,10 @@ def photo_to_recipe_endpoint():
     try:
         payload = recipe_from_image(b64, media_type, provider)
     except ProviderError as exc:
-        # Includes "does not support image input" for a non-vision provider.
+        # A provider without vision is a configuration mismatch (422), not an
+        # upstream failure (502) — tell the user to pick a vision-capable model.
+        if "does not support image" in str(exc):
+            return jsonify({"error": str(exc)}), 422
         return jsonify({"error": str(exc)}), 502
     if not payload.get("ingredients"):
         return jsonify({"error": "could not find a recipe in that image"}), 422
@@ -394,7 +397,16 @@ def use_it_up():
             expiring.append({**item, "daysLeft": dl})
     expiring.sort(key=lambda x: x["daysLeft"])
 
-    recipes = db.session.query(Recipe).filter_by(group_id=gid).all()
+    # Eager-load ingredients + their food so ranking doesn't fire O(N·M) queries.
+    from sqlalchemy.orm import selectinload
+
+    from ..models import RecipeIngredient
+    recipes = (
+        db.session.query(Recipe)
+        .filter_by(group_id=gid)
+        .options(selectinload(Recipe.ingredients).selectinload(RecipeIngredient.food))
+        .all()
+    )
     return jsonify({
         "suggestions": rank_use_it_up(recipes, expiring)[:limit],
         "expiring": expiring,

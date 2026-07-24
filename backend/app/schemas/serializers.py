@@ -11,6 +11,14 @@ def iso(dt):
     return dt
 
 
+def safe_url(u):
+    """Only emit http(s) URLs to clients. Blanks javascript:/data:/etc. so a
+    stored value can never become an XSS vector when rendered as an href —
+    especially on the unauthenticated public share page."""
+    u = (u or "").strip()
+    return u if u[:7].lower() == "http://" or u[:8].lower() == "https://" else ""
+
+
 def group_out(g):
     return {
         "id": g.id,
@@ -168,7 +176,7 @@ def recipe_out(r):
     data = recipe_summary(r)
     data.update(
         {
-            "sourceUrl": r.source_url,
+            "sourceUrl": safe_url(r.source_url),
             "prepMinutes": r.prep_minutes,
             "cookMinutes": r.cook_minutes,
             "notes": r.notes,
@@ -192,7 +200,7 @@ def recipe_public_out(r):
         "prepMinutes": r.prep_minutes,
         "cookMinutes": r.cook_minutes,
         "totalMinutes": r.total_minutes,
-        "sourceUrl": r.source_url,
+        "sourceUrl": safe_url(r.source_url),
         "hasImage": bool(r.image),
         "nutrition": json.loads(r.nutrition) if r.nutrition else None,
         "tags": [t.name for t in r.tags],

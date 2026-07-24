@@ -2,6 +2,8 @@
 ingredient list. The estimate is best-effort and stored on ``Recipe.nutrition``
 as JSON; the same ``sanitize`` guards manual edits so only known numeric fields
 are ever persisted."""
+import math
+
 from .base import AIProvider
 
 # Canonical per-serving fields. Units: calories = kcal, macros = grams,
@@ -27,7 +29,7 @@ def sanitize(raw) -> dict:
             n = round(float(raw.get(f)), 1)
         except (TypeError, ValueError):
             continue
-        if n != n or n < 0:  # NaN or negative
+        if not math.isfinite(n) or n < 0:  # NaN, ±inf, or negative
             continue
         out[f] = n
     return out

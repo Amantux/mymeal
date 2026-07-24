@@ -22,6 +22,13 @@ def test_sanitize_drops_negative_and_nonnumeric():
     assert sanitize({"calories": -5, "fat": "lots", "sugar": None}) == {}
 
 
+def test_sanitize_drops_non_finite_values():
+    # inf/-inf/nan would serialize as invalid JSON (Infinity/NaN) and poison the
+    # stored recipe, breaking every later fetch. They must be dropped.
+    assert sanitize({"calories": float("inf"), "protein": float("-inf"),
+                     "fat": float("nan")}) == {}
+
+
 def test_sanitize_handles_non_dict():
     assert sanitize(["not", "a", "dict"]) == {}
 
