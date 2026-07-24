@@ -221,6 +221,21 @@ function recipeToMarkdown(r) {
 function exportMarkdown() {
   download(recipeToMarkdown(recipe.value), `${slugify(recipe.value.name)}.md`, 'text/markdown')
 }
+function copyMarkdown() {
+  navigator.clipboard
+    ?.writeText(recipeToMarkdown(recipe.value))
+    .then(() => ui.toast('Markdown copied'), () => ui.error('Could not copy'))
+}
+function emailRecipe() {
+  const r = recipe.value
+  // Lead with the public link (if shared) so even an email client that truncates
+  // a long mailto body still carries a working link; then the full Markdown.
+  const link = shareUrl.value ? `View it online: ${shareUrl.value}\n\n` : ''
+  const subject = `Recipe: ${r.name}`
+  const body = `${link}${recipeToMarkdown(r)}`
+  window.location.href =
+    `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+}
 function exportJson() {
   const r = recipe.value
   const out = {
@@ -392,6 +407,8 @@ const imageSrc = computed(() =>
           <button class="secondary" @click="createShare">🔗 Create public link</button>
         </div>
         <div class="row" style="gap:8px;flex-wrap:wrap">
+          <button class="secondary sm" @click="emailRecipe">✉️ Email</button>
+          <button class="secondary sm" @click="copyMarkdown">⧉ Copy Markdown</button>
           <button class="secondary sm" @click="exportMarkdown">⬇ Markdown</button>
           <button class="secondary sm" @click="exportJson">⬇ JSON</button>
         </div>
