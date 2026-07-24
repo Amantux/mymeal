@@ -150,6 +150,25 @@ async function save() {
   }
 }
 
+const shoppingBusy = ref(false)
+async function addToShopping() {
+  shoppingBusy.value = true
+  try {
+    // Add to the household's first list, creating a default one if none exists.
+    // /from-recipes consolidates duplicate foods across everything on the list.
+    const lists = (await api.get('/shopping-lists')).items || []
+    const list = lists[0] || (await api.post('/shopping-lists', { name: 'Shopping List' }))
+    const res = await api.post(`/shopping-lists/${list.id}/from-recipes`, {
+      recipeIds: [recipe.value.id],
+    })
+    ui.toast(`Added ${res.added} item${res.added === 1 ? '' : 's'} to ${list.name}`)
+  } catch (e) {
+    ui.error(e.message || 'Could not add to shopping list')
+  } finally {
+    shoppingBusy.value = false
+  }
+}
+
 async function toggleFavorite() {
   recipe.value = await api.put(`/recipes/${recipe.value.id}`, {
     isFavorite: !recipe.value.isFavorite,
@@ -196,6 +215,8 @@ const imageSrc = computed(() =>
         <button v-if="recipe.steps.length" @click="router.push(`/recipes/${recipe.id}/cook`)">
           👨‍🍳 Cook
         </button>
+        <button v-if="recipe.ingredients.length" class="secondary" :disabled="shoppingBusy"
+          @click="addToShopping">🛒 Add to list</button>
         <button class="secondary" @click="toggleFavorite">
           {{ recipe.isFavorite ? '★ Favorited' : '☆ Favorite' }}
         </button>
