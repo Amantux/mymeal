@@ -228,6 +228,7 @@ def _register_blueprints(app):
     from .api.ai import bp as ai_bp
     from .api.edibl import bp as edibl_bp
     from .api.preferences import bp as preferences_bp
+    from .api.public import bp as public_bp
 
     prefix = "/api/v1"
     for bp in (
@@ -247,6 +248,7 @@ def _register_blueprints(app):
         ai_bp,
         edibl_bp,
         preferences_bp,
+        public_bp,
     ):
         app.register_blueprint(bp, url_prefix=prefix)
 

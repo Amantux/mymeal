@@ -34,6 +34,11 @@ class Recipe(IDMixin, TimestampMixin, db.Model):
     # normalizing for (calories, protein, fat, carbs, …).
     nutrition: Mapped[str] = mapped_column(Text, default="")
 
+    # Opaque token for a public, read-only share link. None = not shared.
+    share_token: Mapped[str | None] = mapped_column(
+        String(64), unique=True, index=True, nullable=True, default=None
+    )
+
     group_id: Mapped[str] = mapped_column(String(36), ForeignKey("groups.id"))
     group = relationship("Group", back_populates="recipes")
 

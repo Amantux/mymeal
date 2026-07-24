@@ -1,5 +1,6 @@
 import json
 import os
+import secrets
 from urllib.parse import urljoin
 
 import httpx
@@ -370,3 +371,25 @@ def upload_image(recipe_id):
     recipe.image = filename
     db.session.commit()
     return jsonify(recipe_out(recipe))
+
+
+@bp.post("/recipes/<recipe_id>/share")
+@login_required
+def share_recipe(recipe_id):
+    """Enable a public read-only share link (idempotent — returns the existing
+    token if already shared)."""
+    recipe = _get(recipe_id)  # group-scoped; 404 for another group
+    if not recipe.share_token:
+        recipe.share_token = secrets.token_urlsafe(32)
+        db.session.commit()
+    return jsonify({"shareToken": recipe.share_token})
+
+
+@bp.delete("/recipes/<recipe_id>/share")
+@login_required
+def unshare_recipe(recipe_id):
+    """Revoke the share link — the old token stops resolving immediately."""
+    recipe = _get(recipe_id)
+    recipe.share_token = None
+    db.session.commit()
+    return "", 204

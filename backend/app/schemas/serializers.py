@@ -173,8 +173,30 @@ def recipe_out(r):
             "cookMinutes": r.cook_minutes,
             "notes": r.notes,
             "nutrition": json.loads(r.nutrition) if r.nutrition else None,
+            "shareToken": r.share_token,
             "ingredients": [ingredient_out(i) for i in r.ingredients],
             "steps": [step_out(s) for s in r.steps],
         }
     )
     return data
+
+
+def recipe_public_out(r):
+    """Read-only view for a public share link — display fields only, no ids,
+    no group, no owner. Deliberately minimal to avoid leaking internals."""
+    return {
+        "name": r.name,
+        "description": r.description,
+        "servings": r.servings,
+        "recipeYield": r.recipe_yield,
+        "prepMinutes": r.prep_minutes,
+        "cookMinutes": r.cook_minutes,
+        "totalMinutes": r.total_minutes,
+        "sourceUrl": r.source_url,
+        "hasImage": bool(r.image),
+        "nutrition": json.loads(r.nutrition) if r.nutrition else None,
+        "tags": [t.name for t in r.tags],
+        "categories": [c.name for c in r.categories],
+        "ingredients": [i.display for i in r.ingredients],
+        "steps": [s.text for s in r.steps],
+    }

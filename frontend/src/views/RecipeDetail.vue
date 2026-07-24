@@ -169,6 +169,73 @@ async function addToShopping() {
   }
 }
 
+// --- Share & export (feature #10) ---
+const shareUrl = computed(() =>
+  recipe.value?.shareToken
+    ? `${window.location.href.split('#')[0]}#/share/${recipe.value.shareToken}`
+    : ''
+)
+async function createShare() {
+  try {
+    const res = await api.post(`/recipes/${recipe.value.id}/share`)
+    recipe.value.shareToken = res.shareToken
+    ui.toast('Public link created')
+  } catch (e) { ui.error(e.message || 'Could not create link') }
+}
+async function stopShare() {
+  try {
+    await api.del(`/recipes/${recipe.value.id}/share`)
+    recipe.value.shareToken = null
+    ui.toast('Sharing stopped')
+  } catch (e) { ui.error(e.message || 'Could not stop sharing') }
+}
+function copyShare() {
+  navigator.clipboard?.writeText(shareUrl.value).then(() => ui.toast('Link copied'), () => {})
+}
+function slugify(s) {
+  return (s || 'recipe').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'recipe'
+}
+function download(content, filename, type) {
+  const blob = new Blob([content], { type })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+function recipeToMarkdown(r) {
+  const lines = [`# ${r.name}`, '']
+  if (r.description) lines.push(r.description, '')
+  const meta = []
+  if (r.servings) meta.push(`**Servings:** ${r.servings}`)
+  if (r.totalMinutes) meta.push(`**Time:** ${r.totalMinutes} min`)
+  if (meta.length) lines.push(meta.join(' · '), '')
+  lines.push('## Ingredients', '')
+  ;(r.ingredients || []).forEach((i) => lines.push(`- ${i.display}`))
+  lines.push('', '## Steps', '')
+  ;(r.steps || []).forEach((s, n) => lines.push(`${n + 1}. ${s.text}`))
+  if (r.notes) lines.push('', '## Notes', '', r.notes)
+  return lines.join('\n')
+}
+function exportMarkdown() {
+  download(recipeToMarkdown(recipe.value), `${slugify(recipe.value.name)}.md`, 'text/markdown')
+}
+function exportJson() {
+  const r = recipe.value
+  const out = {
+    name: r.name, description: r.description, servings: r.servings,
+    recipeYield: r.recipeYield, prepMinutes: r.prepMinutes, cookMinutes: r.cookMinutes,
+    totalMinutes: r.totalMinutes, sourceUrl: r.sourceUrl, notes: r.notes,
+    nutrition: r.nutrition || null,
+    tags: (r.tags || []).map((t) => t.name),
+    categories: (r.categories || []).map((c) => c.name),
+    ingredients: (r.ingredients || []).map((i) => i.display),
+    steps: (r.steps || []).map((s) => s.text),
+  }
+  download(JSON.stringify(out, null, 2), `${slugify(r.name)}.json`, 'application/json')
+}
+
 async function toggleFavorite() {
   recipe.value = await api.put(`/recipes/${recipe.value.id}`, {
     isFavorite: !recipe.value.isFavorite,
@@ -307,6 +374,27 @@ const imageSrc = computed(() =>
         <p v-else class="muted" style="margin:0">
           No nutrition yet — estimate it with AI, or add it in edit mode.
         </p>
+      </div>
+
+      <div class="card">
+        <h2>Share &amp; export</h2>
+        <div v-if="recipe.shareToken" class="share-live">
+          <p class="muted" style="font-size:0.85rem;margin:8px 0">
+            Anyone with this link can view a read-only copy — no account needed.
+          </p>
+          <div class="row" style="gap:8px">
+            <input class="fill" :value="shareUrl" readonly @focus="$event.target.select()" />
+            <button class="secondary" @click="copyShare">Copy</button>
+            <button class="secondary danger" @click="stopShare">Stop sharing</button>
+          </div>
+        </div>
+        <div v-else class="row" style="margin:8px 0 12px">
+          <button class="secondary" @click="createShare">🔗 Create public link</button>
+        </div>
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <button class="secondary sm" @click="exportMarkdown">⬇ Markdown</button>
+          <button class="secondary sm" @click="exportJson">⬇ JSON</button>
+        </div>
       </div>
     </template>
 
