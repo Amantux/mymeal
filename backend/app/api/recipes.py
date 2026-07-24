@@ -1,6 +1,8 @@
 import json
 import os
+from urllib.parse import urljoin
 
+import httpx
 from flask import Blueprint, request, jsonify, abort, current_app, send_file
 from sqlalchemy.orm import selectinload
 
@@ -72,6 +74,31 @@ def _set_taxonomy(recipe: Recipe, attr, model, ids):
     setattr(recipe, attr, objs)
 
 
+def _set_tags_by_name(recipe: Recipe, names):
+    """Attach tags by NAME (for import / the assistant), find-or-creating each in
+    the recipe's group. Case-insensitive, deduped, capped."""
+    gid = recipe.group_id or current_group().id
+    objs, seen = [], set()
+    for raw in names or []:
+        nm = str(raw).strip()[:255]
+        if not nm or nm.lower() in seen:
+            continue
+        seen.add(nm.lower())
+        tag = (
+            db.session.query(Tag)
+            .filter(Tag.group_id == gid, db.func.lower(Tag.name) == nm.lower())
+            .first()
+        )
+        if not tag:
+            tag = Tag(name=nm, slug=unique_slug(Tag, gid, nm), group_id=gid)
+            db.session.add(tag)
+            db.session.flush()
+        objs.append(tag)
+        if len(objs) >= 12:
+            break
+    recipe.tags = objs
+
+
 def _apply(recipe: Recipe, data: dict):
     simple = {
         "description": "description",
@@ -104,6 +131,8 @@ def _apply(recipe: Recipe, data: dict):
         _set_taxonomy(recipe, "categories", Category, data["categoryIds"])
     if "tagIds" in data:
         _set_taxonomy(recipe, "tags", Tag, data["tagIds"])
+    if isinstance(data.get("tags"), list):
+        _set_tags_by_name(recipe, data["tags"])
 
 
 @bp.get("/recipes")
@@ -188,6 +217,47 @@ def _remove_image_file(filename: str):
         os.remove(_image_path(filename))
     except OSError:
         pass
+
+
+_MAX_IMAGE_BYTES = 8_000_000
+
+
+def download_image_to_recipe(recipe: Recipe, url: str):
+    """Best-effort: fetch an external image URL and store it as the recipe's
+    image (used by import). SSRF-guarded per redirect hop and size/type-capped;
+    any failure is swallowed so a bad image never breaks the import."""
+    from ..services.ai.recipe_import import UnsafeURLError, _assert_public_url
+
+    url = (url or "").strip()
+    if not url:
+        return
+    try:
+        current = url
+        with httpx.Client(follow_redirects=False, timeout=20) as client:
+            for _ in range(5):
+                _assert_public_url(current)
+                with client.stream("GET", current) as r:
+                    if r.is_redirect and r.headers.get("location"):
+                        current = urljoin(current, r.headers["location"])
+                        continue
+                    r.raise_for_status()
+                    ctype = r.headers.get("content-type", "").split(";")[0].strip().lower()
+                    ext = _IMAGE_EXTS.get(ctype)
+                    if not ext:
+                        return  # not a supported image type
+                    chunks, total = [], 0
+                    for chunk in r.iter_bytes():
+                        chunks.append(chunk)
+                        total += len(chunk)
+                        if total > _MAX_IMAGE_BYTES:
+                            return  # too large — skip
+                    filename = f"{recipe.id}{ext}"
+                    with open(_image_path(filename), "wb") as fh:
+                        fh.write(b"".join(chunks))
+                    recipe.image = filename
+                    return
+    except (UnsafeURLError, httpx.HTTPError, OSError, UnicodeError, ValueError):
+        return
 
 
 @bp.get("/recipes/<recipe_id>/image")

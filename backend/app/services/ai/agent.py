@@ -81,6 +81,28 @@ TOOLS = [
             "required": ["item"],
         },
     },
+    {
+        "name": "create_recipe",
+        "description": (
+            "Create and save a NEW recipe in the user's collection. Use this "
+            "when the user asks you to write/make/save a recipe. Provide the "
+            "complete ingredient lines and step-by-step instructions; add short "
+            "tags (cuisine, course, diet) when helpful."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "servings": {"type": "integer"},
+                "totalMinutes": {"type": "integer"},
+                "ingredients": {"type": "array", "items": {"type": "string"}},
+                "steps": {"type": "array", "items": {"type": "string"}},
+                "tags": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["name", "ingredients", "steps"],
+        },
+    },
 ]
 
 
@@ -188,6 +210,31 @@ def execute_tool(gid: str, name: str, args: dict):
         db.session.flush()
         return {"added": item_text, "list": sl.name, "itemId": item.id}
 
+    if name == "create_recipe":
+        from ...api.recipes import _apply
+
+        title = str(args.get("name", "")).strip()
+        if not title:
+            return {"error": "a recipe name is required"}
+        ings = [{"display": str(i).strip()} for i in (args.get("ingredients") or []) if str(i).strip()]
+        steps = [{"text": str(s).strip()} for s in (args.get("steps") or []) if str(s).strip()]
+        if not ings or not steps:
+            return {"error": "provide both ingredients and steps"}
+        recipe = Recipe(group_id=gid, name=title, slug="")
+        db.session.add(recipe)
+        # _apply sets name+slug, coerces the rest, and find-or-creates tags by name.
+        _apply(recipe, {
+            "name": title,
+            "description": str(args.get("description", "")),
+            "servings": args.get("servings") or 0,
+            "totalMinutes": args.get("totalMinutes") or 0,
+            "ingredients": ings,
+            "steps": steps,
+            "tags": [str(t) for t in (args.get("tags") or [])],
+        })
+        db.session.flush()  # request handler owns the commit; flush populates id
+        return {"created": recipe.name, "recipeId": recipe.id}
+
     return {"error": f"unknown tool {name}"}
 
 
@@ -203,6 +250,12 @@ _ACTION_FORMATTERS = {
          **({"undo": {"kind": "shopping_item", "id": r["itemId"]}}
             if r.get("itemId") else {})}
         if r.get("added") else None
+    ),
+    "create_recipe": lambda r: (
+        {"label": f'Created recipe "{r["created"]}"', "kind": "recipe", "icon": "📖",
+         **({"undo": {"kind": "recipe", "id": r["recipeId"]}}
+            if r.get("recipeId") else {})}
+        if r.get("created") else None
     ),
     # Cross-app (Edibl) mutations — all undoable via the server undo-proxy
     # (POST /ai/chat/undo -> Edibl), because the browser can't reach Edibl. The

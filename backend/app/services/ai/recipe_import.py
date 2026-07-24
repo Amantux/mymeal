@@ -41,6 +41,7 @@ _SCHEMA_HINT = """Return JSON with exactly these keys:
   "totalMinutes": integer,
   "ingredients": [ { "display": string } ],   // one entry per ingredient line
   "steps": [ { "text": string } ],            // one entry per instruction step
+  "tags": [ string ],             // short labels: cuisine, course, diet, method
   "notes": string
 }"""
 
@@ -112,7 +113,47 @@ def _flatten_instructions(instructions) -> list[str]:
     return out
 
 
-def normalize_jsonld(node: dict) -> dict:
+def _abs_url(base: str, u: str) -> str:
+    u = (u or "").strip()
+    if not u:
+        return ""
+    return urljoin(base, u) if base else u
+
+
+def _first_image(value, base: str = "") -> str:
+    """schema.org ``image`` may be a URL string, a list, or an ImageObject
+    ({url|contentUrl|@id}). Return the first usable absolute URL."""
+    for v in _as_list(value):
+        if isinstance(v, str) and v.strip():
+            return _abs_url(base, v)
+        if isinstance(v, dict):
+            u = v.get("url") or v.get("contentUrl") or v.get("@id")
+            if u:
+                return _abs_url(base, str(u))
+    return ""
+
+
+def _extract_tags(node: dict) -> list[str]:
+    """Derive tag names from keywords + cuisine + course. Keywords may be a
+    comma-joined string or a list; dedupe case-insensitively, cap the count."""
+    raw: list[str] = []
+    kw = node.get("keywords")
+    if isinstance(kw, str):
+        raw += [p for p in kw.split(",")]
+    else:
+        raw += [_text(k) for k in _as_list(kw)]
+    raw += [_text(c) for c in _as_list(node.get("recipeCuisine"))]
+    raw += [_text(c) for c in _as_list(node.get("recipeCategory"))]
+    out, seen = [], set()
+    for t in raw:
+        t = t.strip()
+        if t and t.lower() not in seen:
+            seen.add(t.lower())
+            out.append(t)
+    return out[:12]
+
+
+def normalize_jsonld(node: dict, base_url: str = "") -> dict:
     """Map a schema.org Recipe node to our payload shape."""
     yield_val = node.get("recipeYield")
     ingredients = [
@@ -134,6 +175,8 @@ def normalize_jsonld(node: dict) -> dict:
         "totalMinutes": total,
         "ingredients": ingredients,
         "steps": steps,
+        "tags": _extract_tags(node),
+        "imageUrl": _first_image(node.get("image"), base_url),
         "notes": "",
     }
 
@@ -204,8 +247,23 @@ def _normalize_ai(payload: dict) -> dict:
         "totalMinutes": _int(payload.get("totalMinutes")),
         "ingredients": [i for i in ings if i["display"]],
         "steps": [s for s in steps if s["text"]],
+        "tags": [t for t in (_text(x) for x in _as_list(payload.get("tags"))) if t][:12],
         "notes": _text(payload.get("notes")),
     }
+
+
+def _og_image(html: str, base: str) -> str:
+    """Fallback recipe image: the page's OpenGraph/twitter image."""
+    soup = BeautifulSoup(html, "html.parser")
+    for sel in (
+        {"property": "og:image"},
+        {"name": "og:image"},
+        {"name": "twitter:image"},
+    ):
+        tag = soup.find("meta", attrs=sel)
+        if tag and tag.get("content"):
+            return _abs_url(base, tag["content"])
+    return ""
 
 
 class UnsafeURLError(ValueError):
@@ -285,7 +343,9 @@ def import_recipe(
         html = _fetch(source_url)
         node = extract_jsonld_recipe(html)
         if node:
-            payload = normalize_jsonld(node)
+            payload = normalize_jsonld(node, source_url)
+            if not payload.get("imageUrl"):
+                payload["imageUrl"] = _og_image(html, source_url)
             payload["sourceUrl"] = source_url
             return payload
 
@@ -295,6 +355,9 @@ def import_recipe(
     body = text.strip() or _visible_text(html)
     prompt = f"{_SCHEMA_HINT}\n\nSource text:\n\n{body}"
     payload = _normalize_ai(provider.complete_json(prompt, system=_IMPORT_SYSTEM))
+    # The model can't see images; recover one from the fetched page's OG tags.
+    if html and not payload.get("imageUrl"):
+        payload["imageUrl"] = _og_image(html, source_url)
     if source_url:
         payload["sourceUrl"] = source_url
     return payload

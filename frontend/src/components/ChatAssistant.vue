@@ -17,6 +17,7 @@ const ui = useUI()
 // the descriptor to the server undo-proxy, which does the reversal.
 const UNDO = {
   shopping_item: (u) => api.del(`/shopping-lists/items/${u.id}`),
+  recipe: (u) => api.del(`/recipes/${u.id}`),
   edibl_stock: (u) => api.post('/ai/chat/undo', u),
   edibl_shopping: (u) => api.post('/ai/chat/undo', u),
   edibl_unconsume: (u) => api.post('/ai/chat/undo', u),

@@ -18,7 +18,7 @@ from ..utils import unique_slug
 from ..services.ai.base import ProviderError
 from ..services.ai.registry import get_provider, list_providers
 from ..services.ai.recipe_import import import_recipe, UnsafeURLError
-from .recipes import _apply
+from .recipes import _apply, download_image_to_recipe
 
 bp = Blueprint("ai", __name__)
 
@@ -176,6 +176,11 @@ def import_recipe_endpoint():
     db.session.add(recipe)
     _apply(recipe, {k: v for k, v in payload.items() if k != "name"})
     db.session.commit()
+    # Download the source image after the recipe has an id (filename = <id>.ext).
+    # Best-effort: never fail the import over a missing/oversized image.
+    if payload.get("imageUrl"):
+        download_image_to_recipe(recipe, payload["imageUrl"])
+        db.session.commit()
     return jsonify(recipe_out(recipe)), 201
 
 
