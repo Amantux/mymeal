@@ -184,7 +184,33 @@ def create_recipe():
 @bp.get("/recipes/<ident>")
 @login_required
 def get_recipe(ident):
-    return jsonify(recipe_out(_get_by_id_or_slug(ident)))
+    recipe = _get_by_id_or_slug(ident)
+    out = recipe_out(recipe)
+    _apply_view(out, recipe, request.args)
+    return jsonify(out)
+
+
+def _apply_view(out: dict, recipe: Recipe, args):
+    """Optional read-only transforms driven by query params:
+    ?servings=N     → scale ingredient quantities to N servings
+    ?units=weight   → show weights where a food's density is known
+    Pure: mutates the response only, never the stored recipe."""
+    from ..services import units
+
+    try:
+        target = int(args.get("servings") or 0)
+    except (TypeError, ValueError):
+        target = 0
+    to_weight = str(args.get("units") or "").lower() == "weight"
+    factor = (target / recipe.servings) if target > 0 and recipe.servings else 1.0
+    if factor == 1.0 and not to_weight:
+        return
+    out["scaledServings"] = target if target > 0 else recipe.servings
+    for ing in out.get("ingredients", []):
+        line = units.scale_line(ing.get("display", ""), factor)
+        if to_weight:
+            line = units.to_weight_line(line)
+        ing["display"] = line
 
 
 @bp.put("/recipes/<recipe_id>")

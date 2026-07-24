@@ -65,6 +65,25 @@ def test_create_recipe_tool_saves_recipe_with_tags(app):
         assert r.servings == 4 and r.slug
 
 
+def test_recipe_scaling_and_weight_view(auth_client):
+    rid = auth_client.post("/api/v1/recipes", json={
+        "name": "Pancakes", "servings": 2,
+        "ingredients": [{"display": "2 cups flour"}, {"display": "2 eggs"}],
+    }).get_json()["id"]
+
+    base = auth_client.get(f"/api/v1/recipes/{rid}").get_json()
+    assert [i["display"] for i in base["ingredients"]] == ["2 cups flour", "2 eggs"]
+
+    scaled = auth_client.get(f"/api/v1/recipes/{rid}?servings=4").get_json()
+    assert scaled["scaledServings"] == 4
+    assert [i["display"] for i in scaled["ingredients"]] == ["4 cup flour", "4 eggs"]
+
+    weight = auth_client.get(f"/api/v1/recipes/{rid}?units=weight").get_json()
+    dishes = [i["display"] for i in weight["ingredients"]]
+    assert dishes[0].endswith("g flour")  # cup flour → grams via density
+    assert dishes[1] == "2 eggs"          # no unit/density → unchanged
+
+
 def test_create_recipe_tool_requires_ingredients_and_steps(app):
     gid = _group(app)
     with app.app_context():
