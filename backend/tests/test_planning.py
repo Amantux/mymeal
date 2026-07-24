@@ -134,6 +134,33 @@ def test_ai_plan_creates_entries(auth_client, monkeypatch):
     assert entries[1]["recipeId"] is None
 
 
+def test_ai_plan_forwards_constraints_into_the_prompt(auth_client, monkeypatch):
+    import app.api.ai as ai_api
+    from app.services.ai.base import AIProvider, ChatResult
+
+    captured = {}
+
+    class CaptureProvider(AIProvider):
+        name = "fake"
+
+        def available(self):
+            return True
+
+        def _complete(self, system, prompt, max_tokens):
+            captured["prompt"] = prompt
+            return '{"days":[]}'
+
+        def chat(self, messages, system="", tools=None, max_tokens=2048):
+            return ChatResult(content="ok")
+
+    monkeypatch.setattr(ai_api, "get_provider", lambda: CaptureProvider())
+    r = auth_client.post("/api/v1/ai/plan",
+                         json={"days": 1, "maxMinutes": 30, "exclude": ["mushrooms"]})
+    assert r.status_code == 201
+    assert "30 minutes" in captured["prompt"]
+    assert "mushrooms" in captured["prompt"]
+
+
 def _fake_plan_provider(raw_json):
     from app.services.ai.base import AIProvider, ChatResult
 

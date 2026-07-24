@@ -12,6 +12,10 @@ const view = ref('week') // 'day' | 'week' | 'month'
 const anchor = ref(startOfDay(new Date()))
 const busy = ref(false)
 
+// Constraint-aware planning options (feature #6). Sent to /ai/plan.
+const showPlanOpts = ref(false)
+const planOpts = ref({ maxMinutes: null, exclude: '', servings: null })
+
 function startOfDay(d) {
   const x = new Date(d)
   x.setHours(0, 0, 0, 0)
@@ -134,7 +138,14 @@ async function del(id) {
 async function generate() {
   busy.value = true
   try {
-    await api.post('/ai/plan', { start: iso(mondayOf(anchor.value)), days: 7 })
+    const body = { start: iso(mondayOf(anchor.value)), days: 7 }
+    if (planOpts.value.maxMinutes) body.maxMinutes = planOpts.value.maxMinutes
+    if (planOpts.value.servings) body.servings = planOpts.value.servings
+    const exclude = planOpts.value.exclude
+      .split(',').map((s) => s.trim()).filter(Boolean)
+    if (exclude.length) body.exclude = exclude
+    await api.post('/ai/plan', body)
+    showPlanOpts.value = false
     ui.toast('Week planned')
     await reload()
   } catch (e) {
@@ -161,10 +172,33 @@ async function buildList() {
   <div class="page-head">
     <h1>Meal plan</h1>
     <div class="grow"></div>
+    <button class="secondary" :class="{ active: showPlanOpts }"
+      :aria-pressed="showPlanOpts" @click="showPlanOpts = !showPlanOpts"
+      title="Planning constraints">⚙️ Options</button>
     <button class="secondary" @click="generate" :disabled="busy">
       {{ busy ? 'Planning…' : '✨ Plan with AI' }}
     </button>
     <button @click="buildList">🛒 Build shopping list</button>
+  </div>
+
+  <div v-if="showPlanOpts" class="card plan-opts">
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
+      <label class="field">
+        <span>Max time per meal (min)</span>
+        <input v-model.number="planOpts.maxMinutes" type="number" min="0" placeholder="any" />
+      </label>
+      <label class="field">
+        <span>Servings</span>
+        <input v-model.number="planOpts.servings" type="number" min="0" placeholder="default" />
+      </label>
+      <label class="field">
+        <span>Exclude ingredients</span>
+        <input v-model="planOpts.exclude" placeholder="e.g. mushrooms, cilantro" />
+      </label>
+    </div>
+    <p class="muted" style="margin:8px 0 0;font-size:0.82rem">
+      Your saved diet &amp; allergies (Settings) are always applied on top of these.
+    </p>
   </div>
 
   <div class="toolbar">
@@ -253,6 +287,8 @@ async function buildList() {
 .seg button + button { border-left: 1px solid var(--border); }
 .seg button.active { background: var(--accent); color: #fff; }
 .mp-title { min-width: 8ch; text-align: center; }
+.plan-opts { margin-bottom: 16px; }
+button.secondary.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 /* Week: 7 equal-width day columns (no uneven/stretched box). Day: one focused card. */
 /* stretch (default) → every day box is identical width AND height, regardless of

@@ -342,9 +342,21 @@ def plan_week():
     if stored:
         preferences = f"{preferences}; {stored}".strip("; ") if preferences else stored
 
+    # Explicit planning constraints (optional).
+    try:
+        max_minutes = int(data.get("maxMinutes") or 0)
+    except (ValueError, TypeError):
+        max_minutes = 0
+    raw_exclude = data.get("exclude")
+    if isinstance(raw_exclude, str):
+        raw_exclude = [raw_exclude]
+    exclude = [str(x).strip()[:80] for x in raw_exclude if str(x).strip()][:30] \
+        if isinstance(raw_exclude, list) else []
+
     recipes = db.session.query(Recipe).filter_by(group_id=gid).all()
     catalog = [
-        {"id": r.id, "name": r.name, "tags": [t.name for t in r.tags]}
+        {"id": r.id, "name": r.name, "tags": [t.name for t in r.tags],
+         "totalMinutes": r.total_minutes or None}
         for r in recipes
     ]
 
@@ -352,13 +364,24 @@ def plan_week():
         "You are a household meal planner. Prefer recipes from the provided "
         "catalog (reference them by their exact id). You may invent a meal as "
         "a plain title when nothing fits. Respect the stated preferences and "
-        "dietary constraints. Do not repeat the same recipe more than twice."
+        "dietary constraints STRICTLY — never plan a meal containing an excluded "
+        "ingredient or one that breaks the time limit. Aim for variety: do not "
+        "repeat the same recipe more than twice across the plan."
     )
+    constraint_lines = ""
+    if max_minutes:
+        constraint_lines += (
+            f"Time limit: each meal must take at most {max_minutes} minutes "
+            f"(use each recipe's totalMinutes; skip or invent quicker ones).\n"
+        )
+    if exclude:
+        constraint_lines += f"Exclude these ingredients entirely: {', '.join(exclude)}.\n"
     prompt = (
         f"Plan {days} day(s) of meals for these meal types: "
         f"{', '.join(meal_types)}.\n"
         f"Servings target: {servings or 'unspecified'}.\n"
-        f"Preferences/constraints: {preferences or 'none'}.\n\n"
+        f"Preferences/constraints: {preferences or 'none'}.\n"
+        f"{constraint_lines}\n"
         f"Available recipes (JSON): {json.dumps(catalog)}\n\n"
         'Return JSON: {"days":[{"offset":0,"meals":[{"mealType":"dinner",'
         '"recipeId":"<id or empty>","title":"<title if no recipe>"}]}]}. '
