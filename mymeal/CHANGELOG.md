@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.1.19
+
+- Shared PostgreSQL add-on with per-app provisioning (Phase 2).
+
 ## 1.1.18
 
 - Address Phase 1 review (percent-password crash + partial-boot heal).
