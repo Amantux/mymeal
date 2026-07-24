@@ -12,6 +12,11 @@ const recipe = ref(null)
 const loading = ref(true)
 const editing = ref(false)
 
+// Categories: the group's full list + the ids selected on this recipe (edit mode).
+const allCategories = ref([])
+const selectedCategoryIds = ref([])
+const newCategoryName = ref('')
+
 // Display-only ingredient view: scale to a chosen serving count and/or show
 // weights. Never mutates the stored recipe (the backend does the transform).
 const viewServings = ref(null)
@@ -56,10 +61,27 @@ async function load() {
     loading.value = false
   }
 }
-onMounted(load)
+onMounted(async () => {
+  await load()
+  try { allCategories.value = (await api.get('/categories')) || [] } catch { /* optional */ }
+})
+
+async function createCategory() {
+  const name = newCategoryName.value.trim()
+  if (!name) return
+  try {
+    const cat = await api.post('/categories', { name })
+    allCategories.value.push(cat)
+    selectedCategoryIds.value.push(cat.id)
+    newCategoryName.value = ''
+  } catch (e) {
+    ui.error(e.message || 'Could not create category')
+  }
+}
 
 function startEdit() {
   const r = recipe.value
+  selectedCategoryIds.value = (r.categories || []).map((c) => c.id)
   form.value = {
     name: r.name,
     description: r.description,
@@ -79,6 +101,7 @@ function startEdit() {
 async function save() {
   const payload = {
     ...form.value,
+    categoryIds: selectedCategoryIds.value,
     ingredients: ingredientsText.value
       .split('\n')
       .map((l) => l.trim())
@@ -170,6 +193,7 @@ const imageSrc = computed(() =>
             <div class="row wrap" style="gap:8px;margin-top:8px">
               <span v-if="recipe.servings" class="badge">🍽️ {{ recipe.servings }} servings</span>
               <span v-if="recipe.totalMinutes" class="badge tnum">⏱️ {{ recipe.totalMinutes }} min</span>
+              <span v-for="c in recipe.categories" :key="c.id" class="chip cat">{{ c.name }}</span>
               <span v-for="tag in recipe.tags" :key="tag.id" class="chip">{{ tag.name }}</span>
             </div>
             <p v-if="recipe.sourceUrl" style="margin-top:10px">
@@ -229,6 +253,21 @@ const imageSrc = computed(() =>
         </div>
         <label class="field"><span>Source URL</span><input v-model="form.sourceUrl" /></label>
         <label class="field"><span>Image</span><input type="file" accept="image/*" @change="uploadImage" /></label>
+        <div class="field">
+          <span>Categories</span>
+          <div v-if="allCategories.length" class="cat-picker">
+            <label v-for="c in allCategories" :key="c.id" class="cat-opt">
+              <input type="checkbox" :value="c.id" v-model="selectedCategoryIds" />
+              <span>{{ c.name }}</span>
+            </label>
+          </div>
+          <p v-else class="muted" style="margin:4px 0 0;font-size:0.85rem">No categories yet — add one below.</p>
+          <div class="row" style="margin-top:8px;gap:8px">
+            <input v-model="newCategoryName" class="fill" placeholder="New category (e.g. Weeknight dinners)"
+              @keydown.enter.prevent="createCategory" />
+            <button type="button" class="secondary" @click="createCategory">Add</button>
+          </div>
+        </div>
       </div>
       <div class="card">
         <h2>Ingredients <span class="muted" style="font-weight:400">— one per line</span></h2>
@@ -248,4 +287,8 @@ const imageSrc = computed(() =>
 <style scoped>
 .ing-tools { display: flex; align-items: center; gap: 8px; }
 .ing-tools .active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.chip.cat { background: var(--accent-soft); border-color: var(--accent); }
+.cat-picker { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 4px; }
+.cat-opt { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; cursor: pointer; }
+.cat-opt input { width: auto; }
 </style>

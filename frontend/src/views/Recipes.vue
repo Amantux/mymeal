@@ -8,11 +8,24 @@ import { useLoader } from '../composables/useLoader'
 
 const router = useRouter()
 const recipes = ref([])
+const categories = ref([])
 const q = ref('')
+const category = ref('')   // selected category slug ('' = all)
 
 async function load() {
-  const res = await api.get('/recipes' + (q.value ? `?q=${encodeURIComponent(q.value)}` : ''))
+  const params = new URLSearchParams()
+  if (q.value) params.set('q', q.value)
+  if (category.value) params.set('category', category.value)
+  const qs = params.toString()
+  const [res] = await Promise.all([
+    api.get('/recipes' + (qs ? `?${qs}` : '')),
+    // Load the category list once (cheap) so the filter can populate.
+    categories.value.length ? Promise.resolve() : loadCategories(),
+  ])
   recipes.value = res.items
+}
+async function loadCategories() {
+  try { categories.value = (await api.get('/categories')) || [] } catch { /* optional */ }
 }
 const { loading, error, reload } = useLoader(load)
 
@@ -21,7 +34,7 @@ watch(q, () => {
   clearTimeout(t)
   t = setTimeout(reload, 200)
 })
-
+watch(category, reload)
 </script>
 
 <template>
@@ -33,6 +46,10 @@ watch(q, () => {
 
   <div class="toolbar">
     <input v-model="q" placeholder="Search recipes…" style="max-width:340px" />
+    <select v-if="categories.length" v-model="category" aria-label="Filter by category">
+      <option value="">All categories</option>
+      <option v-for="c in categories" :key="c.id" :value="c.slug">{{ c.name }}</option>
+    </select>
   </div>
 
   <div v-if="loading" class="card-grid">
@@ -44,10 +61,10 @@ watch(q, () => {
   <EmptyState
     v-else-if="!recipes.length"
     icon="🍳"
-    :title="q ? 'No matches' : 'No recipes yet'"
-    :hint="q ? 'Try a different search.' : 'Create your first recipe to get started.'"
+    :title="(q || category) ? 'No matches' : 'No recipes yet'"
+    :hint="(q || category) ? 'Try a different search or category.' : 'Create your first recipe to get started.'"
   >
-    <button v-if="!q" @click="router.push('/recipes/new')">＋ New recipe</button>
+    <button v-if="!q && !category" @click="router.push('/recipes/new')">＋ New recipe</button>
   </EmptyState>
 
   <div v-else class="card-grid">
@@ -73,6 +90,7 @@ watch(q, () => {
           <span v-if="r.isFavorite"> · ⭐</span>
         </div>
         <div class="labels">
+          <span v-for="c in r.categories" :key="c.id" class="chip">{{ c.name }}</span>
           <span v-for="tag in r.tags" :key="tag.id" class="badge">{{ tag.name }}</span>
         </div>
       </div>
