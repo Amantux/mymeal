@@ -15,10 +15,44 @@ from app.settings import (
     ensure_secret_key,
     load_ha_options,
     load_settings,
+    normalize_db_url,
     parse_bool,
 )
 
 GOOD_SECRET = "s" * 40
+
+
+# ------------------------------------------------- database URL scheme/driver
+def test_normalize_db_url_passes_sqlite_through():
+    assert normalize_db_url("sqlite:///x/y.db") == "sqlite:///x/y.db"
+
+
+def test_normalize_db_url_normalizes_bare_postgres_to_psycopg():
+    # A bare postgresql:// defaults to psycopg2 (not installed); normalize it.
+    assert normalize_db_url("postgresql://u:p@h:5432/db") == \
+        "postgresql+psycopg://u:p@h:5432/db"
+
+
+def test_normalize_db_url_keeps_explicit_psycopg():
+    url = "postgresql+psycopg://u@h/db"
+    assert normalize_db_url(url) == url
+
+
+@pytest.mark.parametrize("url", [
+    "postgresql+psycopg2://u@h/db",  # wrong (uninstalled) driver
+    "postgresql+asyncpg://u@h/db",
+    "mysql://u@h/db",
+    "redis://h",
+])
+def test_normalize_db_url_rejects_unsupported(url):
+    with pytest.raises(ValueError):
+        normalize_db_url(url)
+
+
+def test_bad_database_url_scheme_refuses_to_start():
+    with pytest.raises(ConfigError) as exc:
+        L(env={"MYMEAL_SECRET_KEY": GOOD_SECRET, "MYMEAL_DATABASE_URL": "mysql://u@h/db"})
+    assert "database" in str(exc.value).lower()
 
 
 def L(env=None, **kw):
@@ -303,16 +337,20 @@ def test_postgres_database_url_is_supported_without_warning():
     assert not any("SQLite" in w or "supported" in w for w in s.warnings)
 
 
-def test_unknown_database_dialect_warns():
-    s = L({"MYMEAL_DATABASE_URL": "mysql://u:p@h/db", "MYMEAL_SECRET_KEY": GOOD_SECRET})
-    assert any("supported" in w for w in s.warnings)
+def test_unknown_database_dialect_refuses_to_start():
+    # An unsupported dialect now fails fast (was a soft warning) so it can't
+    # surface later as a cryptic driver ImportError at first query.
+    with pytest.raises(ConfigError) as exc:
+        L({"MYMEAL_DATABASE_URL": "mysql://u:p@h/db", "MYMEAL_SECRET_KEY": GOOD_SECRET})
+    assert "supported" in str(exc.value).lower()
 
 
-def test_database_url_credentials_are_not_leaked_by_warnings():
-    # Use a dialect that DOES warn, so the no-leak assertion is meaningful.
-    s = L({"MYMEAL_DATABASE_URL": "mysql://user:hunter2@host/db",
+def test_database_url_credentials_are_not_leaked_by_errors():
+    # The refusal message must name the scheme, never the embedded password.
+    with pytest.raises(ConfigError) as exc:
+        L({"MYMEAL_DATABASE_URL": "mysql://user:hunter2@host/db",
            "MYMEAL_SECRET_KEY": GOOD_SECRET})
-    assert s.warnings and "hunter2" not in " ".join(s.warnings)
+    assert "hunter2" not in str(exc.value)
 
 
 def test_claude_without_key_warns_but_does_not_block_startup():

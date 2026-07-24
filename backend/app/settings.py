@@ -133,6 +133,36 @@ def csv_list(raw: str) -> tuple[str, ...]:
     return tuple(p.strip() for p in str(raw).split(",") if p.strip())
 
 
+def normalize_db_url(url: str) -> str:
+    """Validate a database URL's scheme+driver and normalize it.
+
+    myMeal supports exactly two backends: SQLite and PostgreSQL via psycopg (v3,
+    the installed driver). A bare ``postgresql://`` defaults to psycopg2 (NOT
+    installed) and would crash with a cryptic ImportError at first query, so we
+    normalize it to ``postgresql+psycopg://``. Any other scheme or Postgres
+    driver raises ValueError — fail fast with a clear message rather than a
+    confusing runtime error. Applied at the point of use, so it guards the env
+    ``DATABASE_URL`` and the shared-Postgres DSN alike.
+    """
+    scheme = url.split("://", 1)[0].lower()
+    base, _, driver = scheme.partition("+")
+    if base == "sqlite":
+        return url
+    if base == "postgresql":
+        if not driver:
+            return "postgresql+psycopg" + url[len("postgresql"):]  # normalize
+        if driver != "psycopg":
+            raise ValueError(
+                f"unsupported Postgres driver '+{driver}'. myMeal ships psycopg "
+                "(v3); use postgresql+psycopg://…"
+            )
+        return url
+    raise ValueError(
+        f"unsupported database scheme {scheme!r}. Only sqlite:// and "
+        "postgresql+psycopg:// are supported."
+    )
+
+
 def as_str(raw: str) -> str:
     return str(raw)
 
@@ -310,7 +340,7 @@ class Settings:
     def sqlalchemy_uri(self) -> str:
         # Explicit URL always wins.
         if self.values["DATABASE_URL"]:
-            return self.values["DATABASE_URL"]
+            return normalize_db_url(self.values["DATABASE_URL"])
         # Shared PostgreSQL: the entrypoint's provisioning step (pg_provision)
         # writes the discovered DSN here; read it rather than routing a runtime
         # value through the env/options precedence chain.
@@ -319,7 +349,7 @@ class Settings:
                 with open(os.path.join(self.data_dir, ".database_url")) as fh:
                     url = fh.read().strip()
                 if url:
-                    return url
+                    return normalize_db_url(url)
             except OSError:
                 pass
         return f"sqlite:///{os.path.join(self.data_dir, 'mymeal.db')}"
@@ -543,11 +573,11 @@ def _validate_semantics(values, sources, in_ha, errors, warnings, strict_secret)
             "extra workers add lock contention rather than write throughput. "
             "Prefer raising THREADS."
         )
-    if uri and not is_sqlite and "postgresql" not in uri.split(":")[0]:
-        warnings.append(
-            f"MYMEAL_DATABASE_URL points at {uri.split(':')[0]!r}. Only SQLite "
-            "(default) and Postgres (postgresql+psycopg://…) are supported."
-        )
+    if uri:
+        try:
+            normalize_db_url(uri)
+        except ValueError as exc:
+            errors.append(f"MYMEAL_DATABASE_URL: {exc}")
 
     edibl_url = values["EDIBL_URL"]
     if edibl_url and not re.match(r"^https?://", edibl_url):
