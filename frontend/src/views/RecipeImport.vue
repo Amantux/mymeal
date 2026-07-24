@@ -51,7 +51,7 @@ async function run() {
   <div class="page-head"><h1>Import a recipe</h1></div>
 
   <div class="card">
-    <div class="tabs" style="display:flex;gap:8px;margin-bottom:16px">
+    <div class="tabs" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">
       <button :class="mode === 'url' ? '' : 'secondary'" @click="mode = 'url'">From a link</button>
       <button :class="mode === 'text' ? '' : 'secondary'" @click="mode = 'text'">Paste text</button>
       <button :class="mode === 'photo' ? '' : 'secondary'" @click="mode = 'photo'">From a photo</button>

@@ -46,7 +46,8 @@ watch(category, reload)
 
   <div class="toolbar">
     <input v-model="q" placeholder="Search recipes…" style="max-width:340px" />
-    <select v-if="categories.length" v-model="category" aria-label="Filter by category">
+    <select v-if="categories.length" v-model="category" aria-label="Filter by category"
+      style="max-width:240px">
       <option value="">All categories</option>
       <option v-for="c in categories" :key="c.id" :value="c.slug">{{ c.name }}</option>
     </select>

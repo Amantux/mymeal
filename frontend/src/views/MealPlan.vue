@@ -288,7 +288,9 @@ async function buildList() {
 .seg button.active { background: var(--accent); color: #fff; }
 .mp-title { min-width: 8ch; text-align: center; }
 .plan-opts { margin-bottom: 16px; }
-button.secondary.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+/* Pressed toggle: accent text + border only — the sole orange FILL stays on the
+   view's primary action (Build shopping list), keeping the accent scarce. */
+button.secondary.active { color: var(--accent); border-color: var(--accent); }
 
 /* Week: 7 equal-width day columns (no uneven/stretched box). Day: one focused card. */
 /* stretch (default) → every day box is identical width AND height, regardless of

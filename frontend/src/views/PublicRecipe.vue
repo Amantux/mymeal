@@ -54,7 +54,7 @@ const NUTRITION = [
         <span v-if="recipe.servings" class="badge">🍽️ {{ recipe.servings }} servings</span>
         <span v-if="recipe.totalMinutes" class="badge tnum">⏱️ {{ recipe.totalMinutes }} min</span>
         <span v-for="c in recipe.categories" :key="c" class="chip">{{ c }}</span>
-        <span v-for="t in recipe.tags" :key="t" class="chip">{{ t }}</span>
+        <span v-for="t in recipe.tags" :key="t" class="badge">{{ t }}</span>
       </div>
 
       <h2>Ingredients</h2>
