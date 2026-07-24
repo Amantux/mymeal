@@ -120,8 +120,10 @@ async function save() {
   <div class="page-head">
     <h1>New recipe</h1>
     <div class="grow"></div>
-    <button class="secondary" @click="router.push('/recipes')">Cancel</button>
-    <button :disabled="saving" @click="save">{{ saving ? 'Saving…' : 'Save recipe' }}</button>
+    <div class="head-actions">
+      <button class="secondary" @click="router.push('/recipes')">Cancel</button>
+      <button :disabled="saving" @click="save">{{ saving ? 'Saving…' : 'Save recipe' }}</button>
+    </div>
   </div>
 
   <!-- LLM draft: describe a dish, get a full editable recipe. -->
@@ -173,8 +175,13 @@ async function save() {
 </template>
 
 <style scoped>
-.draft { background: var(--accent-soft); border-color: var(--accent); }
+/* Neutral card: the terracotta accent stays reserved for the one primary
+   action (Save recipe). The ✨ label is enough to signal the AI affordance. */
+.draft { background: var(--surface-2); }
 .row3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .hint { font-size: 0.78rem; color: var(--muted); font-weight: 500; }
+/* Keep the header action buttons together as a pair (they wrap as a unit
+   below the title on narrow screens instead of orphaning Save). */
+.head-actions { display: flex; gap: 8px; }
 @media (max-width: 560px) { .row3 { grid-template-columns: 1fr; } }
 </style>

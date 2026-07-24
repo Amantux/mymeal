@@ -43,9 +43,15 @@ function move(i, delta) {
       <textarea v-model="r.text" rows="2" class="text"
         :placeholder="`Step ${i + 1} — what to do`" :aria-label="`Step ${i + 1}`"></textarea>
       <div class="ctl">
-        <button type="button" class="icon" :disabled="i === 0" aria-label="Move up" @click="move(i, -1)">↑</button>
-        <button type="button" class="icon" :disabled="i === rows.length - 1" aria-label="Move down" @click="move(i, 1)">↓</button>
-        <button type="button" class="icon danger" aria-label="Remove step" @click="remove(i)">✕</button>
+        <button type="button" class="icon" :disabled="i === 0" title="Move up" aria-label="Move up" @click="move(i, -1)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10l4-4 4 4" /></svg>
+        </button>
+        <button type="button" class="icon" :disabled="i === rows.length - 1" title="Move down" aria-label="Move down" @click="move(i, 1)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4" /></svg>
+        </button>
+        <button type="button" class="icon rm" title="Remove step" aria-label="Remove step" @click="remove(i)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+        </button>
       </div>
     </div>
     <button type="button" class="ghost add" @click="add">＋ Add step</button>
@@ -55,15 +61,17 @@ function move(i, delta) {
 <style scoped>
 .step-rows { display: flex; flex-direction: column; gap: 8px; }
 .head .lbl { font-weight: 600; font-size: 0.88rem; }
-.step-row { display: grid; grid-template-columns: 28px 1fr auto; gap: 8px; align-items: start; }
-.num { text-align: center; padding-top: 8px; font-weight: 700; color: var(--muted); }
+.step-row { display: grid; grid-template-columns: 26px 1fr auto; gap: 10px; align-items: center; }
+.num { text-align: center; font-weight: 700; color: var(--muted); font-size: 0.9rem; }
 .text { width: 100%; resize: vertical; }
-.ctl { display: flex; flex-direction: column; gap: 4px; }
-.icon { padding: 6px 9px; line-height: 1; font-size: 0.9rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); }
-.icon.danger { color: var(--danger); }
-.icon:disabled { opacity: 0.35; }
+.ctl { display: flex; gap: 2px; }
+.icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; background: transparent; color: var(--muted); border-radius: 6px; cursor: pointer; }
+.icon svg { width: 16px; height: 16px; }
+.icon:hover:not(:disabled) { background: var(--surface-2, rgba(0, 0, 0, 0.06)); color: var(--text); }
+.icon.rm:hover:not(:disabled) { color: var(--danger); }
+.icon:disabled { opacity: 0.25; cursor: default; }
 .add { align-self: flex-start; margin-top: 2px; }
 @media (max-width: 620px) {
-  .step-row { grid-template-columns: 22px 1fr auto; }
+  .step-row { grid-template-columns: 22px 1fr auto; gap: 6px; }
 }
 </style>

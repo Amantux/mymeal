@@ -101,15 +101,24 @@ defineExpose({ rows })
       </div>
     </div>
 
+    <div class="col-heads">
+      <span>Qty</span><span>Unit</span><span>Ingredient</span><span>Note</span><span></span>
+    </div>
     <div v-for="(r, i) in rows" :key="i" class="ing-row">
       <input v-model="r.quantity" class="qty" inputmode="decimal" placeholder="Qty" aria-label="Quantity" />
       <input v-model="r.unit" class="unit" list="ing-units" placeholder="Unit" aria-label="Unit" />
-      <input v-model="r.food" class="food" list="ing-foods" placeholder="Ingredient" aria-label="Ingredient" />
+      <input v-model="r.food" class="food" list="ing-foods" placeholder="e.g. flour" aria-label="Ingredient" />
       <input v-model="r.note" class="note" placeholder="Note (optional)" aria-label="Note" />
       <div class="ctl">
-        <button type="button" class="icon" :disabled="i === 0" aria-label="Move up" @click="move(i, -1)">↑</button>
-        <button type="button" class="icon" :disabled="i === rows.length - 1" aria-label="Move down" @click="move(i, 1)">↓</button>
-        <button type="button" class="icon danger" aria-label="Remove" @click="remove(i)">✕</button>
+        <button type="button" class="icon" :disabled="i === 0" title="Move up" aria-label="Move up" @click="move(i, -1)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10l4-4 4 4" /></svg>
+        </button>
+        <button type="button" class="icon" :disabled="i === rows.length - 1" title="Move down" aria-label="Move down" @click="move(i, 1)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4" /></svg>
+        </button>
+        <button type="button" class="icon rm" title="Remove" aria-label="Remove" @click="remove(i)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+        </button>
       </div>
     </div>
 
@@ -118,22 +127,33 @@ defineExpose({ rows })
 </template>
 
 <style scoped>
-.ing-rows { display: flex; flex-direction: column; gap: 8px; }
+.ing-rows { display: flex; flex-direction: column; gap: 6px; }
 .head { display: flex; align-items: center; }
 .head .lbl { font-weight: 600; font-size: 0.88rem; }
 .paste { background: var(--surface-2, var(--surface)); }
 .paste textarea { width: 100%; }
-.ing-row { display: grid; grid-template-columns: 68px 96px 1fr 1fr auto; gap: 8px; align-items: center; }
+
+/* qty | unit | food (widest) | note | controls */
+.col-heads,
+.ing-row { display: grid; grid-template-columns: 64px 92px minmax(0, 1.7fr) minmax(0, 1fr) 96px; gap: 8px; align-items: center; }
+.col-heads { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding: 0 2px; }
 .ing-row input { width: 100%; }
-.ctl { display: flex; gap: 4px; }
-.icon { padding: 6px 9px; line-height: 1; font-size: 0.9rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); }
-.icon.danger { color: var(--danger); }
-.icon:disabled { opacity: 0.35; }
-.add { align-self: flex-start; margin-top: 2px; }
+
+.ctl { display: flex; gap: 2px; justify-content: flex-start; }
+.icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; background: transparent; color: var(--muted); border-radius: 6px; cursor: pointer; }
+.icon svg { width: 16px; height: 16px; }
+.icon:hover:not(:disabled) { background: var(--surface-2, rgba(0, 0, 0, 0.06)); color: var(--text); }
+.icon.rm:hover:not(:disabled) { color: var(--danger); }
+.icon:disabled { opacity: 0.25; cursor: default; }
+.add { align-self: flex-start; margin-top: 4px; }
+
 /* Stack fields on narrow screens so nothing overflows. */
 @media (max-width: 620px) {
-  .ing-row { grid-template-columns: 1fr 1fr; }
+  .col-heads { display: none; }
+  .ing-row { grid-template-columns: 1fr 1fr auto; gap: 6px; }
   .ing-row .food, .ing-row .note { grid-column: 1 / -1; }
-  .ctl { grid-column: 1 / -1; justify-content: flex-end; }
+  .ctl { grid-column: 3; grid-row: 1; justify-content: flex-end; }
+  /* Separate each ingredient GROUP so the stacked fields don't run together. */
+  .ing-row + .ing-row { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 6px; }
 }
 </style>
