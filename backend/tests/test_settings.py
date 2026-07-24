@@ -297,15 +297,22 @@ def test_many_workers_with_sqlite_warns_but_boots():
     assert any("SQLite serialises writes" in w for w in s.warnings)
 
 
-def test_non_sqlite_database_warns_that_it_is_unsupported():
-    s = L({"MYMEAL_DATABASE_URL": "postgresql://u:p@h/db", "MYMEAL_SECRET_KEY": GOOD_SECRET})
-    assert any("Only SQLite is tested" in w for w in s.warnings)
+def test_postgres_database_url_is_supported_without_warning():
+    s = L({"MYMEAL_DATABASE_URL": "postgresql+psycopg://u:p@h:5432/db",
+           "MYMEAL_SECRET_KEY": GOOD_SECRET})
+    assert not any("SQLite" in w or "supported" in w for w in s.warnings)
+
+
+def test_unknown_database_dialect_warns():
+    s = L({"MYMEAL_DATABASE_URL": "mysql://u:p@h/db", "MYMEAL_SECRET_KEY": GOOD_SECRET})
+    assert any("supported" in w for w in s.warnings)
 
 
 def test_database_url_credentials_are_not_leaked_by_warnings():
-    s = L({"MYMEAL_DATABASE_URL": "postgresql://user:hunter2@host/db",
+    # Use a dialect that DOES warn, so the no-leak assertion is meaningful.
+    s = L({"MYMEAL_DATABASE_URL": "mysql://user:hunter2@host/db",
            "MYMEAL_SECRET_KEY": GOOD_SECRET})
-    assert "hunter2" not in " ".join(s.warnings)
+    assert s.warnings and "hunter2" not in " ".join(s.warnings)
 
 
 def test_claude_without_key_warns_but_does_not_block_startup():

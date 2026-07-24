@@ -117,6 +117,9 @@ def create_app(config_object=None):
     app.config["ALLOW_REGISTRATION"] = settings.ALLOW_REGISTRATION
     app.config["SQLALCHEMY_DATABASE_URI"] = settings.sqlalchemy_uri
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    # pool_pre_ping recycles connections dropped by a remote Postgres / network
+    # (idle timeouts, restarts). Harmless for SQLite.
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True}
     app.config["images_dir"] = lambda: settings.images_dir
     app.config["MAX_CONTENT_LENGTH"] = settings.MAX_UPLOAD_MB * 1024 * 1024
     app.config["JSON_SORT_KEYS"] = False
@@ -157,8 +160,9 @@ def create_app(config_object=None):
 
 
 def _init_schema(app, data_dir):
-    """Create tables + run additive migrations under an exclusive file lock, so
-    concurrent gunicorn workers don't race db.create_all() on a fresh DB."""
+    """Bring the schema to head via Alembic, under an exclusive file lock so
+    concurrent gunicorn workers don't race on a fresh DB. Works on SQLite and
+    Postgres alike."""
     import fcntl
 
     lock_path = os.path.join(data_dir, ".schema-init.lock")
@@ -166,52 +170,37 @@ def _init_schema(app, data_dir):
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         except OSError:
-            pass  # locking unsupported (rare FS) — fall through; create_all is
-                  # still checkfirst, so the race is only a first-boot edge.
+            pass  # locking unsupported (rare FS) — Alembic is still safe to
+                  # run; the lock only avoids redundant concurrent upgrades.
         with app.app_context():
-            db.create_all()
-            _migrate(app)
+            _run_migrations(app)
 
 
-def _migrate(app):
-    """Additive schema migrations for existing SQLite databases.
+def _run_migrations(app):
+    """Run Alembic migrations to head.
 
-    ``db.create_all`` never alters existing tables, so add any columns that
-    were introduced after a database was first created. Empty today; new
-    columns get an entry here (``table -> {column: DDL}``) as the schema grows.
+    Three cases, all handled:
+      * Fresh DB → upgrade from nothing runs the baseline (create_all) + deltas.
+      * Existing PRE-Alembic install (has tables, no ``alembic_version``) → it
+        already has the baseline schema, so *stamp* baseline, then upgrade so any
+        later deltas (e.g. the legacy pantry drop) still apply.
+      * Already on Alembic → apply any pending revisions.
     """
-    from sqlalchemy import text, inspect
+    from alembic import command
+    from alembic.config import Config as AlembicConfig
+    from alembic.runtime.migration import MigrationContext
+    from sqlalchemy import inspect
 
-    if not db.engine.url.get_backend_name().startswith("sqlite"):
-        return
-    inspector = inspect(db.engine)
-    wanted: dict[str, dict[str, str]] = {
-        # Per-HA-user identity (ingress personalization). Additive on existing DBs.
-        "users": {"ha_user_id": "VARCHAR(64)"},
-    }
-    for table, columns in wanted.items():
-        if not inspector.has_table(table):
-            continue
-        existing = {c["name"] for c in inspector.get_columns(table)}
-        with db.engine.begin() as conn:
-            for name, ddl in columns.items():
-                if name not in existing:
-                    conn.execute(
-                        text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
-                    )
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cfg = AlembicConfig(os.path.join(backend_dir, "alembic.ini"))
+    cfg.set_main_option("script_location", os.path.join(backend_dir, "migrations"))
+    cfg.set_main_option("sqlalchemy.url", app.config["SQLALCHEMY_DATABASE_URI"])
 
-    # DESTRUCTIVE, one-way: myMeal no longer owns a pantry — inventory is owned
-    # by the companion Edibl app. Drop the legacy table if an older install has
-    # it. Explicitly requested; the data is superseded by Edibl. Scoped to this
-    # one table by name so nothing else can be affected, and idempotent
-    # (DROP ... IF EXISTS) so it is a no-op on new databases and on re-runs.
-    if inspector.has_table("pantry_items"):
-        with db.engine.begin() as conn:
-            conn.execute(text("DROP TABLE IF EXISTS pantry_items"))
-        logger.warning(
-            "Dropped the legacy 'pantry_items' table: myMeal's pantry moved to "
-            "the Edibl integration. Any rows it held are gone."
-        )
+    with db.engine.connect() as conn:
+        current = MigrationContext.configure(conn).get_current_revision()
+    if current is None and inspect(db.engine).has_table("users"):
+        command.stamp(cfg, "0001_baseline")
+    command.upgrade(cfg, "head")
 
 
 def _register_blueprints(app):

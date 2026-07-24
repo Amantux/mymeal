@@ -15,6 +15,10 @@ services:
       # Set to "true" when running behind Home Assistant ingress / a trusted proxy.
       MYMEAL_DISABLE_AUTH: "false"
       MYMEAL_ALLOW_REGISTRATION: "true"
+      # Storage: blank/unset = built-in SQLite (default). To use the Postgres
+      # service below, start with `docker compose --profile postgres up` and
+      # uncomment the URL (it matches the postgres service's credentials):
+      #   MYMEAL_DATABASE_URL: "postgresql+psycopg://mymeal:mymeal@postgres:5432/mymeal"
       # AI provider: "claude" | "ollama" | "openai" (blank disables AI features).
       MYMEAL_AI_PROVIDER: ""
       # Provider credentials/models (only the selected provider's are used):
@@ -35,5 +39,26 @@ services:
       retries: 3
       start_period: 20s
 
+  # Optional Postgres, opt-in via the "postgres" profile:
+  #   docker compose --profile postgres up
+  # (and uncomment MYMEAL_DATABASE_URL above). Off by default — SQLite needs no
+  # extra container.
+  postgres:
+    image: postgres:16
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: mymeal
+      POSTGRES_PASSWORD: mymeal
+      POSTGRES_DB: mymeal
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mymeal -d mymeal"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   mymeal-data:
+  postgres-data:

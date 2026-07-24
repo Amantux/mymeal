@@ -161,8 +161,9 @@ FIELDS: tuple[Field, ...] = (
     Field("DATA_DIR", as_str, "./data",
           "Directory for the SQLite database and uploaded images."),
     Field("DATABASE_URL", as_str, "",
-          "Full SQLAlchemy URL. Blank = SQLite inside DATA_DIR. "
-          "Only SQLite is tested/supported today."),
+          "Full SQLAlchemy URL. Blank = SQLite inside DATA_DIR. Postgres is "
+          "supported: postgresql+psycopg://user:pass@host:5432/dbname.",
+          secret=True, ha_option="database_url"),
 
     # --- security ---
     Field("SECRET_KEY", as_str, "",
@@ -516,11 +517,10 @@ def _validate_semantics(values, sources, in_ha, errors, warnings, strict_secret)
             "extra workers add lock contention rather than write throughput. "
             "Prefer raising THREADS."
         )
-    if uri and not uri.startswith("sqlite"):
+    if uri and not is_sqlite and "postgresql" not in uri.split(":")[0]:
         warnings.append(
-            f"MYMEAL_DATABASE_URL points at a non-SQLite database ({uri.split(':')[0]}). "
-            "Only SQLite is tested and supported; the schema is created with "
-            "create_all() and additive migrations that have not been verified elsewhere."
+            f"MYMEAL_DATABASE_URL points at {uri.split(':')[0]!r}. Only SQLite "
+            "(default) and Postgres (postgresql+psycopg://…) are supported."
         )
 
     edibl_url = values["EDIBL_URL"]

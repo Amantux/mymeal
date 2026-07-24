@@ -51,6 +51,7 @@ options:
   openai_api_key: ""
   edibl_url: ""
   edibl_token: ""
+  database_url: ""
 schema:
   disable_auth: bool
   allow_registration: bool
@@ -70,3 +71,6 @@ schema:
   # Companion Edibl food-inventory app. Usually auto-discovered — leave blank.
   edibl_url: "str?"
   edibl_token: "password?"
+  # Optional external database. Blank = built-in SQLite (recommended for most).
+  # Postgres: postgresql+psycopg://user:pass@host:5432/dbname
+  database_url: "str?"

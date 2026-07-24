@@ -44,7 +44,7 @@ docker compose run --rm app python3 -m app.config_check
 | Variable | Type | Default | Secret | Restart | Notes |
 |---|---|---|---|---|---|
 | `MYMEAL_DATA_DIR` | string | `./data` | no | yes | Directory for the SQLite database and uploaded images. |
-| `MYMEAL_DATABASE_URL` | string | `_(empty)_` | no | yes | Full SQLAlchemy URL. Blank = SQLite inside DATA_DIR. Only SQLite is tested/supported today. |
+| `MYMEAL_DATABASE_URL` | string | `_(empty)_` | **yes** | yes | Full SQLAlchemy URL. Blank = SQLite inside DATA_DIR. Postgres is supported: postgresql+psycopg://user:pass@host:5432/dbname. HA option: `database_url`. |
 
 ### Security
 
