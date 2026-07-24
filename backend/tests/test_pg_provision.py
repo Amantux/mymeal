@@ -64,3 +64,32 @@ def test_noop_without_supervisor(tmp_path, monkeypatch):
     _prep(monkeypatch, tmp_path, MYMEAL_USE_SHARED_POSTGRES="true")
     assert pg_provision.main() == 0
     assert not (tmp_path / ".database_url").exists()
+
+
+def test_blank_persisted_file_falls_back_to_sqlite(tmp_path):
+    (tmp_path / ".database_url").write_text("   ")
+    assert _settings(tmp_path, USE_SHARED_POSTGRES=True).sqlalchemy_uri.startswith("sqlite:///")
+
+
+def _prep_provision(monkeypatch, tmp_path, dsn):
+    _prep(monkeypatch, tmp_path, MYMEAL_USE_SHARED_POSTGRES="true",
+          MYMEAL_POSTGRES_PROVISION_TOKEN="tok")
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "x")
+    monkeypatch.setattr(pg_provision, "_discovery_config", lambda: None)
+    monkeypatch.setattr(pg_provision, "_candidate_provision_urls", lambda cfg: ["http://x/provision"])
+    monkeypatch.setattr(pg_provision, "_provision", lambda url, token: dsn)
+
+
+def test_foreign_dsn_scheme_is_rejected(tmp_path, monkeypatch):
+    # A response with an unsupported scheme must NOT be persisted (it would brick
+    # every subsequent boot at create_app).
+    _prep_provision(monkeypatch, tmp_path, "postgres://evil/db")
+    assert pg_provision.main() == 0
+    assert not (tmp_path / ".database_url").exists()
+
+
+def test_valid_dsn_is_persisted(tmp_path, monkeypatch):
+    good = "postgresql+psycopg://mymeal:pw@host:5432/mymeal"
+    _prep_provision(monkeypatch, tmp_path, good)
+    assert pg_provision.main() == 0
+    assert (tmp_path / ".database_url").read_text() == good

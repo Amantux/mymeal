@@ -35,6 +35,11 @@ MYMEAL_DATABASE_URL=postgresql+psycopg://user:password@host:5432/dbname
 - Migrations run automatically at startup (`alembic upgrade head`). A fresh
   database is created from scratch; an existing SQLite install keeps working
   untouched (SQLite remains the default).
+- **Re-provisioning:** with the shared add-on, myMeal remembers the database it
+  was given (in `/data/.database_url`) and reuses it across restarts. If that
+  database is removed or its credentials change and myMeal can no longer start,
+  delete `/data/.database_url` and restart — it will discover and provision
+  afresh. (Turning `use_shared_postgres` off also makes it ignore that file.)
 - The database URL may contain a password — it's treated as a secret (never
   logged) and set via the masked add-on option or an env var / Docker secret.
 - Back up Postgres yourself (it lives outside myMeal's `/data`; the Shared

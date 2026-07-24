@@ -22,7 +22,8 @@ from app.settings import FIELDS, MIN_SECRET_LENGTH  # noqa: E402
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 
 GROUPS = [
-    ("Storage", ["DATA_DIR", "DATABASE_URL"]),
+    ("Storage", ["DATA_DIR", "DATABASE_URL", "USE_SHARED_POSTGRES",
+                 "POSTGRES_PROVISION_TOKEN"]),
     ("Security", ["SECRET_KEY", "JWT_HOURS", "DISABLE_AUTH", "ALLOW_REGISTRATION"]),
     ("Network & proxy", ["PORT", "CORS_ORIGINS", "TRUSTED_PROXY_COUNT"]),
     ("AI providers", ["AI_PROVIDER", "ANTHROPIC_API_KEY", "CLAUDE_MODEL",

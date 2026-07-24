@@ -45,6 +45,8 @@ docker compose run --rm app python3 -m app.config_check
 |---|---|---|---|---|---|
 | `MYMEAL_DATA_DIR` | string | `./data` | no | yes | Directory for the SQLite database and uploaded images. |
 | `MYMEAL_DATABASE_URL` | string | `_(empty)_` | **yes** | yes | Full SQLAlchemy URL. Blank = SQLite inside DATA_DIR. Postgres is supported: postgresql+psycopg://user:pass@host:5432/dbname. HA option: `database_url`. Supports `MYMEAL_DATABASE_URL_FILE`. |
+| `MYMEAL_USE_SHARED_POSTGRES` | boolean | `false` | no | yes | Home Assistant only: discover the Shared PostgreSQL add-on and use a database it provisions for myMeal. Ignored when DATABASE_URL is set. HA option: `use_shared_postgres`. |
+| `MYMEAL_POSTGRES_PROVISION_TOKEN` | string | `_(empty)_` | **yes** | yes | Token for the Shared PostgreSQL add-on's provisioning API. Leave blank to auto-obtain it via discovery; set it to the add-on's token if discovery can't supply it. HA option: `postgres_provision_token`. |
 
 ### Security
 

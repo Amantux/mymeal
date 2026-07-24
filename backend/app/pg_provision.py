@@ -22,6 +22,10 @@ import urllib.request
 DSN_FILENAME = ".database_url"
 API_PORT = 8087
 APP_NAME = "mymeal"
+# Only accept the driver myMeal supports. A malformed/foreign DSN written here
+# would brick every subsequent boot at create_app, so reject it and stay on
+# SQLite rather than persist something we can't load.
+DSN_PREFIX = "postgresql+psycopg://"
 
 
 def _log(message: str) -> None:
@@ -89,8 +93,10 @@ def main() -> int:
         return 0
 
     dsn_path = os.path.join(settings.data_dir, DSN_FILENAME)
-    if os.path.isfile(dsn_path) and open(dsn_path).read().strip():
-        return 0  # already provisioned — stable across restarts
+    if os.path.isfile(dsn_path):
+        with open(dsn_path) as fh:
+            if fh.read().strip():
+                return 0  # already provisioned — stable across restarts
 
     if not os.environ.get("SUPERVISOR_TOKEN"):
         _log("use_shared_postgres is set but not running under Home Assistant; staying on SQLite")
@@ -103,18 +109,26 @@ def main() -> int:
              "Shared PostgreSQL add-on's token (Settings shows it). Staying on SQLite")
         return 0
 
+    # Candidates are ordered most-trusted first (discovery message, then
+    # Supervisor-/addons-identified hosts, then fixed add-on DNS names). HA
+    # add-ons share a semi-trusted internal network; the DSN-scheme check below
+    # is the backstop against a bad/foreign response being persisted.
     for url in _candidate_provision_urls(cfg):
         try:
             dsn = _provision(url, token)
         except Exception as exc:  # noqa: BLE001 - try the next candidate
             _log(f"provision via {url} failed: {exc}")
             continue
-        if dsn:
-            fd = os.open(dsn_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as fh:
-                fh.write(dsn)
-            _log("provisioned shared PostgreSQL; using it")
-            return 0
+        if not dsn:
+            continue
+        if not dsn.startswith(DSN_PREFIX):
+            _log(f"ignoring provision response with unsupported DSN scheme from {url}")
+            continue
+        fd = os.open(dsn_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(dsn)
+        _log("provisioned shared PostgreSQL; using it")
+        return 0
 
     _log("Shared PostgreSQL add-on not reachable; staying on SQLite (will retry next start)")
     return 0
