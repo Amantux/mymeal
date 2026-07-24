@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.1.37
+
+- Address reviewer findings on the feature batch.
+
 ## 1.1.36
 
 - Household food preferences honoured by the AI (feature #5).
