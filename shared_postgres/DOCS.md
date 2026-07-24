@@ -24,11 +24,11 @@ You don't normally need to touch the options below.
 
 ## Options
 
-- **`provision_token`** — leave **blank** (default) and the provisioning service
-  is open on Home Assistant's internal network only (nothing is published to your
-  LAN unless you map a port). Set a token to require sibling apps to present it
-  (they receive it automatically via discovery); use this if you don't fully
-  trust every other add-on on your system.
+- **`provision_token`** — a token every request must present. Left **blank**
+  (default), a strong token is generated once and persisted; sibling apps receive
+  it automatically via discovery, so you don't have to touch it. The endpoint is
+  **never open** — this prevents another add-on from reading back an app's
+  credentials. Set it explicitly only if you want to manage the token yourself.
 
 ## Ports
 

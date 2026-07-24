@@ -27,6 +27,7 @@ from flask import Flask, jsonify, request
 DATA_DIR = "/data"
 OPTIONS_FILE = os.path.join(DATA_DIR, "options.json")
 APPS_FILE = os.path.join(DATA_DIR, "apps.json")
+TOKEN_FILE = os.path.join(DATA_DIR, ".provision_token")
 SUPERVISOR = "http://supervisor"
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 PG_PORT = 5432
@@ -44,8 +45,26 @@ def _load_json(path, default):
         return default
 
 
-# Blank token = open on the trusted internal network (default). Set to require.
-TOKEN = str(_load_json(OPTIONS_FILE, {}).get("provision_token") or "").strip()
+def _resolve_token() -> str:
+    """The provisioning token is ALWAYS required (never open). Use the operator's
+    configured token if set; otherwise generate a strong one once and persist it.
+    Siblings receive it via the discovery message."""
+    configured = str(_load_json(OPTIONS_FILE, {}).get("provision_token") or "").strip()
+    if configured:
+        return configured
+    if os.path.isfile(TOKEN_FILE):
+        with open(TOKEN_FILE) as fh:
+            existing = fh.read().strip()
+        if existing:
+            return existing
+    token = secrets.token_urlsafe(24)
+    fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(token)
+    return token
+
+
+TOKEN = _resolve_token()
 
 
 def _superuser_conn():
@@ -122,11 +141,9 @@ def _startup():
 
 
 def _authenticated(req) -> bool:
-    if not TOKEN:
-        return True  # open on the internal network (blank token)
     header = req.headers.get("Authorization", "")
     presented = header[7:].strip() if header.startswith("Bearer ") else req.args.get("token", "")
-    return secrets.compare_digest(presented or "", TOKEN)
+    return bool(TOKEN) and secrets.compare_digest(presented or "", TOKEN)
 
 
 @flask_app.get("/health")
@@ -139,37 +156,55 @@ def provision():
     if not _authenticated(request):
         return jsonify({"error": "unauthorized"}), 401
     name = str((request.get_json(silent=True) or {}).get("app", "")).strip().lower()
-    if not APP_RE.match(name):
+    if not APP_RE.fullmatch(name):
         return jsonify({"error": "invalid app name"}), 400
-
-    apps = _load_json(APPS_FILE, {})
-    new = name not in apps
-    password = secrets.token_urlsafe(24) if new else apps[name]  # url-safe: no %/@ to encode
+    rotate = str(request.args.get("rotate", "")).lower() in ("1", "true", "yes")
 
     conn = _superuser_conn()
     cur = conn.cursor()
-    # name is validated to [a-z][a-z0-9_]* so quoting the identifier is safe.
     cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (name,))
-    if cur.fetchone():
+    role_exists = cur.fetchone() is not None
+    apps = _load_json(APPS_FILE, {})
+    stored = apps.get(name)
+
+    # Decide the password WITHOUT ever silently rotating a live credential.
+    # name is validated to [a-z][a-z0-9_]* so quoting the identifier is safe.
+    if not role_exists:
+        password = secrets.token_urlsafe(24)  # url-safe: no %/@ to encode
+        cur.execute(f'CREATE ROLE "{name}" WITH LOGIN PASSWORD %s', (password,))
+    elif stored is not None:
+        password = stored  # known app → idempotent, return the same DSN
+    elif rotate:
+        password = secrets.token_urlsafe(24)
         cur.execute(f'ALTER ROLE "{name}" WITH LOGIN PASSWORD %s', (password,))
     else:
-        cur.execute(f'CREATE ROLE "{name}" WITH LOGIN PASSWORD %s', (password,))
+        # Role exists but we don't hold its password (e.g. apps.json lost).
+        # Refuse rather than reset — resetting would lock out the running app.
+        cur.close()
+        conn.close()
+        return jsonify({
+            "error": "already provisioned; password unknown here. Reuse the stored "
+                     "credential, or POST again with ?rotate=true to reset it "
+                     "(this invalidates the current one)."
+        }), 409
+
+    # Database + isolation (idempotent, applied every time). By default PUBLIC may
+    # CONNECT to ANY database, incl. postgres/template1 — lock those down so an
+    # app role can't open another app's DB or enumerate the cluster.
     cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (name,))
     if not cur.fetchone():
         cur.execute(f'CREATE DATABASE "{name}" OWNER "{name}"')
-    # Isolate: by default PUBLIC may CONNECT to any database, so one app could
-    # open another's. Restrict CONNECT to the owning role. Applied every time so
-    # the ACL is correct even for a pre-existing database.
     cur.execute(f'REVOKE CONNECT ON DATABASE "{name}" FROM PUBLIC')
     cur.execute(f'GRANT ALL PRIVILEGES ON DATABASE "{name}" TO "{name}"')
+    cur.execute("REVOKE CONNECT ON DATABASE postgres FROM PUBLIC")
+    cur.execute("REVOKE CONNECT ON DATABASE template1 FROM PUBLIC")
     cur.close()
     conn.close()
 
-    if new:
-        apps[name] = password
-        fd = os.open(APPS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            json.dump(apps, fh)
+    apps[name] = password
+    fd = os.open(APPS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        json.dump(apps, fh)
 
     host = _self_hostname()
     return jsonify({
