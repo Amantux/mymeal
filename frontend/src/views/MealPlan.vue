@@ -258,6 +258,10 @@ async function buildList() {
 /* stretch (default) → every day box is identical width AND height, regardless of
    how many meals a day has (no "first/today box is larger"). */
 .mp-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 12px; }
+/* The global `.card + .card { margin-top }` (for STACKED cards) leaks into the
+   grid: cards 2–7 are adjacent-sibling .cards and get a top margin the first
+   card doesn't — which made the first box look larger/misaligned. Neutralize it. */
+.mp-week .card + .card { margin-top: 0; }
 .mp-day { max-width: 620px; }
 .mp-daycard { padding: 14px; }
 .mp-daycard h3 { margin-bottom: 8px; }
