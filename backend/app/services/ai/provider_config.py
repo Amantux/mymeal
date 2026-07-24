@@ -101,6 +101,7 @@ def effective_settings(base, gid: str | None):
     if ns.AI_PROVIDER == "ollama":
         ns.OLLAMA_HOST = pick("ollama", "base_url", base.OLLAMA_HOST)
         ns.OLLAMA_MODEL = pick("ollama", "model", base.OLLAMA_MODEL)
+        ns.OLLAMA_API_KEY = pick("ollama", "api_key", base.OLLAMA_API_KEY)
     elif ns.AI_PROVIDER == "openai":
         ns.OPENAI_BASE_URL = pick("openai", "base_url", base.OPENAI_BASE_URL)
         ns.OPENAI_MODEL = pick("openai", "model", base.OPENAI_MODEL)
@@ -116,7 +117,8 @@ def _active_view(eff) -> dict:
     editable UI. NEVER includes the API key value."""
     p = eff.AI_PROVIDER
     if p == "ollama":
-        return {"baseUrl": eff.OLLAMA_HOST, "model": eff.OLLAMA_MODEL, "apiKeySet": False}
+        return {"baseUrl": eff.OLLAMA_HOST, "model": eff.OLLAMA_MODEL,
+                "apiKeySet": bool(getattr(eff, "OLLAMA_API_KEY", ""))}
     if p == "openai":
         return {"baseUrl": eff.OPENAI_BASE_URL, "model": eff.OPENAI_MODEL,
                 "apiKeySet": bool(eff.OPENAI_API_KEY)}
@@ -162,7 +164,9 @@ def list_models(eff, timeout: float = 12.0) -> list[str]:
     try:
         with httpx.Client(timeout=timeout) as c:
             if p == "ollama":
-                r = c.get(f"{eff.OLLAMA_HOST.rstrip('/')}/api/tags")
+                oh = {"Authorization": f"Bearer {eff.OLLAMA_API_KEY}"} \
+                    if getattr(eff, "OLLAMA_API_KEY", "") else {}
+                r = c.get(f"{eff.OLLAMA_HOST.rstrip('/')}/api/tags", headers=oh)
                 r.raise_for_status()
                 return sorted(m.get("name", "") for m in r.json().get("models", []) if m.get("name"))
             if p == "openai":

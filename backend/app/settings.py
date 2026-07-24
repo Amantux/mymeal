@@ -39,8 +39,8 @@ from typing import Any, Callable
 
 # Settings the operator must never see echoed back, in logs or diagnostics.
 SECRET_FIELDS = frozenset({
-    "SECRET_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "MCP_API_TOKEN",
-    "MCP_SERVER_TOKEN",
+    "SECRET_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OLLAMA_API_KEY",
+    "MCP_API_TOKEN", "MCP_SERVER_TOKEN", "POSTGRES_PROVISION_TOKEN",
 })
 
 PLACEHOLDER_SECRETS = frozenset({
@@ -212,10 +212,15 @@ FIELDS: tuple[Field, ...] = (
     Field("OPENAI_BASE_URL", as_str, "",
           "Override the OpenAI API base URL (for compatible gateways)."),
     Field("OLLAMA_HOST", http_url, "http://localhost:11434",
-          "Base URL of the Ollama server. Local, so no API key is needed.",
+          "Base URL of the Ollama server. A local server needs no key; set "
+          "OLLAMA_API_KEY for Ollama Cloud or a secured/proxied instance.",
           ha_option="ollama_host"),
     Field("OLLAMA_MODEL", as_str, "llama3.1", "Model for the ollama provider.",
           ha_option="ollama_model"),
+    Field("OLLAMA_API_KEY", as_str, "",
+          "Optional bearer token for the ollama provider (Ollama Cloud or a "
+          "secured instance). Blank for a plain local server.",
+          secret=True, supports_file=True, ha_option="ollama_api_key"),
     Field("AI_TIMEOUT_SECONDS", int_between(1, 600), 60,
           "Per-request timeout for AI provider calls."),
 

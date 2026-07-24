@@ -25,6 +25,8 @@ const ediblBusy = ref(false)
 const labels = { '': 'Disabled', claude: 'Claude (Anthropic)', openai: 'OpenAI', ollama: 'Ollama (local)' }
 const needsKey = computed(() => form.provider === 'claude' || form.provider === 'openai')
 const needsHost = computed(() => form.provider === 'ollama')
+// Ollama also accepts a key, but it's OPTIONAL (Ollama Cloud / a secured instance).
+const allowsKey = computed(() => needsKey.value || form.provider === 'ollama')
 
 // When the USER switches provider, clear the per-provider fields so a prior
 // provider's host/model/key don't visually carry over (the backend stores
@@ -313,13 +315,14 @@ async function findOllama() {
           <input v-model="form.baseUrl" class="fill" placeholder="https://api.openai.com/v1" />
         </label>
 
-        <label v-if="needsKey" class="field">
-          <span class="lbl">API key</span>
+        <label v-if="allowsKey" class="field">
+          <span class="lbl">API key{{ needsKey ? '' : ' (optional)' }}</span>
           <input
             v-model="form.apiKey"
             type="password"
             class="fill"
-            :placeholder="apiKeySet ? '•••••••• (saved — leave blank to keep)' : 'Paste your API key'"
+            :placeholder="apiKeySet ? '•••••••• (saved — leave blank to keep)'
+              : (needsKey ? 'Paste your API key' : 'Optional — for Ollama Cloud / a secured instance')"
             autocomplete="off"
           />
           <span class="help">

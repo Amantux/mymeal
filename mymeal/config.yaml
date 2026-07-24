@@ -45,6 +45,7 @@ options:
   ai_provider: ""
   ollama_host: ""
   ollama_model: ""
+  ollama_api_key: ""
   claude_model: ""
   openai_model: ""
   anthropic_api_key: ""
@@ -66,6 +67,7 @@ schema:
   # changes and they override these). Keys use HA's masked password type.
   ollama_host: "str?"
   ollama_model: "str?"
+  ollama_api_key: "password?"
   claude_model: "str?"
   openai_model: "str?"
   anthropic_api_key: "password?"

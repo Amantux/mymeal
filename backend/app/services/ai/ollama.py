@@ -1,8 +1,10 @@
-"""Ollama provider — local, private, no API key.
+"""Ollama provider — local and private by default.
 
-Talks to a local Ollama server's ``/api/chat`` endpoint over HTTP. Default host
-is ``http://localhost:11434``; model via ``MYMEAL_OLLAMA_MODEL``. This is the
-privacy-first option for Home Assistant users who self-host everything.
+Talks to an Ollama server's ``/api/chat`` endpoint over HTTP. Default host is
+``http://localhost:11434``; model via ``MYMEAL_OLLAMA_MODEL``. This is the
+privacy-first option for Home Assistant users who self-host everything. A plain
+local server needs no key; set ``MYMEAL_OLLAMA_API_KEY`` to send a bearer token
+for Ollama Cloud or a secured/proxied instance.
 """
 from __future__ import annotations
 
@@ -23,15 +25,22 @@ class OllamaProvider(AIProvider):
         self.host = cfg.OLLAMA_HOST
         self.model = cfg.OLLAMA_MODEL
         self.timeout = cfg.AI_TIMEOUT_SECONDS
+        self.api_key = getattr(cfg, "OLLAMA_API_KEY", "") or ""
         self._discovered = None
 
     def available(self) -> bool:
         # A model name is always set; treat configured host as availability.
         return bool(self.host and self.model)
 
+    def _headers(self) -> dict:
+        # Ollama Cloud / a secured instance accepts a bearer token; a plain local
+        # server ignores it. Only send when configured.
+        return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+
     def _post(self, payload: dict) -> dict:
         try:
-            r = httpx.post(f"{self.host}/api/chat", json=payload, timeout=self.timeout)
+            r = httpx.post(f"{self.host}/api/chat", json=payload,
+                           headers=self._headers(), timeout=self.timeout)
             r.raise_for_status()
         except httpx.HTTPError as exc:
             raise ProviderError(f"ollama request failed: {exc}") from exc
