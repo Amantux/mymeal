@@ -326,8 +326,17 @@ def pinned_get_args(url: str):
     ip = _assert_public_url(url)
     u = httpx.URL(url)
     pinned = str(u.copy_with(host=ip))
-    host_header = u.host + (f":{u.port}" if u.port else "")
-    extensions = {"sni_hostname": u.host} if u.scheme == "https" else {}
+    # Bracket an IPv6 literal in the Host header, and don't send an IP as SNI
+    # (SNI is for hostnames; for an IP-literal source URL httpcore falls back to
+    # the pinned IP as server_hostname, matching default behaviour).
+    try:
+        host_is_ip = bool(ipaddress.ip_address(u.host))
+    except ValueError:
+        host_is_ip = False
+    host_for_header = f"[{u.host}]" if ":" in u.host else u.host
+    host_header = host_for_header + (f":{u.port}" if u.port else "")
+    extensions = ({"sni_hostname": u.host}
+                  if u.scheme == "https" and not host_is_ip else {})
     return pinned, {"Host": host_header}, extensions
 
 

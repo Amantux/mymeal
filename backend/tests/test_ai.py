@@ -208,6 +208,16 @@ def test_pinned_get_args_pins_to_validated_ip(monkeypatch):
     assert ext == {"sni_hostname": "recipes.example.com"}  # TLS verifies the hostname
 
 
+def test_pinned_get_args_brackets_ipv6_host_header(monkeypatch):
+    # A bracketed-IPv6 source URL must yield a valid (bracketed) Host header and
+    # must NOT send an IP as SNI.
+    monkeypatch.setattr(recipe_import.socket, "getaddrinfo",
+                        lambda *a, **k: [(10, 1, 6, "", ("2606:2800::1", 0, 0, 0))])
+    pinned, headers, ext = recipe_import.pinned_get_args("https://[2606:2800::1]:8080/x")
+    assert headers["Host"] == "[2606:2800::1]:8080"
+    assert ext == {}  # no SNI for an IP literal
+
+
 def test_pinned_get_args_rejects_private_resolution(monkeypatch):
     monkeypatch.setattr(recipe_import.socket, "getaddrinfo",
                         lambda *a, **k: [(2, 1, 6, "", ("10.0.0.5", 0))])

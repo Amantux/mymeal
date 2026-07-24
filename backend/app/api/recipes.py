@@ -318,8 +318,8 @@ def download_image_to_recipe(recipe: Recipe, url: str):
         current = url
         with httpx.Client(follow_redirects=False, timeout=20) as client:
             for _ in range(5):
-                pinned, host_hdr, ext = pinned_get_args(current)
-                with client.stream("GET", pinned, headers=host_hdr, extensions=ext) as r:
+                pinned, host_hdr, conn_ext = pinned_get_args(current)
+                with client.stream("GET", pinned, headers=host_hdr, extensions=conn_ext) as r:
                     if r.is_redirect and r.headers.get("location"):
                         current = urljoin(current, r.headers["location"])
                         continue
