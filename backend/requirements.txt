@@ -3,7 +3,7 @@ Flask-SQLAlchemy==3.1.1
 Flask-Cors==4.0.1
 SQLAlchemy==2.0.32
 # Schema migrations (SQLite + Postgres). Replaces the old create_all/_migrate.
-alembic==1.13.2
+alembic==1.18.4
 # Postgres driver (optional backend). psycopg 3 bundles libpq via [binary];
 # unused when DATABASE_URL is blank (SQLite default).
 psycopg[binary]>=3.2

@@ -163,7 +163,7 @@ FIELDS: tuple[Field, ...] = (
     Field("DATABASE_URL", as_str, "",
           "Full SQLAlchemy URL. Blank = SQLite inside DATA_DIR. Postgres is "
           "supported: postgresql+psycopg://user:pass@host:5432/dbname.",
-          secret=True, ha_option="database_url"),
+          secret=True, ha_option="database_url", supports_file=True),
 
     # --- security ---
     Field("SECRET_KEY", as_str, "",

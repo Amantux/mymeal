@@ -194,11 +194,19 @@ def _run_migrations(app):
     backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     cfg = AlembicConfig(os.path.join(backend_dir, "alembic.ini"))
     cfg.set_main_option("script_location", os.path.join(backend_dir, "migrations"))
-    cfg.set_main_option("sqlalchemy.url", app.config["SQLALCHEMY_DATABASE_URI"])
+    # Pass the URL out-of-band via attributes, NOT set_main_option: Alembic's
+    # Config is a ConfigParser, which would try to %-interpolate a URL-encoded
+    # password (e.g. a `%40` for '@') and crash before the app can boot.
+    cfg.attributes["url"] = app.config["SQLALCHEMY_DATABASE_URI"]
 
     with db.engine.connect() as conn:
         current = MigrationContext.configure(conn).get_current_revision()
     if current is None and inspect(db.engine).has_table("users"):
+        # Tables exist but Alembic has never run here (a pre-Alembic install, or
+        # a first boot interrupted mid-create — SQLite DDL is non-transactional,
+        # so a partial schema is possible). Fill any gaps with a checkfirst
+        # create_all, THEN adopt as the baseline so later migrations (0002+) run.
+        db.create_all()
         command.stamp(cfg, "0001_baseline")
     command.upgrade(cfg, "head")
 

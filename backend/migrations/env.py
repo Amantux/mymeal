@@ -23,7 +23,10 @@ target_metadata = db.metadata
 
 
 def _url() -> str:
-    return config.get_main_option("sqlalchemy.url") or load_settings().sqlalchemy_uri
+    # Read from attributes (a plain dict) rather than get_main_option, which
+    # would %-interpolate a URL-encoded password and crash. Falls back to the
+    # app's resolved settings for the bare `alembic` CLI.
+    return config.attributes.get("url") or load_settings().sqlalchemy_uri
 
 
 def run_migrations_offline() -> None:
