@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.1.40
+
+- Mealie-style structured ingredient editor + cleaner builder.
+
 ## 1.1.39
 
 - UX-review issues on the new/changed screens.
