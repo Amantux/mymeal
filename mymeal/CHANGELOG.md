@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.1.21
+
+- MyMeal find/register client for Shared PostgreSQL (Phase 3).
+
 ## 1.1.20
 
 - Address Phase 2 review (credential read-back, silent rotation, isolation).
