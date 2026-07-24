@@ -195,7 +195,7 @@ def generate_recipe_endpoint():
     """Draft a recipe from a free-text idea and RETURN it (unsaved) so the recipe
     builder can prefill a form the user edits before saving."""
     data = request.get_json(silent=True) or {}
-    prompt = str(data.get("prompt") or "").strip()
+    prompt = str(data.get("prompt") or "").strip()[:4000]  # bound the LLM input
     if not prompt:
         return jsonify({"error": "describe the recipe you'd like"}), 422
     try:
@@ -225,6 +225,8 @@ def parse_ingredients_endpoint():
         lines = lines.splitlines()
     if not isinstance(lines, list) or not any(str(x).strip() for x in lines):
         return jsonify({"error": "provide ingredient lines"}), 422
+    # Bound the LLM input: at most 200 lines, 500 chars each.
+    lines = [str(x)[:500] for x in lines][:200]
     try:
         provider = get_provider()
     except ProviderError:

@@ -102,6 +102,19 @@ def test_structured_row_matches_unit_and_food_on_save(auth_client):
     assert ing["food"]["name"] == "flour"
 
 
+def test_oversized_and_excess_ingredient_rows_are_clamped(auth_client):
+    payload = {
+        "name": "Big",
+        "ingredients": [{"display": "x", "unit": "u" * 300, "food": "f" * 400}]
+        + [{"display": f"line {i}"} for i in range(500)],
+    }
+    rid = auth_client.post("/api/v1/recipes", json=payload).get_json()["id"]
+    ings = auth_client.get(f"/api/v1/recipes/{rid}").get_json()["ingredients"]
+    assert len(ings) <= 200                        # row count capped
+    assert len(ings[0]["unit"]["name"]) <= 120     # Unit.name column bound
+    assert len(ings[0]["food"]["name"]) <= 255     # Food.name column bound
+
+
 def test_recipe_scaling_and_weight_view(auth_client):
     rid = auth_client.post("/api/v1/recipes", json={
         "name": "Pancakes", "servings": 2,

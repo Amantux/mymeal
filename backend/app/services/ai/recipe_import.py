@@ -360,11 +360,15 @@ def parse_ingredients(lines, provider: AIProvider) -> list[dict]:
     )
     parsed = _as_list(payload.get("ingredients") if isinstance(payload, dict) else payload)
     out = []
+    aligned = len(parsed) == len(clean)  # only trust positional fallback if 1:1
     for i, item in enumerate(parsed):
         if not isinstance(item, dict):
             continue
+        display = _text(item.get("display"))
+        if not display and aligned:
+            display = clean[i]
         out.append({
-            "display": _text(item.get("display")) or (clean[i] if i < len(clean) else ""),
+            "display": display,
             "quantity": _to_float(item.get("quantity")),
             "unit": _text(item.get("unit")),
             "food": _text(item.get("food")),
@@ -389,6 +393,8 @@ def generate_recipe(prompt: str, provider: AIProvider, servings: int = 0) -> dic
     if servings:
         ask += f"\nTarget servings: {servings}"
     payload = _normalize_ai(provider.complete_json(ask, system=_GENERATE_SYSTEM))
+    if payload.get("name") == "Imported Recipe":  # the import default reads wrong here
+        payload["name"] = "New recipe"
     if servings and not payload.get("servings"):
         payload["servings"] = servings
     return payload

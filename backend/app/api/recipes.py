@@ -15,6 +15,7 @@ from ..utils import unique_slug
 bp = Blueprint("recipes", __name__)
 
 _IMAGE_EXTS = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
+MAX_INGREDIENT_ROWS = 200  # cap rows so a payload can't spawn unbounded Unit/Food
 
 
 def _get(recipe_id) -> Recipe:
@@ -72,16 +73,20 @@ def _set_ingredients(recipe: Recipe, rows):
 
     recipe.ingredients.clear()
     gid = recipe.group_id
-    for i, row in enumerate(rows or []):
-        display = row.get("display", "")
+    # Cap rows + clamp names so a large/adversarial payload can't spawn thousands
+    # of Unit/Food rows or overflow their columns (Unit.name 120, Food.name 255)
+    # — a raw string from the AI parser would otherwise 500 on Postgres.
+    for i, row in enumerate((rows or [])[:MAX_INGREDIENT_ROWS]):
+        display = str(row.get("display", ""))[:1000]
         qty = row.get("quantity")
         unit_id = row.get("unitId") or None
         food_id = row.get("foodId") or None
         # Structured unit/food NAMES (e.g. from the AI ingredient parser) win.
         if not unit_id and row.get("unit"):
-            unit_id = _find_or_create_unit(gid, units.canonical_unit(row["unit"]) or row["unit"])
+            name = (units.canonical_unit(row["unit"]) or str(row["unit"]))[:120]
+            unit_id = _find_or_create_unit(gid, name)
         if not food_id and row.get("food"):
-            food_id = _find_or_create_food(gid, row["food"])
+            food_id = _find_or_create_food(gid, str(row["food"])[:255])
         # Otherwise best-effort parse the free-text display for qty + unit.
         if not unit_id and (qty in (None, 0, 0.0, "")) and not row.get("unit") and display:
             parsed = units.parse_line(display)
