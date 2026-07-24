@@ -216,8 +216,12 @@ def execute_tool(gid: str, name: str, args: dict):
         title = str(args.get("name", "")).strip()
         if not title:
             return {"error": "a recipe name is required"}
-        ings = [{"display": str(i).strip()} for i in (args.get("ingredients") or []) if str(i).strip()]
-        steps = [{"text": str(s).strip()} for s in (args.get("steps") or []) if str(s).strip()]
+        # Cap list lengths so an over-eager/adversarial model turn can't insert
+        # thousands of rows.
+        ings = [{"display": str(i).strip()[:500]}
+                for i in (args.get("ingredients") or [])[:100] if str(i).strip()]
+        steps = [{"text": str(s).strip()[:2000]}
+                 for s in (args.get("steps") or [])[:100] if str(s).strip()]
         if not ings or not steps:
             return {"error": "provide both ingredients and steps"}
         recipe = Recipe(group_id=gid, name=title, slug="")

@@ -71,3 +71,89 @@ def test_create_recipe_tool_requires_ingredients_and_steps(app):
         res = execute_tool(gid, "create_recipe", {"name": "Empty", "ingredients": [], "steps": []})
         assert "error" in res
         assert db.session.query(Recipe).filter_by(name="Empty").count() == 0
+
+
+# --- import: image download (SSRF guard, type/size caps, best-effort) --------
+import os  # noqa: E402
+import threading  # noqa: E402
+from contextlib import contextmanager  # noqa: E402
+from http.server import BaseHTTPRequestHandler, HTTPServer  # noqa: E402
+
+from app.api.recipes import download_image_to_recipe  # noqa: E402
+
+
+@contextmanager
+def _image_server(content_type, body):
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{srv.server_address[1]}/pic"
+    finally:
+        srv.shutdown()
+
+
+def _recipe(app):
+    g = Group(name="H")
+    db.session.add(g)
+    db.session.flush()
+    r = Recipe(name="R", slug="r", group_id=g.id)
+    db.session.add(r)
+    db.session.flush()
+    return r
+
+
+def test_image_download_rejects_private_host_best_effort(app):
+    # Real guard: a private host must be refused and NOT raise (best-effort).
+    with app.app_context():
+        r = _recipe(app)
+        download_image_to_recipe(r, "http://127.0.0.1:1/x.jpg")
+        assert r.image == ""
+
+
+def test_image_download_swallows_invalid_url(app, monkeypatch):
+    # Guard bypassed; an invalid port raises httpx.InvalidURL (not HTTPError) —
+    # must be swallowed, never 500 the import.
+    monkeypatch.setattr("app.services.ai.recipe_import._assert_public_url", lambda u: None)
+    with app.app_context():
+        r = _recipe(app)
+        download_image_to_recipe(r, "http://127.0.0.1:notaport/x.jpg")
+        assert r.image == ""
+
+
+def test_image_download_success_saves_file(app, monkeypatch):
+    monkeypatch.setattr("app.services.ai.recipe_import._assert_public_url", lambda u: None)
+    with app.app_context():
+        r = _recipe(app)
+        with _image_server("image/png", b"\x89PNG\r\n\x1a\n" + b"x" * 100) as url:
+            download_image_to_recipe(r, url)
+        assert r.image == f"{r.id}.png"
+        assert os.path.isfile(os.path.join(app.config["SETTINGS"].images_dir, r.image))
+
+
+def test_image_download_rejects_non_image_content_type(app, monkeypatch):
+    monkeypatch.setattr("app.services.ai.recipe_import._assert_public_url", lambda u: None)
+    with app.app_context():
+        r = _recipe(app)
+        with _image_server("text/html", b"<html>not an image</html>") as url:
+            download_image_to_recipe(r, url)
+        assert r.image == ""
+
+
+def test_image_download_respects_size_cap(app, monkeypatch):
+    monkeypatch.setattr("app.services.ai.recipe_import._assert_public_url", lambda u: None)
+    monkeypatch.setattr("app.api.recipes._MAX_IMAGE_BYTES", 50)
+    with app.app_context():
+        r = _recipe(app)
+        with _image_server("image/png", b"x" * 500) as url:
+            download_image_to_recipe(r, url)
+        assert r.image == ""

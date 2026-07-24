@@ -226,7 +226,7 @@ def download_image_to_recipe(recipe: Recipe, url: str):
     """Best-effort: fetch an external image URL and store it as the recipe's
     image (used by import). SSRF-guarded per redirect hop and size/type-capped;
     any failure is swallowed so a bad image never breaks the import."""
-    from ..services.ai.recipe_import import UnsafeURLError, _assert_public_url
+    from ..services.ai.recipe_import import _assert_public_url
 
     url = (url or "").strip()
     if not url:
@@ -256,7 +256,10 @@ def download_image_to_recipe(recipe: Recipe, url: str):
                         fh.write(b"".join(chunks))
                     recipe.image = filename
                     return
-    except (UnsafeURLError, httpx.HTTPError, OSError, UnicodeError, ValueError):
+    except Exception:  # noqa: BLE001
+        # Truly best-effort: a bad/oversized/unreachable image (incl. an invalid
+        # URL from the imported page, which raises httpx.InvalidURL — NOT an
+        # HTTPError) must never fail the import. The recipe just has no image.
         return
 
 
