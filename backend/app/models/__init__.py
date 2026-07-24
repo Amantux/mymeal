@@ -15,7 +15,6 @@ from .mealplan import MealPlanEntry  # noqa: F401
 from .shopping import ShoppingList, ShoppingListItem  # noqa: F401
 from .chat import ChatSession, ChatMessage  # noqa: F401
 from .setting import Setting  # noqa: F401
-from .medication import Medication  # noqa: F401
 
 __all__ = [
     "gen_uuid",
@@ -43,5 +42,4 @@ __all__ = [
     "ChatSession",
     "ChatMessage",
     "Setting",
-    "Medication",
 ]
