@@ -9,20 +9,19 @@ import { useRouter } from 'vue-router'
 import { api } from '../api'
 import { useUI } from '../stores/ui'
 import IngredientRows from '../components/IngredientRows.vue'
+import StepRows from '../components/StepRows.vue'
 
 const router = useRouter()
 const ui = useUI()
 
 const form = ref({ name: '', description: '', servings: '', prepMinutes: '', cookMinutes: '', tags: '' })
 const ingredients = ref([]) // [{quantity, unit, food, note}]
-const stepsText = ref('')
+const steps = ref([]) // [{text}]
 
 const idea = ref('')
 const drafting = ref(false)
 const structuring = ref(false)
 const saving = ref(false)
-
-const lines = (t) => t.split('\n').map((l) => l.trim()).filter(Boolean)
 
 function rowToDisplay(r) {
   const parts = [String(r.quantity ?? '').trim(), (r.unit || '').trim(), (r.food || '').trim()].filter(Boolean)
@@ -48,7 +47,7 @@ async function draft() {
     if (p.servings) form.value.servings = p.servings
     if (p.prepMinutes) form.value.prepMinutes = p.prepMinutes
     if (p.cookMinutes) form.value.cookMinutes = p.cookMinutes
-    stepsText.value = (p.steps || []).map((s) => s.text).join('\n')
+    steps.value = (p.steps || []).map((s) => ({ text: s.text })).filter((s) => s.text)
     form.value.tags = (p.tags || []).join(', ')
     // Turn the drafted ingredient lines into structured rows.
     const drafted = (p.ingredients || []).map((i) => i.display).filter(Boolean)
@@ -101,7 +100,10 @@ async function save() {
       prepMinutes: Number(form.value.prepMinutes) || 0,
       cookMinutes: Number(form.value.cookMinutes) || 0,
       ingredients: ings,
-      steps: lines(stepsText.value).map((text) => ({ text })),
+      steps: steps.value
+        .map((s) => (s.text || '').trim())
+        .filter(Boolean)
+        .map((text, position) => ({ text, position })),
       tags: form.value.tags.split(',').map((t) => t.trim()).filter(Boolean),
     })
     ui.toast('Recipe created')
@@ -166,9 +168,7 @@ async function save() {
   </div>
 
   <div class="card">
-    <h2>Steps <span class="hint" style="font-weight:400">— one per line</span></h2>
-    <textarea v-model="stepsText" rows="8" class="fill"
-      placeholder="Preheat the oven to 200°C&#10;Mix the dry ingredients…"></textarea>
+    <StepRows v-model="steps" />
   </div>
 </template>
 

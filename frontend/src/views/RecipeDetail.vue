@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api, apiUrl } from '../api'
 import { useUI } from '../stores/ui'
 import IngredientRows from '../components/IngredientRows.vue'
+import StepRows from '../components/StepRows.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -112,7 +113,7 @@ async function tidyIngredients() {
     structuring.value = false
   }
 }
-const stepsText = ref('')
+const editSteps = ref([]) // [{text}]
 
 async function load() {
   loading.value = true
@@ -179,7 +180,7 @@ async function startEdit() {
     } catch { /* keep the display-in-food fallback */ }
   }
   editIngredients.value = rows
-  stepsText.value = r.steps.map((s) => s.text).join('\n\n')
+  editSteps.value = r.steps.map((s) => ({ text: s.text }))
   editing.value = true
 }
 
@@ -192,9 +193,8 @@ async function save() {
       display: rowToDisplay(r), quantity: Number(r.quantity) || 0,
       unit: r.unit || '', food: r.food || '', note: r.note || '', position,
     })),
-    steps: stepsText.value
-      .split('\n\n')
-      .map((l) => l.trim())
+    steps: editSteps.value
+      .map((s) => (s.text || '').trim())
       .filter(Boolean)
       .map((text, position) => ({ text, position })),
   }
@@ -511,8 +511,7 @@ const imageSrc = computed(() =>
         </div>
       </div>
       <div class="card">
-        <h2>Steps <span class="muted" style="font-weight:400">— blank line between steps</span></h2>
-        <textarea v-model="stepsText" rows="10"></textarea>
+        <StepRows v-model="editSteps" />
       </div>
       <div class="card">
         <label class="field"><span>Notes</span><textarea v-model="form.notes" rows="3"></textarea></label>
