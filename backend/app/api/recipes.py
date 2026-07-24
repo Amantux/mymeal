@@ -7,7 +7,7 @@ from flask import Blueprint, request, jsonify, abort, current_app, send_file
 from sqlalchemy.orm import selectinload
 
 from ..extensions import db
-from ..models import Recipe, RecipeIngredient, RecipeStep, Category, Tag
+from ..models import Recipe, RecipeIngredient, RecipeStep, Category, Tag, Unit
 from ..auth import login_required, current_group
 from ..schemas.serializers import recipe_out, recipe_summary
 from ..utils import unique_slug
@@ -35,18 +35,50 @@ def _get_by_id_or_slug(ident) -> Recipe:
     return recipe
 
 
+def _find_or_create_unit(gid: str, name: str):
+    """Find (case-insensitively) or create a Unit by canonical name in the group."""
+    if not name:
+        return None
+    u = (
+        db.session.query(Unit)
+        .filter(Unit.group_id == gid, db.func.lower(Unit.name) == name.lower())
+        .first()
+    )
+    if not u:
+        u = Unit(name=name, group_id=gid)
+        db.session.add(u)
+        db.session.flush()
+    return u.id
+
+
 def _set_ingredients(recipe: Recipe, rows):
-    """Replace a recipe's ingredient lines with ``rows`` (list of dicts)."""
+    """Replace a recipe's ingredient lines with ``rows`` (list of dicts).
+
+    When a row isn't already structured (no explicit quantity/unit), parse its
+    free-text ``display`` into quantity + unit — the Mealie-style structured
+    ingredient — so scaling and shopping-list consolidation work. ``display``
+    stays the human source of truth; the parse is best-effort (may be partial).
+    """
+    from ..services import units
+
     recipe.ingredients.clear()
     for i, row in enumerate(rows or []):
+        display = row.get("display", "")
+        qty = row.get("quantity")
+        unit_id = row.get("unitId") or None
+        if not unit_id and (qty in (None, 0, 0.0, "")) and display:
+            parsed = units.parse_line(display)
+            qty = parsed["qty"] or 0
+            if parsed["unit"]:
+                unit_id = _find_or_create_unit(recipe.group_id, parsed["unit"])
         recipe.ingredients.append(
             RecipeIngredient(
-                display=row.get("display", ""),
-                quantity=float(row.get("quantity") or 0),
+                display=display,
+                quantity=float(qty or 0),
                 note=row.get("note", ""),
                 section=row.get("section", ""),
                 position=row.get("position", i),
-                unit_id=row.get("unitId") or None,
+                unit_id=unit_id,
                 food_id=row.get("foodId") or None,
             )
         )

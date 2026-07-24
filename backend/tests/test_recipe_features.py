@@ -65,6 +65,16 @@ def test_create_recipe_tool_saves_recipe_with_tags(app):
         assert r.servings == 4 and r.slug
 
 
+def test_ingredients_parsed_to_structured_on_save(auth_client):
+    rid = auth_client.post("/api/v1/recipes", json={
+        "name": "Parsed", "ingredients": [
+            {"display": "2 cups flour"}, {"display": "salt to taste"}],
+    }).get_json()["id"]
+    ings = auth_client.get(f"/api/v1/recipes/{rid}").get_json()["ingredients"]
+    assert ings[0]["quantity"] == 2 and ings[0]["unit"]["name"] == "cup"
+    assert ings[1]["quantity"] == 0 and ings[1]["unit"] is None  # unparseable → left blank
+
+
 def test_recipe_scaling_and_weight_view(auth_client):
     rid = auth_client.post("/api/v1/recipes", json={
         "name": "Pancakes", "servings": 2,
