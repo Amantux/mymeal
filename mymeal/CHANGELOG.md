@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.1.27
+
+- Import images+tags & let the assistant create recipes.
+
 ## 1.1.26
 
 - Week view first day box larger — neutralize leaked .card margin.
