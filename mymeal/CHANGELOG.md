@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.1.29
+
+- Serving scaler + weight-based measurement view (features program, phase 1).
+
 ## 1.1.28
 
 - Address import/assistant review (best-effort image, caps, tests).
