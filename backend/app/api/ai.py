@@ -242,6 +242,32 @@ def parse_ingredients_endpoint():
     return jsonify({"ingredients": result})
 
 
+@bp.post("/ai/nutrition/<recipe_id>")
+@login_required
+def estimate_nutrition_endpoint(recipe_id):
+    """Estimate per-serving nutrition for one recipe from its ingredients, store
+    it on the recipe, and return it."""
+    from ..services.ai.nutrition import estimate_nutrition
+
+    recipe = db.session.get(Recipe, recipe_id)
+    if not recipe or recipe.group_id != current_group().id:
+        return jsonify({"error": "recipe not found"}), 404
+    lines = [i.display for i in recipe.ingredients]
+    if not lines:
+        return jsonify({"error": "add ingredients before estimating nutrition"}), 422
+    try:
+        provider = get_provider()
+    except ProviderError:
+        return jsonify({"error": "no AI provider is configured"}), 503
+    try:
+        nutrition = estimate_nutrition(lines, recipe.servings, provider)
+    except ProviderError as exc:
+        return jsonify({"error": str(exc)}), 502
+    recipe.nutrition = json.dumps(nutrition) if nutrition else ""
+    db.session.commit()
+    return jsonify({"nutrition": nutrition or None})
+
+
 @bp.post("/ai/suggest")
 @login_required
 def suggest():

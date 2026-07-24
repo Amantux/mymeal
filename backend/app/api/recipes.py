@@ -176,7 +176,9 @@ def _apply(recipe: Recipe, data: dict):
             Recipe, recipe.group_id, data["name"], exclude_id=recipe.id
         )
     if "nutrition" in data:
-        recipe.nutrition = json.dumps(data["nutrition"]) if data["nutrition"] else ""
+        from ..services.ai.nutrition import sanitize as _sanitize_nutrition
+        clean = _sanitize_nutrition(data["nutrition"])
+        recipe.nutrition = json.dumps(clean) if clean else ""
     if "ingredients" in data:
         _set_ingredients(recipe, data["ingredients"])
     if "steps" in data:

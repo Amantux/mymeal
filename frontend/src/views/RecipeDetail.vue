@@ -17,6 +17,32 @@ const allCategories = ref([])
 const selectedCategoryIds = ref([])
 const newCategoryName = ref('')
 
+// Nutrition (per serving). Displayed as a facts grid; editable; AI-estimable.
+const NUTRITION_FIELDS = [
+  { key: 'calories', label: 'Calories', unit: '' },
+  { key: 'protein', label: 'Protein', unit: ' g' },
+  { key: 'carbs', label: 'Carbs', unit: ' g' },
+  { key: 'fat', label: 'Fat', unit: ' g' },
+  { key: 'fiber', label: 'Fiber', unit: ' g' },
+  { key: 'sugar', label: 'Sugar', unit: ' g' },
+  { key: 'sodium', label: 'Sodium', unit: ' mg' },
+]
+const nutritionForm = ref({})
+const estimatingNutrition = ref(false)
+
+async function estimateNutrition() {
+  estimatingNutrition.value = true
+  try {
+    const res = await api.post(`/ai/nutrition/${recipe.value.id}`)
+    recipe.value.nutrition = res.nutrition
+    ui.toast(res.nutrition ? 'Nutrition estimated' : 'Could not estimate from these ingredients')
+  } catch (e) {
+    ui.error(e.message || 'Could not estimate nutrition')
+  } finally {
+    estimatingNutrition.value = false
+  }
+}
+
 // Display-only ingredient view: scale to a chosen serving count and/or show
 // weights. Never mutates the stored recipe (the backend does the transform).
 const viewServings = ref(null)
@@ -82,6 +108,7 @@ async function createCategory() {
 function startEdit() {
   const r = recipe.value
   selectedCategoryIds.value = (r.categories || []).map((c) => c.id)
+  nutritionForm.value = { ...(r.nutrition || {}) }
   form.value = {
     name: r.name,
     description: r.description,
@@ -102,6 +129,7 @@ async function save() {
   const payload = {
     ...form.value,
     categoryIds: selectedCategoryIds.value,
+    nutrition: nutritionForm.value,
     ingredients: ingredientsText.value
       .split('\n')
       .map((l) => l.trim())
@@ -238,6 +266,27 @@ const imageSrc = computed(() =>
         <h2>Notes</h2>
         <p style="white-space:pre-wrap;margin:0">{{ recipe.notes }}</p>
       </div>
+
+      <div class="card">
+        <div class="page-head" style="margin-bottom:10px">
+          <h2>Nutrition <span class="muted" style="font-weight:400">— per serving</span></h2>
+          <div class="grow"></div>
+          <button class="secondary sm" :disabled="estimatingNutrition" @click="estimateNutrition">
+            {{ estimatingNutrition ? 'Estimating…' : '✨ Estimate with AI' }}
+          </button>
+        </div>
+        <div v-if="recipe.nutrition" class="nutri-grid">
+          <template v-for="f in NUTRITION_FIELDS" :key="f.key">
+            <div v-if="recipe.nutrition[f.key] != null" class="nutri-cell">
+              <div class="nutri-val tnum">{{ recipe.nutrition[f.key] }}{{ f.unit }}</div>
+              <div class="nutri-lbl">{{ f.label }}</div>
+            </div>
+          </template>
+        </div>
+        <p v-else class="muted" style="margin:0">
+          No nutrition yet — estimate it with AI, or add it in edit mode.
+        </p>
+      </div>
     </template>
 
     <!-- EDIT MODE -->
@@ -280,6 +329,15 @@ const imageSrc = computed(() =>
       <div class="card">
         <label class="field"><span>Notes</span><textarea v-model="form.notes" rows="3"></textarea></label>
       </div>
+      <div class="card">
+        <h2>Nutrition <span class="muted" style="font-weight:400">— per serving, leave blank if unknown</span></h2>
+        <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr))">
+          <label v-for="f in NUTRITION_FIELDS" :key="f.key" class="field">
+            <span>{{ f.label }}{{ f.unit }}</span>
+            <input v-model.number="nutritionForm[f.key]" type="number" min="0" step="any" />
+          </label>
+        </div>
+      </div>
     </template>
   </template>
 </template>
@@ -291,4 +349,8 @@ const imageSrc = computed(() =>
 .cat-picker { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 4px; }
 .cat-opt { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; cursor: pointer; }
 .cat-opt input { width: auto; }
+.nutri-grid { display: flex; flex-wrap: wrap; gap: 20px 28px; }
+.nutri-cell { min-width: 64px; }
+.nutri-val { font-size: 1.4rem; font-weight: 700; }
+.nutri-lbl { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
 </style>
