@@ -142,6 +142,9 @@ const imageSrc = computed(() =>
       <button class="ghost" @click="router.push('/recipes')">← Recipes</button>
       <div class="grow"></div>
       <template v-if="!editing">
+        <button v-if="recipe.steps.length" @click="router.push(`/recipes/${recipe.id}/cook`)">
+          👨‍🍳 Cook
+        </button>
         <button class="secondary" @click="toggleFavorite">
           {{ recipe.isFavorite ? '★ Favorited' : '☆ Favorite' }}
         </button>
