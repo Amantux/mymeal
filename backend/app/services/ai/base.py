@@ -81,6 +81,26 @@ class AIProvider(ABC):
         raw = self._complete(sys, prompt, max_tokens)
         return extract_json(raw)
 
+    def _complete_image(
+        self, system: str, prompt: str, image_b64: str, media_type: str, max_tokens: int
+    ) -> str:
+        """Return raw text for a system+user exchange that includes one image
+        (base64). Default: unsupported — vision-capable adapters override."""
+        raise ProviderError("this AI provider does not support image input")
+
+    def complete_json_image(
+        self, prompt: str, image_b64: str, media_type: str,
+        system: str = "", max_tokens: int = 4096,
+    ) -> dict:
+        """Like ``complete_json`` but the user turn includes one image."""
+        sys = (system + "\n\n" if system else "") + (
+            "Respond with a single valid JSON value and nothing else — no prose, "
+            "no markdown fences, no explanation."
+        )
+        return extract_json(
+            self._complete_image(sys, prompt, image_b64, media_type, max_tokens)
+        )
+
 
 def extract_json(text: str) -> dict:
     """Parse a JSON *object* from model output, tolerating fences/prose.

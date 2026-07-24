@@ -47,6 +47,20 @@ class ClaudeProvider(AIProvider):
         )
         return "".join(b.text for b in resp.content if b.type == "text")
 
+    def _complete_image(self, system, prompt, image_b64, media_type, max_tokens) -> str:
+        client = self._get_client()
+        resp = client.messages.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64",
+                                             "media_type": media_type, "data": image_b64}},
+                {"type": "text", "text": prompt},
+            ]}],
+        )
+        return "".join(b.text for b in resp.content if b.type == "text")
+
     def chat(self, messages, system="", tools=None, max_tokens=2048) -> ChatResult:
         client = self._get_client()
         kwargs = {

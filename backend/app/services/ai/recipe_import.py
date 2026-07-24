@@ -408,6 +408,27 @@ def generate_recipe(
     return payload
 
 
+_PHOTO_SYSTEM = (
+    "You transcribe recipes from images — a photo of a recipe card, a cookbook "
+    "page, a screenshot, or a handwritten note. Read the image and return the "
+    "recipe as structured data. Transcribe the ingredients and steps faithfully; "
+    "do NOT invent quantities or steps that are not shown. If the image is not a "
+    "recipe, return a recipe with an empty name and no ingredients."
+)
+
+
+def recipe_from_image(image_b64: str, media_type: str, provider: AIProvider) -> dict:
+    """Extract a recipe from a photo (base64). Returns the normalized payload —
+    NOT saved. Raises ProviderError if the provider has no vision support."""
+    prompt = _SCHEMA_HINT + "\n\nTranscribe the recipe shown in the attached image."
+    payload = _normalize_ai(
+        provider.complete_json_image(prompt, image_b64, media_type, system=_PHOTO_SYSTEM)
+    )
+    if payload.get("name") == "Imported Recipe":
+        payload["name"] = "Scanned recipe"
+    return payload
+
+
 def import_recipe(
     *, url: str = "", text: str = "", provider: AIProvider | None = None
 ) -> dict:

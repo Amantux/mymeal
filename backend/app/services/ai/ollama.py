@@ -61,6 +61,21 @@ class OllamaProvider(AIProvider):
         )
         return (data.get("message") or {}).get("content", "")
 
+    def _complete_image(self, system, prompt, image_b64, media_type, max_tokens) -> str:
+        # Ollama takes images as base64 strings on the message. Needs a
+        # vision-capable model (llava, llama3.2-vision, …); errors otherwise.
+        data = self._post({
+            "model": self.model,
+            "stream": False,
+            "format": "json",
+            "options": {"num_predict": max_tokens},
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt, "images": [image_b64]},
+            ],
+        })
+        return (data.get("message") or {}).get("content", "")
+
     def chat(self, messages, system="", tools=None, max_tokens=2048) -> ChatResult:
         msgs = ([{"role": "system", "content": system}] if system else []) + messages
         payload = {

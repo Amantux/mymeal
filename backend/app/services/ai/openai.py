@@ -54,6 +54,22 @@ class OpenAIProvider(AIProvider):
         )
         return resp.choices[0].message.content or ""
 
+    def _complete_image(self, system, prompt, image_b64, media_type, max_tokens) -> str:
+        client = self._get_client()
+        data_uri = f"data:{media_type};base64,{image_b64}"
+        resp = client.chat.completions.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_uri}},
+                ]},
+            ],
+        )
+        return resp.choices[0].message.content or ""
+
     def chat(self, messages, system="", tools=None, max_tokens=2048) -> ChatResult:
         client = self._get_client()
         msgs = ([{"role": "system", "content": system}] if system else []) + messages

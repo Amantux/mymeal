@@ -268,6 +268,63 @@ def estimate_nutrition_endpoint(recipe_id):
     return jsonify({"nutrition": nutrition or None})
 
 
+_PHOTO_MEDIA = {"image/jpeg", "image/png", "image/webp"}
+_MAX_PHOTO_BYTES = 10 * 1024 * 1024
+
+
+@bp.post("/ai/photo")
+@login_required
+def photo_to_recipe_endpoint():
+    """Extract a recipe from an uploaded photo (recipe card, cookbook page,
+    handwritten note) using a vision-capable provider, save it, and keep the
+    photo as the recipe image."""
+    import base64
+
+    from ..services.ai.recipe_import import recipe_from_image
+    from .recipes import _IMAGE_EXTS, _image_path
+
+    file = request.files.get("image") or request.files.get("file")
+    if not file:
+        return jsonify({"error": "no image uploaded"}), 422
+    media_type = (file.mimetype or "").lower()
+    if media_type not in _PHOTO_MEDIA:
+        return jsonify({"error": "unsupported image type (use JPEG, PNG, or WebP)"}), 422
+    data = file.read(_MAX_PHOTO_BYTES + 1)
+    if not data:
+        return jsonify({"error": "empty image"}), 422
+    if len(data) > _MAX_PHOTO_BYTES:
+        return jsonify({"error": "image too large (max 10 MB)"}), 413
+    try:
+        provider = get_provider()
+    except ProviderError:
+        return jsonify({"error": "no AI provider is configured"}), 503
+    b64 = base64.standard_b64encode(data).decode()
+    try:
+        payload = recipe_from_image(b64, media_type, provider)
+    except ProviderError as exc:
+        # Includes "does not support image input" for a non-vision provider.
+        return jsonify({"error": str(exc)}), 502
+    if not payload.get("ingredients"):
+        return jsonify({"error": "could not find a recipe in that image"}), 422
+
+    name = payload.get("name") or "Scanned recipe"
+    recipe = Recipe(name=name, slug=unique_slug(Recipe, current_group().id, name),
+                    group_id=current_group().id)
+    db.session.add(recipe)
+    _apply(recipe, {k: v for k, v in payload.items() if k != "name"})
+    db.session.flush()  # need the id for the image filename
+    ext = _IMAGE_EXTS.get(media_type, ".jpg")
+    filename = f"{recipe.id}{ext}"
+    try:
+        with open(_image_path(filename), "wb") as fh:
+            fh.write(data)
+        recipe.image = filename
+    except OSError:
+        pass  # keeping the photo is best-effort; the transcription still saves
+    db.session.commit()
+    return jsonify(recipe_out(recipe)), 201
+
+
 @bp.post("/ai/suggest")
 @login_required
 def suggest():

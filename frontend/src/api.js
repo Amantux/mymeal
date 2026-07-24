@@ -51,4 +51,5 @@ export const api = {
   patch: (p, b) => request('PATCH', p, b),
   del: (p) => request('DELETE', p),
   upload: (p, form) => request('PUT', p, form, true),
+  uploadPost: (p, form) => request('POST', p, form, true),
 }
