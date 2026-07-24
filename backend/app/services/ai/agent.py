@@ -16,6 +16,7 @@ from ...extensions import db
 from ...models import Recipe, MealPlanEntry, ShoppingList, ShoppingListItem
 from ..edibl import EdiblClient
 from ..inventory import rank_recipes
+from ..preferences import preferences_text
 from .base import AIProvider
 
 SYSTEM = (
@@ -101,6 +102,24 @@ TOOLS = [
                 "tags": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["name", "ingredients", "steps"],
+        },
+    },
+    {
+        "name": "set_preference",
+        "description": (
+            "Record a household food preference so future suggestions honour it. "
+            "Use whenever the user states a diet ('we're vegetarian'), an allergy "
+            "('no peanuts'), a dislike ('kids hate mushrooms'), or a general note. "
+            "Pass an empty value to clear that preference."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "field": {"type": "string",
+                          "enum": ["diet", "allergies", "dislikes", "notes"]},
+                "value": {"type": "string"},
+            },
+            "required": ["field", "value"],
         },
     },
 ]
@@ -239,6 +258,17 @@ def execute_tool(gid: str, name: str, args: dict):
         db.session.flush()  # request handler owns the commit; flush populates id
         return {"created": recipe.name, "recipeId": recipe.id}
 
+    if name == "set_preference":
+        from ..preferences import FIELDS, set_preferences
+
+        field = str(args.get("field", "")).strip()
+        if field not in FIELDS:
+            return {"error": f"field must be one of {', '.join(FIELDS)}"}
+        value = str(args.get("value", "")).strip()[:500]
+        set_preferences(gid, {field: value})
+        db.session.flush()  # request handler owns the commit
+        return {"preferenceSet": field, "value": value}
+
     return {"error": f"unknown tool {name}"}
 
 
@@ -260,6 +290,12 @@ _ACTION_FORMATTERS = {
          **({"undo": {"kind": "recipe", "id": r["recipeId"]}}
             if r.get("recipeId") else {})}
         if r.get("created") else None
+    ),
+    "set_preference": lambda r: (
+        {"label": (f'Saved preference — {r["preferenceSet"]}: {r["value"]}'
+                   if r.get("value") else f'Cleared {r["preferenceSet"]} preference'),
+         "kind": "preference", "icon": "⚙️"}
+        if r.get("preferenceSet") else None
     ),
     # Cross-app (Edibl) mutations — all undoable via the server undo-proxy
     # (POST /ai/chat/undo -> Edibl), because the browser can't reach Edibl. The
@@ -456,6 +492,14 @@ def run_chat(
     connected = _edibl_connected()
     tools = TOOLS + _EDIBL_TOOLS if connected else TOOLS
     system = SYSTEM + _EDIBL_PROMPT if connected else SYSTEM
+    # Fold in the household's saved food preferences so suggestions respect the
+    # diet and never include a stated allergen.
+    prefs = preferences_text(gid)
+    if prefs:
+        system += (
+            f" This household's food preferences (honour them; never suggest a "
+            f"listed allergen): {prefs}."
+        )
 
     for _ in range(max_iters):
         result = provider.chat(messages, system=system, tools=tools)

@@ -16,6 +16,10 @@ const discovering = ref(false)
 const form = reactive({ provider: '', baseUrl: '', model: '', apiKey: '' })
 const apiKeySet = ref(false)
 
+// --- Household food preferences (honoured by AI suggestions & the assistant) ---
+const prefs = reactive({ diet: '', allergies: '', dislikes: '', notes: '' })
+const prefsBusy = ref(false)
+
 // --- Edibl (companion food-inventory app) connection ---
 const edibl = reactive({ url: '', token: '' })
 const ediblTokenSet = ref(false)
@@ -60,6 +64,7 @@ async function load() {
       edibl.token = ''
       ediblTokenSet.value = !!e.tokenSet
     } catch (err) { /* edibl endpoints optional */ }
+    try { Object.assign(prefs, await api.get('/preferences')) } catch (err) { /* optional */ }
     await loadKeys()
     await loadMembers()
   } finally {
@@ -82,6 +87,18 @@ async function save() {
     ui.error(e.message || 'Could not save settings')
   } finally {
     saving.value = false
+  }
+}
+
+async function savePrefs() {
+  prefsBusy.value = true
+  try {
+    Object.assign(prefs, await api.put('/preferences', { ...prefs }))
+    ui.toast('Preferences saved')
+  } catch (e) {
+    ui.error(e.message || 'Could not save preferences')
+  } finally {
+    prefsBusy.value = false
   }
 }
 
@@ -435,6 +452,39 @@ async function findOllama() {
         @click="setAdmin(m, true)"
       >Make admin</button>
     </div>
+  </div>
+
+  <div class="card" v-if="!loading">
+    <h2>Food preferences</h2>
+    <p class="muted">
+      Your household's diet, allergies, and dislikes. The recipe drafter, meal
+      planner, and cooking assistant honour these — and the assistant can update
+      them for you (“we're vegetarian now”).
+    </p>
+    <form class="ai-form" @submit.prevent="savePrefs">
+      <label class="field">
+        <span class="lbl">Diet</span>
+        <input v-model="prefs.diet" placeholder="e.g. vegetarian, pescatarian, halal" />
+      </label>
+      <label class="field">
+        <span class="lbl">Allergies <span class="muted">— always avoided</span></span>
+        <input v-model="prefs.allergies" placeholder="e.g. peanuts, shellfish" />
+      </label>
+      <label class="field">
+        <span class="lbl">Dislikes</span>
+        <input v-model="prefs.dislikes" placeholder="e.g. cilantro, olives" />
+      </label>
+      <label class="field">
+        <span class="lbl">Notes</span>
+        <textarea v-model="prefs.notes" rows="2"
+          placeholder="Anything else — low-spice, batch-friendly, kid-approved…"></textarea>
+      </label>
+      <div>
+        <button type="submit" :disabled="prefsBusy">
+          {{ prefsBusy ? 'Saving…' : 'Save preferences' }}
+        </button>
+      </div>
+    </form>
   </div>
 
   <div class="card" v-if="!loading">

@@ -17,6 +17,7 @@ from ..schemas.serializers import recipe_out, mealplan_entry_out
 from ..utils import unique_slug
 from ..services.ai.base import ProviderError
 from ..services.ai.registry import get_provider, list_providers
+from ..services.preferences import preferences_text
 from ..services.ai.recipe_import import (
     import_recipe,
     generate_recipe,
@@ -207,7 +208,10 @@ def generate_recipe_endpoint():
     except (TypeError, ValueError):
         servings = 0
     try:
-        payload = generate_recipe(prompt, provider, servings=servings)
+        payload = generate_recipe(
+            prompt, provider, servings=servings,
+            preferences=preferences_text(current_group().id),
+        )
     except ProviderError as exc:
         return jsonify({"error": str(exc)}), 502
     return jsonify(payload)
@@ -306,6 +310,11 @@ def plan_week():
     except (ValueError, TypeError):
         servings = 0
     preferences = str(data.get("preferences") or "").strip()
+    # Always fold in the household's saved diet/allergy preferences, even when
+    # the request sends none of its own.
+    stored = preferences_text(gid)
+    if stored:
+        preferences = f"{preferences}; {stored}".strip("; ") if preferences else stored
 
     recipes = db.session.query(Recipe).filter_by(group_id=gid).all()
     catalog = [

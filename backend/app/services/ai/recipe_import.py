@@ -385,13 +385,21 @@ _GENERATE_SYSTEM = (
 )
 
 
-def generate_recipe(prompt: str, provider: AIProvider, servings: int = 0) -> dict:
+def generate_recipe(
+    prompt: str, provider: AIProvider, servings: int = 0, preferences: str = ""
+) -> dict:
     """Draft a full recipe from a free-text idea ("a cozy vegetarian chili for
     4"). Returns the normalized payload — NOT saved — so the builder can prefill
-    a form the user edits before saving."""
+    a form the user edits before saving. ``preferences`` is the household's saved
+    diet/allergy summary, honoured when drafting."""
     ask = _SCHEMA_HINT + f"\n\nRequest: {prompt.strip()}"
     if servings:
         ask += f"\nTarget servings: {servings}"
+    if preferences:
+        ask += (
+            f"\nHousehold preferences to honour (never include a listed "
+            f"allergen): {preferences}"
+        )
     payload = _normalize_ai(provider.complete_json(ask, system=_GENERATE_SYSTEM))
     if payload.get("name") == "Imported Recipe":  # the import default reads wrong here
         payload["name"] = "New recipe"
