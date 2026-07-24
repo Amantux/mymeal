@@ -130,7 +130,8 @@ def test_recipe_scaling_and_weight_view(auth_client):
 
     weight = auth_client.get(f"/api/v1/recipes/{rid}?units=weight").get_json()
     dishes = [i["display"] for i in weight["ingredients"]]
-    assert dishes[0].endswith("g flour")  # cup flour → grams via density
+    # Weight is appended in parentheses, keeping the original measure.
+    assert dishes[0].startswith("2 cups flour") and dishes[0].endswith("g)")
     assert dishes[1] == "2 eggs"          # no unit/density → unchanged
 
 

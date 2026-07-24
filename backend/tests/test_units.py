@@ -47,3 +47,14 @@ def test_to_grams_none_without_unit_or_density():
 def test_to_weight_line_converts_when_possible():
     assert units.to_weight_line("1 cup flour").endswith("g flour")
     assert units.to_weight_line("2 eggs") == "2 eggs"  # unchanged
+
+
+def test_annotate_weight_appends_parenthetical_keeping_original():
+    out = units.annotate_weight("1 cup flour")
+    assert out.startswith("1 cup flour")      # original measure kept
+    assert out.endswith(")") and "g)" in out  # weight appended in parens
+
+
+def test_annotate_weight_unchanged_when_not_convertible():
+    assert units.annotate_weight("3 eggs") == "3 eggs"
+    assert units.annotate_weight("2 cups diced onion") == "2 cups diced onion"

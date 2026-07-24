@@ -188,6 +188,10 @@ def to_grams(text: str) -> float | None:
     return None
 
 
+def _format_grams(grams: float) -> str:
+    return f"{round(grams)} g" if grams >= 1 else f"{round(grams, 1)} g"
+
+
 def to_weight_line(text: str) -> str:
     """Rewrite an ingredient line to a weight measurement when possible
     ("1 cup flour" → "125 g flour"); otherwise return it unchanged."""
@@ -195,5 +199,15 @@ def to_weight_line(text: str) -> str:
     if grams is None:
         return text
     rest = parse_line(text)["rest"]
-    amount = f"{round(grams)} g" if grams >= 1 else f"{round(grams, 1)} g"
-    return f"{amount} {rest}".strip()
+    return f"{_format_grams(grams)} {rest}".strip()
+
+
+def annotate_weight(text: str) -> str:
+    """Append the weight in parentheses, KEEPING the original measure, when a
+    conversion is possible ("1 cup flour" → "1 cup flour (125 g)"). Returns the
+    line unchanged when there's no known density/weight. Non-destructive: this is
+    what the recipe view's weight toggle shows."""
+    grams = to_grams(text)
+    if grams is None:
+        return text
+    return f"{text.strip()} ({_format_grams(grams)})"

@@ -266,7 +266,8 @@ def _apply_view(out: dict, recipe: Recipe, args):
     for ing in out.get("ingredients", []):
         line = units.scale_line(ing.get("display", ""), factor)
         if to_weight:
-            line = units.to_weight_line(line)
+            # Keep the original measure, append the weight in parentheses.
+            line = units.annotate_weight(line)
         ing["display"] = line
 
 
@@ -371,6 +372,40 @@ def upload_image(recipe_id):
     recipe.image = filename
     db.session.commit()
     return jsonify(recipe_out(recipe))
+
+
+@bp.post("/recipes/parse")
+@login_required
+def parse_ingredient_lines():
+    """Deterministic, offline parse of free-text ingredient lines into
+    structured rows (quantity / unit / food) for the builder's 'Paste list'.
+
+    No AI: splits the leading quantity + a known unit; the remainder becomes the
+    food. Fast and always available; the AI 'Structure' step refines food vs
+    note. Bounded like the other ingredient inputs.
+    """
+    from ..services import units
+
+    data = request.get_json(silent=True) or {}
+    raw = data.get("lines")
+    if isinstance(raw, str):
+        raw = raw.splitlines()
+    if not isinstance(raw, list):
+        return jsonify({"error": "provide ingredient lines"}), 422
+    rows = []
+    for line in [str(x)[:1000] for x in raw][:MAX_INGREDIENT_ROWS]:
+        display = line.strip()
+        if not display:
+            continue
+        p = units.parse_line(display)
+        rows.append({
+            "display": display,
+            "quantity": p["qty"] or 0,
+            "unit": p["unit"] or "",
+            "food": p["rest"],
+            "note": "",
+        })
+    return jsonify({"ingredients": rows})
 
 
 @bp.post("/recipes/<recipe_id>/share")
