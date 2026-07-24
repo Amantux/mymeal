@@ -33,6 +33,7 @@ const nav = [
   { to: '/recipes', icon: '📖', label: 'Recipes' },
   { to: '/plan', icon: '🗓️', label: 'Meal Plan' },
   { to: '/shopping', icon: '🛒', label: 'Shopping' },
+  { to: '/medications', icon: '💊', label: 'Medications' },
   { to: '/import', icon: '📥', label: 'Import' },
 ]
 </script>

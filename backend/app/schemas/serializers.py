@@ -178,3 +178,21 @@ def recipe_out(r):
         }
     )
     return data
+
+
+def medication_out(m):
+    return {
+        "id": m.id,
+        "name": m.name,
+        "kind": m.kind,
+        "doseAmount": m.dose_amount,
+        "doseUnit": m.dose_unit,
+        "frequency": m.frequency,
+        "timesPerDay": m.times_per_day,
+        "scheduleTimes": m.schedule_times,
+        "daysOfWeek": m.days_of_week,
+        "withFood": m.with_food,
+        "notes": m.notes,
+        "active": m.active,
+        "createdAt": iso(m.created_at),
+    }
