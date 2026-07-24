@@ -18,6 +18,9 @@ const recipes = ref([])
 const totals = ref({ recipes: 0, mealsThisWeek: 0, shoppingItems: 0 })
 const todaysMeals = ref([])
 const weekPlan = ref([])
+// "Use it up" (feature #3) — loaded lazily so it never delays the dashboard, and
+// only shown when Edibl is connected and something is actually expiring.
+const uiu = ref({ available: false, expiring: [], suggestions: [], days: 5 })
 
 async function load() {
   const [summary, recipeList] = await Promise.all([
@@ -28,6 +31,8 @@ async function load() {
   todaysMeals.value = summary.todaysMeals || []
   weekPlan.value = summary.weekPlan || []
   recipes.value = recipeList.items
+  // Fire-and-forget: an Edibl hiccup must not break the dashboard.
+  api.post('/ai/use-it-up').then((r) => { uiu.value = r }).catch(() => {})
 }
 const { loading, error, reload } = useLoader(load)
 
@@ -129,6 +134,42 @@ function askAssistant() {
       </button>
     </div>
 
+    <!-- Use it up: soon-to-expire stock + recipes that consume it. -->
+    <div v-if="uiu.available && uiu.expiring.length" class="card" style="margin-bottom:24px">
+      <div class="page-head" style="margin-bottom:12px">
+        <h2>⏳ Use it up</h2>
+        <div class="grow"></div>
+        <span class="muted" style="font-size:0.82rem">Expiring within {{ uiu.days }} days</span>
+      </div>
+      <div class="row wrap" style="gap:8px;margin-bottom:14px">
+        <span v-for="e in uiu.expiring" :key="e.name" class="chip" :class="{ soon: e.daysLeft <= 1 }">
+          {{ e.name }} · {{ e.daysLeft <= 0 ? 'today' : e.daysLeft + 'd' }}
+        </span>
+      </div>
+      <template v-if="uiu.suggestions.length">
+        <div class="muted" style="font-size:0.82rem;margin-bottom:6px">Cook these to use them up:</div>
+        <div class="plan-peek">
+          <div
+            v-for="s in uiu.suggestions.slice(0, 5)"
+            :key="s.recipeId"
+            class="row"
+            role="button"
+            tabindex="0"
+            @click="router.push(`/recipes/${s.recipeId}`)"
+            @keydown.enter="router.push(`/recipes/${s.recipeId}`)"
+            @keydown.space.prevent="router.push(`/recipes/${s.recipeId}`)"
+          >
+            <span class="pp-name">{{ s.name }}</span>
+            <span class="grow"></span>
+            <span class="muted" style="font-size:0.8rem">uses {{ s.uses.join(', ') }}</span>
+          </div>
+        </div>
+      </template>
+      <p v-else class="muted" style="margin:0">
+        None of your recipes use these yet — ask the assistant for an idea.
+      </p>
+    </div>
+
     <!-- This week's plan at a glance. -->
     <div class="card" style="margin-bottom:24px">
       <div class="page-head" style="margin-bottom:12px">
@@ -210,4 +251,6 @@ function askAssistant() {
 
 <style scoped>
 .attention { margin-top: 4px; font-size: 0.9rem; }
+/* Items racing the clock (≤1 day) read as a warning, not decoration. */
+.chip.soon { background: var(--danger-soft, rgba(220, 80, 60, 0.14)); border-color: var(--danger); color: var(--danger); }
 </style>

@@ -302,6 +302,62 @@ def suggest():
                     "inventorySource": "edibl", "ediblAvailable": True})
 
 
+@bp.post("/ai/use-it-up")
+@login_required
+def use_it_up():
+    """Suggest recipes that use up soon-to-expire Edibl stock ('use it up').
+
+    Degrades gracefully: with no Edibl connected it reports the feature as
+    unavailable (200 + flag) rather than erroring. Deterministic, no provider.
+    """
+    from ..services.edibl import EdiblClient
+    from ..services.inventory import rank_use_it_up
+
+    gid = current_group().id
+    data = request.get_json(silent=True) or {}
+    try:
+        days = min(max(int(data.get("days", 5) or 5), 1), 60)
+    except (ValueError, TypeError):
+        days = 5
+    try:
+        limit = min(int(data.get("limit", 10) or 10), 50)
+    except (ValueError, TypeError):
+        limit = 10
+
+    inv = EdiblClient.from_settings().on_hand()
+    if not inv["available"]:
+        return jsonify({"suggestions": [], "expiring": [], "ediblAvailable": False,
+                        "message": inv["reason"]})
+
+    today = date.today()
+    expiring = []
+    for item in inv["items"]:
+        dl = _days_left(item.get("expiresAt"), today)
+        if dl is not None and dl <= days:
+            expiring.append({**item, "daysLeft": dl})
+    expiring.sort(key=lambda x: x["daysLeft"])
+
+    recipes = db.session.query(Recipe).filter_by(group_id=gid).all()
+    return jsonify({
+        "suggestions": rank_use_it_up(recipes, expiring)[:limit],
+        "expiring": expiring,
+        "ediblAvailable": True,
+        "days": days,
+    })
+
+
+def _days_left(expires_at, today):
+    """Whole days from ``today`` until ``expires_at`` (ISO date/datetime); may be
+    negative (already expired). None when there is no parseable date."""
+    if not expires_at:
+        return None
+    try:
+        d = date.fromisoformat(str(expires_at)[:10])
+    except ValueError:
+        return None
+    return (d - today).days
+
+
 @bp.post("/ai/plan")
 @login_required
 def plan_week():

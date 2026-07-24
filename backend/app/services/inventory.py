@@ -22,15 +22,20 @@ def _name_set(on_hand: list[dict]) -> set[str]:
     return names
 
 
-def _ingredient_covered(ing, names: set[str]) -> bool:
-    """True if any on-hand name appears in the ingredient's text, food name,
-    or a food alias. Name-based because Edibl stock has no myMeal food ids."""
+def _ingredient_haystack(ing) -> str:
+    """The ingredient's searchable text: its display line, food name, aliases."""
     haystacks = [(ing.display or "").lower()]
     if ing.food:
         haystacks.append((ing.food.name or "").lower())
         haystacks += [a.strip().lower()
                       for a in (ing.food.aliases or "").split(",") if a.strip()]
-    hay = " ".join(h for h in haystacks if h)
+    return " ".join(h for h in haystacks if h)
+
+
+def _ingredient_covered(ing, names: set[str]) -> bool:
+    """True if any on-hand name appears in the ingredient's text, food name,
+    or a food alias. Name-based because Edibl stock has no myMeal food ids."""
+    hay = _ingredient_haystack(ing)
     return any(name in hay for name in names)
 
 
@@ -56,4 +61,44 @@ def rank_recipes(recipes: list, on_hand: list[dict]) -> list[dict]:
             "missing": [i.display for i, c in zip(ings, covered) if not c],
         })
     scored.sort(key=lambda s: (-s["coverage"], s["missingCount"]))
+    return scored
+
+
+def rank_use_it_up(recipes: list, expiring: list[dict]) -> list[dict]:
+    """Rank recipes by how many of the (expiring) items they would use up.
+
+    ``expiring`` items may carry a ``daysLeft`` so the soonest-to-expire item a
+    recipe uses can break ties. Recipes that use none of the items are dropped.
+    """
+    # Map each searchable name back to its item so we can report what's used.
+    by_name = {}
+    for item in expiring:
+        name = (item.get("name") or "").strip().lower()
+        if len(name) >= 3:
+            by_name.setdefault(name, item)
+    scored = []
+    for recipe in recipes:
+        ings = list(recipe.ingredients)
+        if not ings:
+            continue
+        used = set()
+        for ing in ings:
+            hay = _ingredient_haystack(ing)
+            used |= {name for name in by_name if name in hay}
+        if not used:
+            continue
+        used_items = [by_name[n] for n in used]
+        soonest = min((i.get("daysLeft") for i in used_items
+                       if i.get("daysLeft") is not None), default=None)
+        scored.append({
+            "recipeId": recipe.id,
+            "name": recipe.name,
+            "slug": recipe.slug,
+            "uses": sorted({by_name[n].get("name") for n in used}),
+            "usesCount": len(used),
+            "soonestDaysLeft": soonest,
+        })
+    # Most items used first; then the one racing the soonest expiry.
+    scored.sort(key=lambda s: (-s["usesCount"],
+                               s["soonestDaysLeft"] if s["soonestDaysLeft"] is not None else 999))
     return scored
