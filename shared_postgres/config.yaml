@@ -1,0 +1,32 @@
+name: Shared PostgreSQL
+version: "0.1.0"
+slug: shared_postgres
+description: A shared PostgreSQL for myMeal, Edibl & HomeHoard — auto-provisions a separate database per app.
+url: https://github.com/Amantux/mymeal
+# No `image:` — the Supervisor builds this from the Dockerfile on-device.
+# (A CI-prebuilt multi-arch image is a planned follow-up.)
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: services
+boot: auto
+# Needed for the Supervisor token: publish a discovery message (so sibling apps
+# find us) and read our own hostname via /addons/self/info. The DEFAULT role is
+# enough — we never list other add-ons.
+hassio_api: true
+# Both ports are INTERNAL-ONLY by default (null). Sibling add-ons reach Postgres
+# and the provisioning API over the hassio network without a host port; map a
+# host port only for direct LAN access from another machine.
+ports:
+  5432/tcp: null
+  8087/tcp: null
+ports_description:
+  5432/tcp: PostgreSQL — map only for direct LAN access; siblings on Home Assistant do not need it
+  8087/tcp: Provisioning API (internal only)
+options:
+  # Token a sibling app must present to provision its database. Blank = a strong
+  # token is generated once and persisted; siblings receive it via discovery.
+  provision_token: ""
+schema:
+  provision_token: "password?"
