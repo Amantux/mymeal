@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.1.36
+
+- Household food preferences honoured by the AI (feature #5).
+
 ## 1.1.35
 
 - Cook mode — full-screen guided step-through (feature C).
