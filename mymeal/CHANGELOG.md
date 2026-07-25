@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.1.46
+
+- Assistant can scrape/import recipes from a URL.
+
 ## 1.1.45
 
 - Batch count for recipe components steps in 0.5 increments.
