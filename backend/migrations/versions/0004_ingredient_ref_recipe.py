@@ -24,8 +24,15 @@ def upgrade() -> None:
     insp = sa.inspect(op.get_bind())
     cols = {c["name"] for c in insp.get_columns("recipe_ingredients")}
     if "ref_recipe_id" not in cols:
+        # Include the FK (ON DELETE SET NULL) so upgraded installs match the
+        # metadata baseline that create_all builds on a fresh DB. batch mode
+        # recreates the table on SQLite, so the self-referential FK is added.
         with op.batch_alter_table("recipe_ingredients") as batch:
-            batch.add_column(sa.Column("ref_recipe_id", sa.String(length=36), nullable=True))
+            batch.add_column(sa.Column(
+                "ref_recipe_id", sa.String(length=36),
+                sa.ForeignKey("recipes.id", ondelete="SET NULL",
+                              name="fk_recipe_ingredients_ref_recipe_id"),
+                nullable=True))
     indexed = any("ref_recipe_id" in ix.get("column_names", [])
                   for ix in insp.get_indexes("recipe_ingredients"))
     if not indexed:

@@ -9,17 +9,32 @@ from __future__ import annotations
 
 from ..models import Recipe
 
+# Bound component expansion so a pathological/adversarial nest of linked recipes
+# (each referencing many others) can't fan out exponentially and hang a worker.
+# Beyond these limits a component is left as a single line rather than expanded.
+_MAX_COMPONENT_DEPTH = 4
+_MAX_COMPONENT_EXPANSIONS = 100
 
-def _flatten_ingredients(recipe, seen):
-    """Yield a recipe's ingredients, expanding any linked-recipe COMPONENT into
-    that recipe's own ingredients (recursively). ``seen`` guards against cycles;
-    a component whose target is already in the chain is left as a plain line."""
+
+def _flatten_ingredients(recipe, seen, state, depth=0, mult=1.0):
+    """Yield ``(ingredient, multiplier)`` for a recipe, expanding any linked
+    COMPONENT into its sub-recipe's ingredients (recursively). ``seen`` guards
+    against cycles on the current path; ``state['n']`` caps TOTAL expansions and
+    ``depth`` caps nesting — together bounding total work. ``mult`` scales an
+    expanded sub-recipe by the component row's quantity (e.g. "2 batches"). A
+    component that can't be expanded (cycle, cap, missing target) is yielded as
+    a plain line."""
     for ing in recipe.ingredients:
         ref = ing.ref_recipe_id
-        if ref and ref not in seen and ing.ref_recipe is not None:
-            yield from _flatten_ingredients(ing.ref_recipe, seen | {ref})
+        if (ref and ref not in seen and ing.ref_recipe is not None
+                and depth < _MAX_COMPONENT_DEPTH
+                and state["n"] < _MAX_COMPONENT_EXPANSIONS):
+            state["n"] += 1
+            sub_mult = mult * (float(ing.quantity or 0) or 1.0)
+            yield from _flatten_ingredients(
+                ing.ref_recipe, seen | {ref}, state, depth + 1, sub_mult)
         else:
-            yield ing
+            yield ing, mult
 
 
 def build_from_recipes(recipes: list[Recipe]) -> list[dict]:
@@ -31,7 +46,8 @@ def build_from_recipes(recipes: list[Recipe]) -> list[dict]:
     agg: dict[tuple, dict] = {}
     order: list[tuple] = []
     for recipe in recipes:
-        for ing in _flatten_ingredients(recipe, frozenset({recipe.id})):
+        state = {"n": 0}
+        for ing, mult in _flatten_ingredients(recipe, frozenset({recipe.id}), state):
             text = (ing.display or "").strip()
             if not text and not ing.food:
                 continue
@@ -47,7 +63,7 @@ def build_from_recipes(recipes: list[Recipe]) -> list[dict]:
                     "foodId": ing.food_id,
                 }
                 order.append(key)
-            agg[key]["quantity"] += float(ing.quantity or 0)
+            agg[key]["quantity"] += float(ing.quantity or 0) * mult
     # Stable: group by aisle (unassigned last), then original insertion order.
     items = [agg[k] for k in order]
     items.sort(key=lambda i: (i["aisle"] == "", i["aisle"].lower()))

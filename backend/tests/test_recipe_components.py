@@ -64,3 +64,51 @@ def test_shopping_expands_component_recipe(auth_client):
     assert "flour" in names
     assert "8 cloves garlic" in names and "1 cup olive oil" in names
     assert "Sauce" not in names and "1 batch Sauce" not in names
+
+
+def test_shopping_scales_component_by_its_quantity(auth_client):
+    sauce = _recipe(auth_client, "Sauce2", ["4 cloves garlic"])
+    dish = auth_client.post("/api/v1/recipes", json={
+        "name": "BigMain",
+        "ingredients": [
+            {"display": "2 batches Sauce2", "quantity": 2, "unit": "batch",
+             "refRecipeId": sauce["id"]},
+        ],
+    }).get_json()
+    sl = auth_client.post("/api/v1/shopping-lists", json={"name": "L2"}).get_json()
+    res = auth_client.post(f"/api/v1/shopping-lists/{sl['id']}/from-recipes",
+                           json={"recipeIds": [dish["id"]]}).get_json()
+    garlic = next(i for i in res["items"] if "garlic" in i["display"])
+    # 4 cloves × 2 batches = 8 (the component quantity scales the expansion).
+    assert garlic["quantity"] == 8
+
+
+def test_deleting_a_referenced_recipe_nulls_the_component(auth_client):
+    sauce = _recipe(auth_client, "Doomed Sauce", ["salt"])
+    dish = auth_client.post("/api/v1/recipes", json={
+        "name": "Host", "ingredients": [
+            {"display": "1 batch Doomed Sauce", "quantity": 1, "refRecipeId": sauce["id"]}]}).get_json()
+    assert auth_client.delete(f"/api/v1/recipes/{sauce['id']}").status_code == 204
+    # The component ref is gone (no dangling reference); the row survives as text.
+    ings = auth_client.get(f"/api/v1/recipes/{dish['id']}").get_json()["ingredients"]
+    assert ings[0]["refRecipe"] is None
+    assert "Doomed Sauce" in ings[0]["display"]
+
+
+def test_shopping_expansion_is_depth_bounded(auth_client):
+    # A deep chain must terminate (no hang): build a 10-deep linked chain and
+    # confirm from-recipes returns without exploding.
+    from app.services.shopping import _MAX_COMPONENT_DEPTH
+    prev = None
+    for i in range(10):
+        ings = [{"display": f"item{i}", "food": f"item{i}"}]
+        if prev:
+            ings.append({"display": f"1 batch r{i - 1}", "quantity": 1, "refRecipeId": prev})
+        prev = auth_client.post("/api/v1/recipes", json={"name": f"r{i}", "ingredients": ings}).get_json()["id"]
+    sl = auth_client.post("/api/v1/shopping-lists", json={"name": "deep"}).get_json()
+    res = auth_client.post(f"/api/v1/shopping-lists/{sl['id']}/from-recipes",
+                           json={"recipeIds": [prev]}).get_json()
+    # Expansion stops at the depth cap, so only the top ~depth levels' items
+    # appear as foods; the rest remain as component lines. It returns, bounded.
+    assert res["added"] >= 1
+    assert _MAX_COMPONENT_DEPTH == 4

@@ -1,9 +1,10 @@
 from datetime import date
 
 from flask import Blueprint, request, jsonify, abort
+from sqlalchemy.orm import selectinload
 
 from ..extensions import db
-from ..models import ShoppingList, ShoppingListItem, Recipe
+from ..models import ShoppingList, ShoppingListItem, Recipe, RecipeIngredient
 from ..auth import login_required, current_group
 from ..schemas.serializers import shopping_list_out, shopping_item_out
 from ..services.shopping import build_from_recipes
@@ -11,6 +12,20 @@ from ..utils import to_float
 from .mealplans import recipe_ids_in_range
 
 bp = Blueprint("shopping_lists", __name__)
+
+
+def _shopping_load_opts():
+    """Eager-load the ingredient graph a few levels deep (ingredient → food/unit,
+    and one hop through a linked component recipe) so building a list from
+    recipes with components doesn't fire a query per row. Deeper nesting falls
+    back to lazy loads, bounded by the expansion caps in the shopping service."""
+    ing = selectinload(Recipe.ingredients)
+    return [
+        ing.selectinload(RecipeIngredient.food),
+        ing.selectinload(RecipeIngredient.unit),
+        ing.selectinload(RecipeIngredient.ref_recipe)
+        .selectinload(Recipe.ingredients).selectinload(RecipeIngredient.food),
+    ]
 
 
 def _get_list(list_id) -> ShoppingList:
@@ -149,6 +164,7 @@ def from_recipes(list_id):
     recipes = (
         db.session.query(Recipe)
         .filter(Recipe.id.in_(ids), Recipe.group_id == current_group().id)
+        .options(*_shopping_load_opts())
         .all()
     )
     count = _append_consolidated(sl, recipes)
@@ -167,6 +183,7 @@ def from_mealplan(list_id):
     recipes = (
         db.session.query(Recipe)
         .filter(Recipe.id.in_(ids), Recipe.group_id == gid)
+        .options(*_shopping_load_opts())
         .all()
     )
     count = _append_consolidated(sl, recipes)

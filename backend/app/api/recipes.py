@@ -298,6 +298,11 @@ def delete_recipe(recipe_id):
     recipe = _get(recipe_id)
     if recipe.image:
         _remove_image_file(recipe.image)
+    # Detach any component links pointing at this recipe so no dangling ref is
+    # left. The FK is ON DELETE SET NULL, but do it explicitly so the guarantee
+    # holds even on installs whose migrated schema lacks that constraint.
+    db.session.query(RecipeIngredient).filter_by(ref_recipe_id=recipe.id).update(
+        {"ref_recipe_id": None}, synchronize_session=False)
     db.session.delete(recipe)
     db.session.commit()
     return "", 204
