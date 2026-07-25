@@ -83,6 +83,8 @@ def ingredient_out(ing):
         "position": ing.position,
         "unit": unit_out(ing.unit) if ing.unit else None,
         "food": food_out(ing.food) if ing.food else None,
+        "refRecipe": ({"id": ing.ref_recipe.id, "name": ing.ref_recipe.name,
+                       "slug": ing.ref_recipe.slug} if ing.ref_recipe else None),
     }
 
 

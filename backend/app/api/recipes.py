@@ -82,14 +82,25 @@ def _set_ingredients(recipe: Recipe, rows):
         qty = row.get("quantity")
         unit_id = row.get("unitId") or None
         food_id = row.get("foodId") or None
+        # A row may LINK another recipe as a component. Validate it belongs to
+        # this group and isn't the recipe itself; when set, it replaces the food
+        # (a component references a recipe, not a Food).
+        ref_recipe_id = None
+        raw_ref = row.get("refRecipeId")
+        if raw_ref and str(raw_ref) != recipe.id:
+            exists = db.session.query(Recipe.id).filter_by(
+                id=str(raw_ref), group_id=gid).first()
+            if exists:
+                ref_recipe_id = str(raw_ref)
         # Structured unit/food NAMES (e.g. from the AI ingredient parser) win.
         if not unit_id and row.get("unit"):
             name = (units.canonical_unit(row["unit"]) or str(row["unit"]))[:120]
             unit_id = _find_or_create_unit(gid, name)
-        if not food_id and row.get("food"):
+        if not ref_recipe_id and not food_id and row.get("food"):
             food_id = _find_or_create_food(gid, str(row["food"])[:255])
         # Otherwise best-effort parse the free-text display for qty + unit.
-        if not unit_id and (qty in (None, 0, 0.0, "")) and not row.get("unit") and display:
+        if not ref_recipe_id and not unit_id and (qty in (None, 0, 0.0, "")) \
+                and not row.get("unit") and display:
             parsed = units.parse_line(display)
             qty = parsed["qty"] or 0
             if parsed["unit"]:
@@ -102,7 +113,8 @@ def _set_ingredients(recipe: Recipe, rows):
                 section=row.get("section", ""),
                 position=row.get("position", i),
                 unit_id=unit_id,
-                food_id=food_id,
+                food_id=None if ref_recipe_id else food_id,
+                ref_recipe_id=ref_recipe_id,
             )
         )
 

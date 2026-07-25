@@ -45,6 +45,7 @@ class Recipe(IDMixin, TimestampMixin, db.Model):
     ingredients = relationship(
         "RecipeIngredient",
         back_populates="recipe",
+        foreign_keys="RecipeIngredient.recipe_id",
         cascade="all, delete-orphan",
         order_by="RecipeIngredient.position",
     )
@@ -75,7 +76,15 @@ class RecipeIngredient(IDMixin, TimestampMixin, db.Model):
     position: Mapped[int] = mapped_column(Integer, default=0)
 
     recipe_id: Mapped[str] = mapped_column(String(36), ForeignKey("recipes.id"))
-    recipe = relationship("Recipe", back_populates="ingredients")
+    recipe = relationship("Recipe", back_populates="ingredients", foreign_keys=[recipe_id])
+
+    # Optional link to ANOTHER recipe used as a component ("1 batch Garlic
+    # Confit"). SET NULL so the referenced recipe can still be deleted (the row
+    # then falls back to its plain display text).
+    ref_recipe_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("recipes.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    ref_recipe = relationship("Recipe", foreign_keys=[ref_recipe_id])
 
     unit_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("units.id"), nullable=True
