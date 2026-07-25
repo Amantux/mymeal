@@ -160,3 +160,35 @@ def test_provider_config_is_isolated_between_groups(app):
         assert effective_settings(base, g1.id).AI_PROVIDER == "openai"
         assert effective_settings(base, g2.id).AI_PROVIDER == "ollama"
         assert effective_settings(base, g1.id).OPENAI_API_KEY == "sk-group1"
+
+
+def test_ollama_cloud_selectable_defaults_hosted_and_requires_key(noauth_app):
+    """Ollama Cloud is a provider option; defaults to the hosted host and is
+    unavailable until a key is set (asserted through the API, which carries the
+    group context)."""
+    c = noauth_app.test_client()
+    _put(c, {"provider": "ollama_cloud", "model": "gpt-oss:20b"})
+
+    view = c.get("/api/v1/ai/settings").get_json()
+    assert view["provider"] == "ollama_cloud"
+    assert view["baseUrl"] == "https://ollama.com"   # hosted default
+    assert view["apiKeySet"] is False
+    assert "ollama_cloud" in view["validProviders"]
+
+    provs = {p["name"]: p for p in c.get("/api/v1/ai/providers").get_json()["providers"]}
+    assert provs["ollama_cloud"]["active"] is True
+    assert provs["ollama_cloud"]["available"] is False   # no key yet
+
+    _put(c, {"apiKey": "olc-secret"})
+    provs = {p["name"]: p for p in c.get("/api/v1/ai/providers").get_json()["providers"]}
+    assert provs["ollama_cloud"]["available"] is True    # key set → available
+
+
+def test_ollama_cloud_key_stored_separately_from_local_ollama(noauth_app):
+    """Per-provider namespacing: a cloud key never bleeds into local Ollama."""
+    c = noauth_app.test_client()
+    _put(c, {"provider": "ollama_cloud", "apiKey": "cloud-key"})
+    _put(c, {"provider": "ollama"})  # switch to local
+    assert c.get("/api/v1/ai/settings").get_json()["apiKeySet"] is False  # local: no key
+    _put(c, {"provider": "ollama_cloud"})  # switch back
+    assert c.get("/api/v1/ai/settings").get_json()["apiKeySet"] is True   # cloud key remembered

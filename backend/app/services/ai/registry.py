@@ -9,13 +9,14 @@ from __future__ import annotations
 
 from .base import AIProvider, ProviderError
 from .claude import ClaudeProvider
-from .ollama import OllamaProvider
+from .ollama import OllamaCloudProvider, OllamaProvider
 from .openai import OpenAIProvider
 
 _REGISTRY: dict[str, type[AIProvider]] = {
     "claude": ClaudeProvider,
     "openai": OpenAIProvider,
     "ollama": OllamaProvider,
+    "ollama_cloud": OllamaCloudProvider,
 }
 
 

@@ -21,8 +21,9 @@ from ...models import Setting
 
 KEY_PROVIDER = "ai_provider"          # which provider is active
 FIELDS = ("base_url", "model", "api_key")   # per-provider, namespaced
-VALID_PROVIDERS = ("", "claude", "ollama", "openai")
+VALID_PROVIDERS = ("", "claude", "ollama", "ollama_cloud", "openai")
 SECRET_FIELD = "api_key"
+OLLAMA_CLOUD_HOST = "https://ollama.com"
 
 # Attributes the provider classes read off the settings object. The effective
 # object exposes exactly these, so the provider classes need no change.
@@ -98,10 +99,16 @@ def effective_settings(base, gid: str | None):
     ns = SimpleNamespace(**{attr: getattr(base, attr) for attr in _PASSTHROUGH})
     ns.AI_PROVIDER = over.get(KEY_PROVIDER) or base.AI_PROVIDER
 
-    if ns.AI_PROVIDER == "ollama":
-        ns.OLLAMA_HOST = pick("ollama", "base_url", base.OLLAMA_HOST)
-        ns.OLLAMA_MODEL = pick("ollama", "model", base.OLLAMA_MODEL)
-        ns.OLLAMA_API_KEY = pick("ollama", "api_key", base.OLLAMA_API_KEY)
+    if ns.AI_PROVIDER in ("ollama", "ollama_cloud"):
+        p = ns.AI_PROVIDER
+        # Ollama Cloud is the same wire API pinned to the hosted host; a local
+        # Ollama defaults to the env host. Both read the OLLAMA_* attrs the
+        # provider class expects, from their own namespaced settings.
+        default_host = OLLAMA_CLOUD_HOST if p == "ollama_cloud" else base.OLLAMA_HOST
+        ns.OLLAMA_HOST = pick(p, "base_url", default_host)
+        ns.OLLAMA_MODEL = pick(p, "model", base.OLLAMA_MODEL)
+        # The env OLLAMA_API_KEY only applies to a local Ollama, not the cloud.
+        ns.OLLAMA_API_KEY = pick(p, "api_key", base.OLLAMA_API_KEY if p == "ollama" else "")
     elif ns.AI_PROVIDER == "openai":
         ns.OPENAI_BASE_URL = pick("openai", "base_url", base.OPENAI_BASE_URL)
         ns.OPENAI_MODEL = pick("openai", "model", base.OPENAI_MODEL)
@@ -116,7 +123,7 @@ def _active_view(eff) -> dict:
     """The active provider's base_url/model and whether a key is set — for the
     editable UI. NEVER includes the API key value."""
     p = eff.AI_PROVIDER
-    if p == "ollama":
+    if p in ("ollama", "ollama_cloud"):
         return {"baseUrl": eff.OLLAMA_HOST, "model": eff.OLLAMA_MODEL,
                 "apiKeySet": bool(getattr(eff, "OLLAMA_API_KEY", ""))}
     if p == "openai":
@@ -145,8 +152,14 @@ def probe_config(base, gid, provider=None, base_url=None, api_key=None):
     eff = effective_settings(base, gid)
     p = (provider or eff.AI_PROVIDER or "").strip()
     eff.AI_PROVIDER = p
-    if p == "ollama" and base_url:
-        eff.OLLAMA_HOST = base_url.strip()
+    if p in ("ollama", "ollama_cloud"):
+        if base_url:
+            eff.OLLAMA_HOST = base_url.strip()
+        elif p == "ollama_cloud" and not getattr(eff, "OLLAMA_HOST", ""):
+            eff.OLLAMA_HOST = OLLAMA_CLOUD_HOST
+        # Ollama Cloud needs the key to list models; use the form value if given.
+        if api_key:
+            eff.OLLAMA_API_KEY = api_key
     elif p == "openai":
         if base_url:
             eff.OPENAI_BASE_URL = base_url.strip()
@@ -163,7 +176,7 @@ def list_models(eff, timeout: float = 12.0) -> list[str]:
     p = eff.AI_PROVIDER
     try:
         with httpx.Client(timeout=timeout) as c:
-            if p == "ollama":
+            if p in ("ollama", "ollama_cloud"):
                 oh = {"Authorization": f"Bearer {eff.OLLAMA_API_KEY}"} \
                     if getattr(eff, "OLLAMA_API_KEY", "") else {}
                 r = c.get(f"{eff.OLLAMA_HOST.rstrip('/')}/api/tags", headers=oh)

@@ -228,7 +228,7 @@ FIELDS: tuple[Field, ...] = (
           "X-Forwarded-* headers at all."),
 
     # --- AI ---
-    Field("AI_PROVIDER", one_of("", "claude", "ollama", "openai"), "",
+    Field("AI_PROVIDER", one_of("", "claude", "ollama", "ollama_cloud", "openai"), "",
           "Which AI backend to use. Blank disables AI features cleanly.",
           ha_option="ai_provider"),
     Field("ANTHROPIC_API_KEY", as_str, "", "API key for the claude provider.",
@@ -562,6 +562,12 @@ def _validate_semantics(values, sources, in_ha, errors, warnings, strict_secret)
         warnings.append(
             "AI_PROVIDER=openai but MYMEAL_OPENAI_API_KEY is not set. AI features "
             "will report as unavailable; the rest of the app is unaffected."
+        )
+    if provider == "ollama_cloud" and not values["OLLAMA_API_KEY"]:
+        warnings.append(
+            "AI_PROVIDER=ollama_cloud but MYMEAL_OLLAMA_API_KEY is not set. Ollama "
+            "Cloud requires an API key; AI features will report as unavailable "
+            "until one is configured (env or the Settings UI)."
         )
 
     # --- serving ---

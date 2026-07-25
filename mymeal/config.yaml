@@ -62,7 +62,7 @@ schema:
   # Token Home Assistant's MCP Client must present. Leave blank on a trusted
   # network; set it before mapping the MCP port to the LAN.
   mcp_server_token: "password?"
-  ai_provider: "list(|claude|ollama|openai)?"
+  ai_provider: "list(|claude|ollama|ollama_cloud|openai)?"
   # AI provider config can be set here OR in the app UI (the app remembers UI
   # changes and they override these). Keys use HA's masked password type.
   ollama_host: "str?"

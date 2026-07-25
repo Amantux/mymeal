@@ -87,7 +87,7 @@ def test_import_recipe_text_uses_provider():
 def test_ai_providers_endpoint(auth_client):
     res = auth_client.get("/api/v1/ai/providers").get_json()
     names = {p["name"] for p in res["providers"]}
-    assert names == {"claude", "openai", "ollama"}
+    assert names == {"claude", "openai", "ollama", "ollama_cloud"}
 
 
 def test_ai_import_endpoint_jsonld(auth_client, monkeypatch):

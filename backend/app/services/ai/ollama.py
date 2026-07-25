@@ -109,3 +109,16 @@ class OllamaProvider(AIProvider):
                 )
             )
         return out
+
+
+class OllamaCloudProvider(OllamaProvider):
+    """Ollama's hosted cloud (https://ollama.com). Same wire protocol as a local
+    Ollama server (/api/chat, /api/tags, bearer auth) — it just always talks to
+    the cloud host and REQUIRES an API key. Host/model/key are resolved from the
+    ``ollama_cloud_*`` settings namespace by ``effective_settings``."""
+
+    name = "ollama_cloud"
+
+    def available(self) -> bool:
+        # Unlike a plain local server, the cloud needs a key.
+        return bool(self.host and self.model and self.api_key)

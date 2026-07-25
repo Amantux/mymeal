@@ -26,8 +26,8 @@ const ediblTokenSet = ref(false)
 const ediblStatus = ref(null)        // {configured, reachable} after a test
 const ediblBusy = ref(false)
 
-const labels = { '': 'Disabled', claude: 'Claude (Anthropic)', openai: 'OpenAI', ollama: 'Ollama (local)' }
-const needsKey = computed(() => form.provider === 'claude' || form.provider === 'openai')
+const labels = { '': 'Disabled', claude: 'Claude (Anthropic)', openai: 'OpenAI', ollama: 'Ollama (local)', ollama_cloud: 'Ollama Cloud' }
+const needsKey = computed(() => ['claude', 'openai', 'ollama_cloud'].includes(form.provider))
 const needsHost = computed(() => form.provider === 'ollama')
 // Ollama also accepts a key, but it's OPTIONAL (Ollama Cloud / a secured instance).
 const allowsKey = computed(() => needsKey.value || form.provider === 'ollama')
@@ -308,7 +308,7 @@ async function findOllama() {
       <label class="field">
         <span class="lbl">Provider</span>
         <select v-model="form.provider">
-          <option v-for="o in ['', 'claude', 'openai', 'ollama']" :key="o" :value="o">
+          <option v-for="o in ['', 'claude', 'openai', 'ollama', 'ollama_cloud']" :key="o" :value="o">
             {{ labels[o] }}
           </option>
         </select>
@@ -316,6 +316,10 @@ async function findOllama() {
       </label>
 
       <template v-if="form.provider">
+        <p v-if="form.provider === 'ollama_cloud'" class="help" style="margin:0">
+          Uses Ollama's hosted cloud (ollama.com). Paste your Ollama API key, then
+          <em>List models</em> to pick from your account's models.
+        </p>
         <label v-if="needsHost" class="field">
           <span class="lbl">Ollama host</span>
           <div class="row">
