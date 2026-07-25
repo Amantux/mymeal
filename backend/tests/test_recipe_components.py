@@ -112,3 +112,22 @@ def test_shopping_expansion_is_depth_bounded(auth_client):
     # appear as foods; the rest remain as component lines. It returns, bounded.
     assert res["added"] >= 1
     assert _MAX_COMPONENT_DEPTH == 4
+
+
+def test_shopping_display_not_doubled_for_unstructured_lines(auth_client):
+    # A display-only ingredient ("6 bone-in chicken thighs", no structured food)
+    # must not render its quantity twice on the list: the item stores qty+unit
+    # separately and the name is stripped of the leading qty/unit.
+    dish = auth_client.post("/api/v1/recipes", json={
+        "name": "Roast", "ingredients": [
+            {"display": "6 bone-in chicken thighs"},
+            {"display": "2 tbsp olive oil"},
+        ]}).get_json()
+    sl = auth_client.post("/api/v1/shopping-lists", json={"name": "R"}).get_json()
+    res = auth_client.post(f"/api/v1/shopping-lists/{sl['id']}/from-recipes",
+                           json={"recipeIds": [dish["id"]]}).get_json()
+    by = {i["display"]: i for i in res["items"]}
+    assert "bone-in chicken thighs" in by            # name only, no leading "6"
+    assert by["bone-in chicken thighs"]["quantity"] == 6
+    assert "olive oil" in by and by["olive oil"]["unit"] == "tbsp"
+    assert by["olive oil"]["quantity"] == 2

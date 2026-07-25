@@ -8,6 +8,7 @@ for tidy shopping. Purely deterministic — no AI involved.
 from __future__ import annotations
 
 from ..models import Recipe
+from .units import parse_line
 
 # Bound component expansion so a pathological/adversarial nest of linked recipes
 # (each referencing many others) can't fan out exponentially and hang a worker.
@@ -51,15 +52,27 @@ def build_from_recipes(recipes: list[Recipe]) -> list[dict]:
             text = (ing.display or "").strip()
             if not text and not ing.food:
                 continue
-            food_key = ing.food_id or text.lower()
+            # The display line leads with the quantity ("6 bone-in chicken
+            # thighs"), but the item stores quantity/unit separately and the UI
+            # prepends them — so strip the qty/unit from the name here, else it
+            # renders doubled ("6 6 bone-in…"). A structured food already has a
+            # clean name. Group by that name so "6 X" and "3 X" consolidate.
+            if ing.food:
+                name = ing.food.name
+                food_key = ing.food_id
+                aisle = ing.food.aisle
+            else:
+                name = (parse_line(text)["rest"] or text).strip()
+                food_key = name.lower()
+                aisle = ""
             unit = (ing.unit.abbreviation or ing.unit.name) if ing.unit else ""
             key = (food_key, unit)
             if key not in agg:
                 agg[key] = {
-                    "display": ing.food.name if ing.food else text,
+                    "display": name,
                     "quantity": 0.0,
                     "unit": unit,
-                    "aisle": ing.food.aisle if ing.food else "",
+                    "aisle": aisle,
                     "foodId": ing.food_id,
                 }
                 order.append(key)

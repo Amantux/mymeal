@@ -47,10 +47,11 @@ def test_shopping_list_from_recipes_consolidates(auth_client):
         f"/api/v1/shopping-lists/{sl['id']}/from-recipes",
         json={"recipeIds": ids},
     ).get_json()
-    displays = sorted(i["display"] for i in res["items"])
-    # "2 eggs" appears in both recipes but consolidates to a single line.
-    assert displays.count("2 eggs") == 1
-    assert "bread" in displays and "cheese" in displays
+    by = {i["display"]: i for i in res["items"]}
+    # "2 eggs" appears in both recipes; the name (qty stripped, stored separately)
+    # consolidates to a single "eggs" line with the summed quantity.
+    assert "eggs" in by and by["eggs"]["quantity"] == 4
+    assert "bread" in by and "cheese" in by
 
 
 def test_shopping_item_check_and_delete(auth_client):
