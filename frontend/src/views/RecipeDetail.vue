@@ -386,8 +386,8 @@ const imageSrc = computed(() =>
             <div class="row wrap" style="gap:8px;margin-top:8px">
               <span v-if="recipe.servings" class="badge">🍽️ {{ recipe.servings }} servings</span>
               <span v-if="recipe.totalMinutes" class="badge tnum">⏱️ {{ recipe.totalMinutes }} min</span>
-              <span v-for="c in recipe.categories" :key="c.id" class="chip cat">{{ c.name }}</span>
-              <span v-for="tag in recipe.tags" :key="tag.id" class="chip">{{ tag.name }}</span>
+              <span v-for="c in recipe.categories" :key="c.id" class="chip">{{ c.name }}</span>
+              <span v-for="tag in recipe.tags" :key="tag.id" class="badge">{{ tag.name }}</span>
             </div>
             <p v-if="recipe.sourceUrl" style="margin-top:10px">
               <a :href="recipe.sourceUrl" target="_blank" rel="noreferrer">Source ↗</a>
@@ -544,7 +544,6 @@ const imageSrc = computed(() =>
 <style scoped>
 .ing-tools { display: flex; align-items: center; gap: 8px; }
 .ing-tools .active { background: var(--accent); color: #fff; border-color: var(--accent); }
-.chip.cat { background: var(--accent-soft); border-color: var(--accent); }
 .ing-link { color: var(--accent); font-weight: 600; text-decoration: none; }
 .ing-link:hover { text-decoration: underline; }
 .cat-picker { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 4px; }

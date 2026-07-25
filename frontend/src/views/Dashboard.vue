@@ -60,7 +60,20 @@ const attention = computed(() => {
 })
 
 // Upcoming plan entries to preview under the cards.
-const upcoming = computed(() => weekPlan.value.slice(0, 6))
+// Collapse exact-duplicate plan entries (same day + meal + dish) so the preview
+// never shows an identical line twice, which reads as a render bug.
+const upcoming = computed(() => {
+  const seen = new Set()
+  const out = []
+  for (const e of weekPlan.value) {
+    const key = `${e.date}|${e.mealType}|${e.name}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(e)
+    if (out.length >= 6) break
+  }
+  return out
+})
 
 function fmtDay(iso) {
   const d = new Date(iso + 'T00:00:00')

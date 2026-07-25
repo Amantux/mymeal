@@ -213,9 +213,11 @@ async function buildList() {
       >{{ v[0].toUpperCase() + v.slice(1) }}</button>
     </div>
     <div class="grow"></div>
-    <button class="secondary sm" :aria-label="`Previous ${view}`" @click="shift(-1)">←</button>
-    <strong class="mp-title">{{ title }}</strong>
-    <button class="secondary sm" :aria-label="`Next ${view}`" @click="shift(1)">→</button>
+    <div class="mp-nav">
+      <button class="secondary sm" :aria-label="`Previous ${view}`" @click="shift(-1)">←</button>
+      <strong class="mp-title">{{ title }}</strong>
+      <button class="secondary sm" :aria-label="`Next ${view}`" @click="shift(1)">→</button>
+    </div>
   </div>
 
   <div v-if="loading" class="mp-week">
@@ -285,7 +287,9 @@ async function buildList() {
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
 .seg button { border: 0; border-radius: 0; background: var(--surface); color: var(--muted); padding: 6px 14px; font-weight: 600; }
 .seg button + button { border-left: 1px solid var(--border); }
-.seg button.active { background: var(--accent); color: #fff; }
+/* Active = neutral raised fill, not accent — the accent stays on the primary. */
+.seg button.active { background: var(--surface-2); color: var(--text); }
+.mp-nav { display: flex; align-items: center; gap: 8px; }
 .mp-title { min-width: 8ch; text-align: center; }
 .plan-opts { margin-bottom: 16px; }
 /* Pressed toggle: accent text + border only — the sole orange FILL stays on the

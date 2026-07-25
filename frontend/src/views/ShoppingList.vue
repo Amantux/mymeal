@@ -69,7 +69,7 @@ async function delList() {
   <div class="page-head">
     <h1>Shopping</h1>
     <div class="grow"></div>
-    <button @click="newList">＋ New list</button>
+    <button class="secondary" @click="newList">＋ New list</button>
   </div>
 
   <div v-if="loading" class="skeleton" style="height:120px"></div>
@@ -101,9 +101,15 @@ async function delList() {
           <span class="fill" :style="item.checked ? 'text-decoration:line-through;color:var(--muted)' : ''">
             <span v-if="item.quantity" class="tnum">{{ item.quantity }} {{ item.unit }} </span>{{ item.display }}
           </span>
-          <button class="ghost sm danger" :aria-label="`Remove ${item.display}`" @click.prevent="del(item)">✕</button>
+          <button class="ghost sm rm" :aria-label="`Remove ${item.display}`" @click.prevent="del(item)">✕</button>
         </label>
       </div>
     </div>
   </template>
 </template>
+
+<style scoped>
+/* Row remove: a quiet muted × that reddens on hover, not a solid-red column. */
+.rm { color: var(--muted); }
+.rm:hover { color: var(--danger); background: transparent; }
+</style>

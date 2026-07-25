@@ -306,4 +306,15 @@ async function send(text) {
 @media (prefers-reduced-motion: reduce) {
   .asst-panel-enter-active, .asst-panel-leave-active { transition: none; }
 }
+
+/* On phones the panel docks as a full-height sheet instead of a small card
+   floating mid-screen over the page content. */
+@media (max-width: 560px) {
+  .panel {
+    right: 0; left: 0; bottom: 0; top: 0;
+    width: 100%; max-width: none; height: 100%; max-height: none;
+    border: 0; border-radius: 0;
+    z-index: 80;
+  }
+}
 </style>

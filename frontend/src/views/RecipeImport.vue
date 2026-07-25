@@ -51,10 +51,10 @@ async function run() {
   <div class="page-head"><h1>Import a recipe</h1></div>
 
   <div class="card">
-    <div class="tabs" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">
-      <button :class="mode === 'url' ? '' : 'secondary'" @click="mode = 'url'">From a link</button>
-      <button :class="mode === 'text' ? '' : 'secondary'" @click="mode = 'text'">Paste text</button>
-      <button :class="mode === 'photo' ? '' : 'secondary'" @click="mode = 'photo'">From a photo</button>
+    <div class="tabs">
+      <button class="secondary" :class="{ active: mode === 'url' }" @click="mode = 'url'">From a link</button>
+      <button class="secondary" :class="{ active: mode === 'text' }" @click="mode = 'text'">Paste text</button>
+      <button class="secondary" :class="{ active: mode === 'photo' }" @click="mode = 'photo'">From a photo</button>
     </div>
 
     <template v-if="mode === 'url'">
@@ -96,3 +96,10 @@ async function run() {
     </div>
   </div>
 </template>
+
+<style scoped>
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+/* Active tab is a neutral raised fill (not the accent) so the page's primary
+   action stays the only terracotta element. */
+.tabs button.active { background: var(--surface-2); color: var(--text); border-color: var(--border); font-weight: 700; }
+</style>
