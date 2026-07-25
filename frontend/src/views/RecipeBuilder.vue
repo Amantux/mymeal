@@ -30,9 +30,9 @@ function rowToDisplay(r) {
   if (note) d = d ? `${d}, ${note}` : note
   return d
 }
-// Rows worth saving: anything with a food or a quantity.
+// Rows worth saving: anything with a food, a quantity, or a linked recipe.
 const filledRows = () => ingredients.value.filter(
-  (r) => (r.food || '').trim() || String(r.quantity ?? '').trim(),
+  (r) => (r.food || '').trim() || String(r.quantity ?? '').trim() || r.refRecipeId,
 )
 
 async function draft() {
@@ -90,6 +90,7 @@ async function save() {
   const ings = filledRows().map((r, position) => ({
     display: rowToDisplay(r), quantity: Number(r.quantity) || 0,
     unit: r.unit || '', food: r.food || '', note: r.note || '', position,
+    refRecipeId: r.refRecipeId || undefined,
   }))
   saving.value = true
   try {

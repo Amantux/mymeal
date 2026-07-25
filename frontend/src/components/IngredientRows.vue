@@ -1,28 +1,30 @@
 <script setup>
 // Mealie-style structured ingredient editor: one row per ingredient with
-// separate Quantity / Unit / Food / Note fields, add·remove·reorder, and food +
-// unit autocomplete. A "Paste list" box parses pasted lines into rows via the
-// deterministic /recipes/parse endpoint. v-model is an array of
-// { quantity, unit, food, note } rows; display is derived by the parent on save.
+// separate Quantity / Unit / Food / Note fields, add·remove·reorder, and
+// autocomplete (ComboBox) against the group's real units + foods. A "Paste list"
+// box parses pasted lines into rows via /recipes/parse. A row can also LINK
+// another recipe as a component (refRecipeId) — inserted via the recipe picker,
+// rendered as a read-only link. v-model is an array of
+// { quantity, unit, food, note, refRecipeId, refRecipeName } rows.
 import { ref, watch, onMounted } from 'vue'
 import { api } from '../api'
 import { useUI } from '../stores/ui'
+import ComboBox from './ComboBox.vue'
 
 const props = defineProps({ modelValue: { type: Array, default: () => [] } })
 const emit = defineEmits(['update:modelValue'])
 const ui = useUI()
 
-const COMMON_UNITS = ['g', 'kg', 'ml', 'l', 'tsp', 'tbsp', 'cup', 'oz', 'lb',
-  'pinch', 'clove', 'slice', 'can', 'pkg']
 const foods = ref([])
+const units = ref([])
 
-function blank() { return { quantity: '', unit: '', food: '', note: '' } }
+function blank() {
+  return { quantity: '', unit: '', food: '', note: '', refRecipeId: '', refRecipeName: '' }
+}
 const rows = ref(props.modelValue.length ? props.modelValue.map((r) => ({ ...blank(), ...r })) : [blank()])
 
-// Two-way sync. Emit our rows up on any edit; re-seed from the parent ONLY when
-// it pushes genuinely different content (e.g. an AI draft). Guard by CONTENT,
-// not reference — Vue proxies the prop, so an identity check would never match
-// what we emitted and would loop forever.
+// Emit on edit; re-seed only when the parent pushes different CONTENT (Vue
+// proxies the prop, so an identity check would loop forever).
 function emitUp() { emit('update:modelValue', rows.value.map((r) => ({ ...r }))) }
 watch(rows, emitUp, { deep: true })
 watch(() => props.modelValue, (v) => {
@@ -34,6 +36,7 @@ watch(() => props.modelValue, (v) => {
 
 onMounted(async () => {
   try { foods.value = (await api.get('/foods')).map((f) => f.name) } catch { /* optional */ }
+  try { units.value = (await api.get('/units')).map((u) => u.name) } catch { /* optional */ }
 })
 
 function add() { rows.value.push(blank()) }
@@ -48,7 +51,7 @@ function move(i, delta) {
   rows.value.splice(j, 0, r)
 }
 
-// Paste-a-list flow.
+// --- Paste-a-list ---
 const showPaste = ref(false)
 const pasteText = ref('')
 const parsing = ref(false)
@@ -59,9 +62,8 @@ async function parsePaste() {
   try {
     const res = await api.post('/recipes/parse', { lines })
     const parsed = res.ingredients.map((r) => ({
-      quantity: r.quantity || '', unit: r.unit || '', food: r.food || '', note: '',
+      ...blank(), quantity: r.quantity || '', unit: r.unit || '', food: r.food || '',
     }))
-    // Replace a single empty starter row; otherwise append.
     const onlyBlank = rows.value.length === 1 && !rows.value[0].food && !rows.value[0].quantity
     rows.value = onlyBlank ? parsed : rows.value.concat(parsed)
     pasteText.value = ''
@@ -74,14 +76,39 @@ async function parsePaste() {
   }
 }
 
-defineExpose({ rows })
+// --- Recipe component picker ---
+const showPicker = ref(false)
+const pickerQuery = ref('')
+const pickerResults = ref([])
+let searchTimer
+function onPickerInput() {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(searchRecipes, 200)
+}
+async function searchRecipes() {
+  try {
+    const q = encodeURIComponent(pickerQuery.value.trim())
+    const res = await api.get(`/search?types=recipe&limit=12&q=${q}`)
+    pickerResults.value = res.results || []
+  } catch { pickerResults.value = [] }
+}
+function openPicker() {
+  showPicker.value = true
+  pickerQuery.value = ''
+  pickerResults.value = []
+  searchRecipes()
+}
+function addComponent(r) {
+  rows.value.push({
+    ...blank(), quantity: '1', unit: 'batch', food: r.name,
+    refRecipeId: r.id, refRecipeName: r.name,
+  })
+  showPicker.value = false
+}
 </script>
 
 <template>
   <div class="ing-rows">
-    <datalist id="ing-units"><option v-for="u in COMMON_UNITS" :key="u" :value="u" /></datalist>
-    <datalist id="ing-foods"><option v-for="f in foods" :key="f" :value="f" /></datalist>
-
     <div class="head">
       <span class="lbl">Ingredients</span>
       <div class="grow"></div>
@@ -104,10 +131,13 @@ defineExpose({ rows })
     <div class="col-heads">
       <span>Qty</span><span>Unit</span><span>Ingredient</span><span>Note</span><span></span>
     </div>
-    <div v-for="(r, i) in rows" :key="i" class="ing-row">
+    <div v-for="(r, i) in rows" :key="i" class="ing-row" :class="{ 'is-ref': r.refRecipeId }">
       <input v-model="r.quantity" class="qty" inputmode="decimal" placeholder="Qty" aria-label="Quantity" />
-      <input v-model="r.unit" class="unit" list="ing-units" placeholder="Unit" aria-label="Unit" />
-      <input v-model="r.food" class="food" list="ing-foods" placeholder="e.g. flour" aria-label="Ingredient" />
+      <ComboBox v-model="r.unit" class="unit" :options="units" placeholder="Unit" aria-label="Unit" />
+      <div v-if="r.refRecipeId" class="food-ref" :title="`Component: ${r.refRecipeName}`">
+        <span class="link-ico">🔗</span>{{ r.refRecipeName }}
+      </div>
+      <ComboBox v-else v-model="r.food" class="food" :options="foods" placeholder="e.g. flour" aria-label="Ingredient" />
       <input v-model="r.note" class="note" placeholder="Note (optional)" aria-label="Note" />
       <div class="ctl">
         <button type="button" class="icon" :disabled="i === 0" title="Move up" aria-label="Move up" @click="move(i, -1)">
@@ -122,7 +152,25 @@ defineExpose({ rows })
       </div>
     </div>
 
-    <button type="button" class="ghost add" @click="add">＋ Add ingredient</button>
+    <div class="row" style="gap:14px;margin-top:4px">
+      <button type="button" class="ghost add" @click="add">＋ Add ingredient</button>
+      <button type="button" class="ghost add" @click="openPicker">🔗 Add recipe as component</button>
+    </div>
+
+    <!-- Recipe picker -->
+    <div v-if="showPicker" class="picker card">
+      <div class="row" style="gap:8px">
+        <input v-model="pickerQuery" class="fill" placeholder="Search your recipes…" @input="onPickerInput" />
+        <button type="button" class="ghost sm" @click="showPicker = false">Close</button>
+      </div>
+      <ul class="picker-list">
+        <li v-for="r in pickerResults" :key="r.id" @click="addComponent(r)">
+          <span class="pk-name">{{ r.name }}</span>
+          <span v-if="r.totalMinutes" class="muted tnum" style="font-size:0.8rem">{{ r.totalMinutes }} min</span>
+        </li>
+        <li v-if="!pickerResults.length" class="muted" style="cursor:default">No recipes found.</li>
+      </ul>
+    </div>
   </div>
 </template>
 
@@ -139,6 +187,15 @@ defineExpose({ rows })
 .col-heads { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding: 0 2px; }
 .ing-row input { width: 100%; }
 
+.food-ref {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  padding: 8px 10px; font-weight: 600;
+  background: var(--accent-soft); border: 1px solid var(--accent);
+  color: var(--accent); border-radius: var(--radius-sm);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.food-ref .link-ico { flex-shrink: 0; }
+
 .ctl { display: flex; gap: 2px; justify-content: flex-start; }
 .icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; background: transparent; color: var(--muted); border-radius: 6px; cursor: pointer; }
 .icon svg { width: 16px; height: 16px; }
@@ -147,13 +204,17 @@ defineExpose({ rows })
 .icon:disabled { opacity: 0.25; cursor: default; }
 .add { align-self: flex-start; margin-top: 4px; }
 
-/* Stack fields on narrow screens so nothing overflows. */
+.picker { margin-top: 8px; background: var(--surface-2, var(--surface)); }
+.picker-list { list-style: none; margin: 10px 0 0; padding: 0; max-height: 240px; overflow: auto; }
+.picker-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-radius: 6px; cursor: pointer; }
+.picker-list li:hover { background: var(--surface); }
+.pk-name { font-weight: 600; }
+
 @media (max-width: 620px) {
   .col-heads { display: none; }
   .ing-row { grid-template-columns: 1fr 1fr auto; gap: 6px; }
-  .ing-row .food, .ing-row .note { grid-column: 1 / -1; }
+  .ing-row .food, .ing-row .food-ref, .ing-row .note { grid-column: 1 / -1; }
   .ctl { grid-column: 3; grid-row: 1; justify-content: flex-end; }
-  /* Separate each ingredient GROUP so the stacked fields don't run together. */
   .ing-row + .ing-row { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 6px; }
 }
 </style>

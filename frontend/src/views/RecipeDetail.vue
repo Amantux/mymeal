@@ -84,13 +84,17 @@ function rowToDisplay(r) {
   return d
 }
 const filledRows = () => editIngredients.value.filter(
-  (r) => (r.food || '').trim() || String(r.quantity ?? '').trim(),
+  (r) => (r.food || '').trim() || String(r.quantity ?? '').trim() || r.refRecipeId,
 )
 
 // Turn stored ingredients into editor rows. Structured ones (with a food)
 // round-trip exactly; legacy free-text lines drop their whole display into the
 // food field so nothing is lost and the row can be restructured or AI-tidied.
 function ingredientToRow(i) {
+  if (i.refRecipe) {
+    return { quantity: i.quantity || '', unit: i.unit?.name || '', food: i.refRecipe.name,
+             note: i.note || '', refRecipeId: i.refRecipe.id, refRecipeName: i.refRecipe.name }
+  }
   if (i.food) {
     return { quantity: i.quantity || '', unit: i.unit?.name || '', food: i.food.name, note: i.note || '' }
   }
@@ -166,7 +170,7 @@ async function startEdit() {
   // deterministic parser so the editor shows tidy qty·unit·food rows, not the
   // whole line crammed in the food field. Falls back to display-in-food.
   const legacy = r.ingredients
-    .map((i, idx) => (!i.food && i.display ? { idx, display: i.display } : null))
+    .map((i, idx) => (!i.food && !i.refRecipe && i.display ? { idx, display: i.display } : null))
     .filter(Boolean)
   if (legacy.length) {
     try {
@@ -192,6 +196,7 @@ async function save() {
     ingredients: filledRows().map((r, position) => ({
       display: rowToDisplay(r), quantity: Number(r.quantity) || 0,
       unit: r.unit || '', food: r.food || '', note: r.note || '', position,
+      refRecipeId: r.refRecipeId || undefined,
     })),
     steps: editSteps.value
       .map((s) => (s.text || '').trim())
@@ -409,7 +414,14 @@ const imageSrc = computed(() =>
           </div>
         </div>
         <ul v-if="shownIngredients.length" style="margin:0;padding-left:20px">
-          <li v-for="ing in shownIngredients" :key="ing.id">{{ ing.display }}</li>
+          <li v-for="ing in shownIngredients" :key="ing.id">
+            <template v-if="ing.refRecipe">
+              <a class="ing-link" href="#" @click.prevent="router.push(`/recipes/${ing.refRecipe.id}`)">
+                🔗 {{ ing.display || ing.refRecipe.name }}
+              </a>
+            </template>
+            <template v-else>{{ ing.display }}</template>
+          </li>
         </ul>
         <p v-else class="muted">No ingredients listed.</p>
       </div>
@@ -533,6 +545,8 @@ const imageSrc = computed(() =>
 .ing-tools { display: flex; align-items: center; gap: 8px; }
 .ing-tools .active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .chip.cat { background: var(--accent-soft); border-color: var(--accent); }
+.ing-link { color: var(--accent); font-weight: 600; text-decoration: none; }
+.ing-link:hover { text-decoration: underline; }
 .cat-picker { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 4px; }
 .cat-opt { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; cursor: pointer; }
 .cat-opt input { width: auto; }
