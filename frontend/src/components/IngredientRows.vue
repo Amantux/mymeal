@@ -39,6 +39,16 @@ onMounted(async () => {
   try { units.value = (await api.get('/units')).map((u) => u.name) } catch { /* optional */ }
 })
 
+// Component "batch" count steps in 0.5 increments (min 0.5).
+function stepBatch(r, delta) {
+  const v = (Number(r.quantity) || 1) + delta
+  r.quantity = String(Math.max(0.5, Math.round(v * 2) / 2))
+}
+function fmtBatch(q) {
+  const n = Number(q) || 1
+  return Number.isInteger(n) ? String(n) : n.toFixed(1)
+}
+
 function add() { rows.value.push(blank()) }
 function remove(i) {
   rows.value.splice(i, 1)
@@ -132,12 +142,22 @@ function addComponent(r) {
       <span>Qty</span><span>Unit</span><span>Ingredient</span><span>Note</span><span></span>
     </div>
     <div v-for="(r, i) in rows" :key="i" class="ing-row" :class="{ 'is-ref': r.refRecipeId }">
-      <input v-model="r.quantity" class="qty" inputmode="decimal" placeholder="Qty" aria-label="Quantity" />
-      <ComboBox v-model="r.unit" class="unit" :options="units" placeholder="Unit" aria-label="Unit" />
-      <div v-if="r.refRecipeId" class="food-ref" :title="`Component: ${r.refRecipeName}`">
-        <span class="link-ico">🔗</span>{{ r.refRecipeName }}
-      </div>
-      <ComboBox v-else v-model="r.food" class="food" :options="foods" placeholder="e.g. flour" aria-label="Ingredient" />
+      <template v-if="r.refRecipeId">
+        <div class="batch">
+          <button type="button" class="bstep" aria-label="Fewer batches" @click="stepBatch(r, -0.5)">−</button>
+          <span class="bval tnum">{{ fmtBatch(r.quantity) }}</span>
+          <button type="button" class="bstep" aria-label="More batches" @click="stepBatch(r, 0.5)">+</button>
+          <span class="bunit">{{ Number(r.quantity) === 1 ? 'batch' : 'batches' }}</span>
+        </div>
+        <div class="food-ref" :title="`Component: ${r.refRecipeName}`">
+          <span class="link-ico">🔗</span>{{ r.refRecipeName }}
+        </div>
+      </template>
+      <template v-else>
+        <input v-model="r.quantity" class="qty" inputmode="decimal" placeholder="Qty" aria-label="Quantity" />
+        <ComboBox v-model="r.unit" class="unit" :options="units" placeholder="Unit" aria-label="Unit" />
+        <ComboBox v-model="r.food" class="food" :options="foods" placeholder="e.g. flour" aria-label="Ingredient" />
+      </template>
       <input v-model="r.note" class="note" placeholder="Note (optional)" aria-label="Note" />
       <div class="ctl">
         <button type="button" class="icon" :disabled="i === 0" title="Move up" aria-label="Move up" @click="move(i, -1)">
@@ -186,6 +206,17 @@ function addComponent(r) {
 .ing-row { display: grid; grid-template-columns: 64px 92px minmax(0, 1.7fr) minmax(0, 1fr) 96px; gap: 8px; align-items: center; }
 .col-heads { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding: 0 2px; }
 .ing-row input { width: 100%; }
+
+/* Batch stepper for a component row — spans the qty+unit columns. */
+.batch { grid-column: 1 / 3; display: flex; align-items: center; gap: 6px; }
+.bstep {
+  width: 28px; height: 28px; padding: 0; flex-shrink: 0; line-height: 1;
+  border: 1px solid var(--border); background: var(--surface);
+  border-radius: 6px; font-size: 1rem; cursor: pointer;
+}
+.bstep:hover { border-color: var(--accent); color: var(--accent); }
+.bval { min-width: 2.2ch; text-align: center; font-weight: 700; }
+.bunit { color: var(--muted); font-size: 0.85rem; }
 
 .food-ref {
   display: flex; align-items: center; gap: 6px; min-width: 0;
