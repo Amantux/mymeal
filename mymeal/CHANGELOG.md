@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.1.44
+
+- Ollama Cloud as a provider option.
+
 ## 1.1.43
 
 - Unit/food autocomplete + recipe-component picker in the editor.
