@@ -227,3 +227,31 @@ def test_image_download_respects_size_cap(app, monkeypatch):
         with _image_server("image/png", b"x" * 500) as url:
             download_image_to_recipe(r, url)
         assert r.image == ""
+
+
+def test_import_recipe_tool_fetches_and_saves(app, monkeypatch):
+    """The assistant's import_recipe tool saves a recipe from a URL (importer
+    mocked — no network) and returns an undoable action."""
+    import app.services.ai.agent as agent
+    gid = _group(app)
+    # Mock the importer used inside the tool (no network).
+    import app.services.ai.recipe_import as ri
+    monkeypatch.setattr(ri, "import_recipe", lambda **k: {
+        "name": "Scraped Soup", "ingredients": [{"display": "1 onion"}],
+        "steps": [{"text": "Simmer"}]})
+    with app.app_context():
+        res = agent.execute_tool(gid, "import_recipe", {"url": "https://ex.com/soup"})
+        assert res["imported"] == "Scraped Soup"
+        from app.models import Recipe
+        assert db.session.query(Recipe).filter_by(id=res["recipeId"]).count() == 1
+    # Surfaces as an action chip with undo.
+    chip = agent.actions_from_trace([{"tool": "import_recipe", "args": {},
+                                      "result": res}])[0]
+    assert chip["kind"] == "recipe" and chip["undo"]["kind"] == "recipe"
+
+
+def test_import_recipe_tool_requires_input(app):
+    import app.services.ai.agent as agent
+    gid = _group(app)
+    with app.app_context():
+        assert "error" in agent.execute_tool(gid, "import_recipe", {})

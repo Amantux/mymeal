@@ -24,7 +24,9 @@ SYSTEM = (
     "user find recipes, decide what to cook, plan meals, and manage their "
     "shopping list. Use the provided tools to look things up in the user's own "
     "collection before answering — don't invent recipes they don't have unless "
-    "they ask you to suggest something new. Keep answers concise and useful."
+    "they ask you to suggest something new. When the user shares a recipe URL or "
+    "pastes a recipe, use import_recipe to fetch and save it. Keep answers "
+    "concise and useful."
 )
 
 _EDIBL_PROMPT = (
@@ -120,6 +122,23 @@ TOOLS = [
                 "value": {"type": "string"},
             },
             "required": ["field", "value"],
+        },
+    },
+    {
+        "name": "import_recipe",
+        "description": (
+            "Fetch a recipe from a URL the user shares (or from pasted recipe "
+            "text) and SAVE it to their collection. Use whenever the user gives "
+            "a link to a recipe or pastes a full recipe. Extracts structured "
+            "recipe data from the page (falling back to the AI provider), "
+            "including the image when present."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The recipe page URL."},
+                "text": {"type": "string", "description": "Pasted recipe text (if no URL)."},
+            },
         },
     },
 ]
@@ -258,6 +277,40 @@ def execute_tool(gid: str, name: str, args: dict):
         db.session.flush()  # request handler owns the commit; flush populates id
         return {"created": recipe.name, "recipeId": recipe.id}
 
+    if name == "import_recipe":
+        from ...api.recipes import _apply, download_image_to_recipe
+        from ...utils import unique_slug
+        from .base import ProviderError
+        from .recipe_import import UnsafeURLError, import_recipe
+        from .registry import get_provider
+
+        url = str(args.get("url", "")).strip()
+        text = str(args.get("text", "")).strip()
+        if not url and not text:
+            return {"error": "provide a recipe url or pasted text to import"}
+        try:
+            provider = get_provider()
+        except ProviderError:
+            provider = None  # JSON-LD URLs import without a provider
+        try:
+            payload = import_recipe(url=url, text=text, provider=provider)
+        except UnsafeURLError as exc:
+            return {"error": str(exc)}
+        except ValueError:
+            return {"error": "no AI provider configured to parse this recipe"}
+        except ProviderError as exc:
+            return {"error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - fetch/parse errors feed back, never 500
+            return {"error": f"could not import that recipe: {exc}"}
+        title = payload.get("name") or "Imported Recipe"
+        recipe = Recipe(name=title, slug=unique_slug(Recipe, gid, title), group_id=gid)
+        db.session.add(recipe)
+        _apply(recipe, {k: v for k, v in payload.items() if k != "name"})
+        db.session.flush()  # request handler owns the commit; flush populates id
+        if payload.get("imageUrl"):
+            download_image_to_recipe(recipe, payload["imageUrl"])  # best-effort
+        return {"imported": recipe.name, "recipeId": recipe.id}
+
     if name == "set_preference":
         from ..preferences import FIELDS, set_preferences
 
@@ -290,6 +343,12 @@ _ACTION_FORMATTERS = {
          **({"undo": {"kind": "recipe", "id": r["recipeId"]}}
             if r.get("recipeId") else {})}
         if r.get("created") else None
+    ),
+    "import_recipe": lambda r: (
+        {"label": f'Imported recipe "{r["imported"]}"', "kind": "recipe", "icon": "📥",
+         **({"undo": {"kind": "recipe", "id": r["recipeId"]}}
+            if r.get("recipeId") else {})}
+        if r.get("imported") else None
     ),
     "set_preference": lambda r: (
         {"label": (f'Saved preference — {r["preferenceSet"]}: {r["value"]}'

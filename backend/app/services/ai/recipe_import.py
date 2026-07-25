@@ -342,7 +342,15 @@ def pinned_get_args(url: str):
 
 def _fetch(url: str) -> str:
     """Fetch a page, validating each redirect hop and capping the body size."""
-    headers = {"User-Agent": "myMeal/0.1 (+recipe importer)"}
+    # Present as a normal browser: many recipe sites 403 an obvious bot UA.
+    # (Big CDN-fronted sites may still block datacenter IPs; the AI/paste paths
+    # cover those.)
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
     current = url
     with httpx.Client(follow_redirects=False, timeout=20, headers=headers) as client:
         for _ in range(_MAX_REDIRECTS):
