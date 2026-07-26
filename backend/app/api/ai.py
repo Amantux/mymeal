@@ -149,8 +149,20 @@ def import_recipe_endpoint():
     # Coerce defensively — a non-string url/text must not 500.
     url = str(data.get("url") or "").strip()
     text = str(data.get("text") or "").strip()
-    if not url and not text:
-        return jsonify({"error": "provide a url or text to import"}), 422
+    query = str(data.get("query") or "").strip()
+    if not url and not text and not query:
+        return jsonify({"error": "provide a url, text, or a recipe name to import"}), 422
+
+    # Import by name: web-search the recipe, then import the best hit's URL.
+    if query and not url and not text:
+        from ..services import websearch
+        if not websearch.enabled():
+            return jsonify({"error": "Web search isn't configured — add an Ollama "
+                                     "search key in Settings to import by name."}), 503
+        results = websearch.web_search(f"{query} recipe")
+        url = next((str(r.get("url") or "") for r in results if r.get("url")), "")
+        if not url:
+            return jsonify({"error": f"No recipe found online for “{query}”."}), 404
 
     # A provider is only needed for the AI fallback; resolve leniently so a
     # JSON-LD URL import still works without one.

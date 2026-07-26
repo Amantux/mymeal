@@ -236,3 +236,37 @@ def test_ai_import_private_url_rejected(auth_client):
         "/api/v1/ai/import", json={"url": "http://127.0.0.1:8123/config"}
     )
     assert r.status_code == 400
+
+
+# --- Import a recipe by name (Ollama web search) --------------------------
+def test_ai_import_by_name_searches_then_imports(auth_client, monkeypatch):
+    from app.services import websearch
+    monkeypatch.setattr(websearch, "enabled", lambda settings=None: True)
+    monkeypatch.setattr(websearch, "web_search",
+                        lambda q, **kw: [{"url": "https://x.com/soup", "title": "Test Soup"}])
+    monkeypatch.setattr(recipe_import, "_fetch", lambda url: JSONLD_PAGE)
+
+    r = auth_client.post("/api/v1/ai/import", json={"query": "test soup"})
+
+    assert r.status_code == 201 and r.get_json()["name"] == "Test Soup"
+
+
+def test_ai_import_by_name_requires_search_key(auth_client, monkeypatch):
+    from app.services import websearch
+    monkeypatch.setattr(websearch, "enabled", lambda settings=None: False)
+    assert auth_client.post("/api/v1/ai/import",
+                            json={"query": "soup"}).status_code == 503
+
+
+def test_ai_import_by_name_no_results(auth_client, monkeypatch):
+    from app.services import websearch
+    monkeypatch.setattr(websearch, "enabled", lambda settings=None: True)
+    monkeypatch.setattr(websearch, "web_search", lambda q, **kw: [])
+    assert auth_client.post("/api/v1/ai/import",
+                            json={"query": "nope"}).status_code == 404
+
+
+def test_websearch_disabled_returns_empty(monkeypatch):
+    from app.services import websearch
+    monkeypatch.setattr(websearch, "_key", lambda settings=None: "")
+    assert websearch.web_search("x") == [] and websearch.enabled() is False

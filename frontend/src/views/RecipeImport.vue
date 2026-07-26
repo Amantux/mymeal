@@ -7,13 +7,15 @@ import { useUI } from '../stores/ui'
 const router = useRouter()
 const ui = useUI()
 
-const mode = ref('url')
+const mode = ref('search')
+const query = ref('')
 const url = ref('')
 const text = ref('')
 const photoFile = ref(null)
 const busy = ref(false)
 
 const canRun = computed(() => {
+  if (mode.value === 'search') return !!query.value
   if (mode.value === 'url') return !!url.value
   if (mode.value === 'text') return !!text.value
   return !!photoFile.value
@@ -34,7 +36,8 @@ async function run() {
       recipe = await api.uploadPost('/ai/photo', fd)
       ui.toast('Recipe scanned from photo')
     } else {
-      const body = mode.value === 'url' ? { url: url.value } : { text: text.value }
+      const body = mode.value === 'search' ? { query: query.value }
+        : mode.value === 'url' ? { url: url.value } : { text: text.value }
       recipe = await api.post('/ai/import', body)
       ui.toast('Recipe imported')
     }
@@ -52,12 +55,24 @@ async function run() {
 
   <div class="card">
     <div class="tabs">
+      <button class="secondary" :class="{ active: mode === 'search' }" @click="mode = 'search'">By name</button>
       <button class="secondary" :class="{ active: mode === 'url' }" @click="mode = 'url'">From a link</button>
       <button class="secondary" :class="{ active: mode === 'text' }" @click="mode = 'text'">Paste text</button>
       <button class="secondary" :class="{ active: mode === 'photo' }" @click="mode = 'photo'">From a photo</button>
     </div>
 
-    <template v-if="mode === 'url'">
+    <template v-if="mode === 'search'">
+      <label class="field">
+        <span>Recipe name</span>
+        <input v-model="query" placeholder="e.g. chicken tikka masala" @keyup.enter="run" />
+      </label>
+      <p class="muted" style="font-size:0.85rem">
+        Searches the web (Ollama web search) for the recipe and imports the best match.
+        Needs an Ollama search key — set it in Settings.
+      </p>
+    </template>
+
+    <template v-else-if="mode === 'url'">
       <label class="field">
         <span>Recipe URL</span>
         <input v-model="url" placeholder="https://…" @keyup.enter="run" />

@@ -40,6 +40,7 @@ from typing import Any, Callable
 # Settings the operator must never see echoed back, in logs or diagnostics.
 SECRET_FIELDS = frozenset({
     "SECRET_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OLLAMA_API_KEY",
+    "OLLAMA_SEARCH_KEY",
     "MCP_API_TOKEN", "MCP_SERVER_TOKEN", "POSTGRES_PROVISION_TOKEN",
 })
 
@@ -251,6 +252,10 @@ FIELDS: tuple[Field, ...] = (
           "Optional bearer token for the ollama provider (Ollama Cloud or a "
           "secured instance). Blank for a plain local server.",
           secret=True, supports_file=True, ha_option="ollama_api_key"),
+    Field("OLLAMA_SEARCH_KEY", as_str, "",
+          "Ollama API key (ollama.com) for the hosted web search — used to import "
+          "a recipe by name. Blank falls back to OLLAMA_API_KEY.",
+          secret=True, supports_file=True, ha_option="ollama_search_key"),
     Field("AI_TIMEOUT_SECONDS", int_between(1, 600), 60,
           "Per-request timeout for AI provider calls."),
 
