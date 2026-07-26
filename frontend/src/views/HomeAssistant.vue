@@ -65,7 +65,9 @@ function connectLink(token) {
 
   <div class="card">
     <h2>API keys</h2>
-    <p v-if="!tokens.length" class="muted">No API keys yet.</p>
+    <div v-if="!tokens.length" class="key-empty muted">
+      <span class="ke-ico">🔑</span> No API keys yet — use “Create API key” above for a standalone (non-ingress) setup.
+    </div>
     <div v-for="t in tokens" :key="t.id" class="row" style="padding:8px 0;border-bottom:1px solid var(--border)">
       <div class="fill">
         <div>{{ t.name || 'Unnamed key' }}</div>
@@ -75,3 +77,8 @@ function connectLink(token) {
     </div>
   </div>
 </template>
+
+<style scoped>
+.key-empty { display: flex; align-items: center; gap: 8px; padding: 14px 12px; font-size: 0.85rem; background: var(--surface-2); border-radius: var(--radius-sm); }
+.key-empty .ke-ico { font-size: 1.1rem; opacity: 0.7; }
+</style>

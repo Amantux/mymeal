@@ -368,7 +368,7 @@ async function findOllama() {
       </template>
 
       <div class="row" style="margin-top:8px">
-        <button type="submit" :disabled="saving">{{ saving ? 'Saving…' : 'Save' }}</button>
+        <button type="submit" class="secondary" :disabled="saving">{{ saving ? 'Saving…' : 'Save' }}</button>
       </div>
     </form>
   </div>
@@ -409,7 +409,7 @@ async function findOllama() {
         </span>
       </label>
       <div class="row" style="margin-top:8px">
-        <button type="submit" :disabled="ediblBusy">Save</button>
+        <button type="submit" class="secondary" :disabled="ediblBusy">Save</button>
         <button type="button" class="secondary" :disabled="ediblBusy || !edibl.url" @click="testEdibl">
           Test connection
         </button>
@@ -484,7 +484,7 @@ async function findOllama() {
           placeholder="Anything else — low-spice, batch-friendly, kid-approved…"></textarea>
       </label>
       <div>
-        <button type="submit" :disabled="prefsBusy">
+        <button type="submit" class="secondary" :disabled="prefsBusy">
           {{ prefsBusy ? 'Saving…' : 'Save preferences' }}
         </button>
       </div>
@@ -508,10 +508,12 @@ async function findOllama() {
 
     <div class="row" style="margin:12px 0;max-width:520px">
       <input v-model="newKeyName" class="fill" placeholder="Name (e.g. Home Assistant)" />
-      <button type="button" :disabled="keysBusy" @click="mintKey">Create key</button>
+      <button type="button" class="secondary" :disabled="keysBusy" @click="mintKey">Create key</button>
     </div>
 
-    <div v-if="!keys.length" class="muted" style="font-size:0.85rem">No API keys yet.</div>
+    <div v-if="!keys.length" class="key-empty muted">
+      <span class="ke-ico">🔑</span> No API keys yet — create one above to connect a client.
+    </div>
     <div
       v-for="k in keys"
       :key="k.id"
@@ -562,4 +564,6 @@ async function findOllama() {
 .keyval { font-family: monospace; font-size: 0.8rem; word-break: break-all; background: var(--surface); padding: 4px 8px; border-radius: 6px; }
 .sm { padding: 4px 10px; font-size: 0.78rem; }
 .danger { color: var(--danger); }
+.key-empty { display: flex; align-items: center; gap: 8px; padding: 14px 12px; font-size: 0.85rem; background: var(--surface-2); border-radius: var(--radius-sm); }
+.key-empty .ke-ico { font-size: 1.1rem; opacity: 0.7; }
 </style>
