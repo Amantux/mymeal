@@ -42,10 +42,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Install & build
+      - name: Install, test & build
         working-directory: frontend
         run: |
           npm install --no-audit --no-fund
+          npm run test
           npm run build
 
   validate-addon:
