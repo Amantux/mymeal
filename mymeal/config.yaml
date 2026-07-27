@@ -49,8 +49,10 @@ options:
   ollama_search_key: ""
   claude_model: ""
   openai_model: ""
+  openai_base_url: ""
   anthropic_api_key: ""
   openai_api_key: ""
+  ai_timeout_seconds: 60
   edibl_url: ""
   edibl_token: ""
   database_url: ""
@@ -72,8 +74,11 @@ schema:
   ollama_search_key: "password?"
   claude_model: "str?"
   openai_model: "str?"
+  # Point at any OpenAI-compatible server (a local SLM: LM Studio, vLLM, llama.cpp).
+  openai_base_url: "str?"
   anthropic_api_key: "password?"
   openai_api_key: "password?"
+  ai_timeout_seconds: "int(1,600)?"
   # Companion Edibl food-inventory app. Usually auto-discovered — leave blank.
   edibl_url: "str?"
   edibl_token: "password?"

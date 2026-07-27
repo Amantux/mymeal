@@ -74,12 +74,12 @@ docker compose run --rm app python3 -m app.config_check
 | `MYMEAL_CLAUDE_MODEL` | string | `claude-opus-4-8` | no | yes | Model for the claude provider. HA option: `claude_model`. |
 | `MYMEAL_OPENAI_API_KEY` | string | `_(empty)_` | **yes** | yes | API key for the openai provider. HA option: `openai_api_key`. Supports `MYMEAL_OPENAI_API_KEY_FILE`. |
 | `MYMEAL_OPENAI_MODEL` | string | `gpt-4o-mini` | no | yes | Model for the openai provider. HA option: `openai_model`. |
-| `MYMEAL_OPENAI_BASE_URL` | string | `_(empty)_` | no | yes | Override the OpenAI API base URL (for compatible gateways). |
+| `MYMEAL_OPENAI_BASE_URL` | string | `_(empty)_` | no | yes | Override the OpenAI API base URL (for compatible gateways / local SLM servers such as LM Studio, vLLM, llama.cpp). HA option: `openai_base_url`. |
 | `MYMEAL_OLLAMA_HOST` | url | `http://localhost:11434` | no | yes | Base URL of the Ollama server. A local server needs no key; set OLLAMA_API_KEY for Ollama Cloud or a secured/proxied instance. HA option: `ollama_host`. |
 | `MYMEAL_OLLAMA_MODEL` | string | `llama3.1` | no | yes | Model for the ollama provider. HA option: `ollama_model`. |
 | `MYMEAL_OLLAMA_API_KEY` | string | `_(empty)_` | **yes** | yes | Optional bearer token for the ollama provider (Ollama Cloud or a secured instance). Blank for a plain local server. HA option: `ollama_api_key`. Supports `MYMEAL_OLLAMA_API_KEY_FILE`. |
 | `MYMEAL_OLLAMA_SEARCH_KEY` | string | `_(empty)_` | **yes** | yes | Ollama API key (ollama.com) for the hosted web search — used to import a recipe by name. Blank falls back to OLLAMA_API_KEY. HA option: `ollama_search_key`. Supports `MYMEAL_OLLAMA_SEARCH_KEY_FILE`. |
-| `MYMEAL_AI_TIMEOUT_SECONDS` | enum/int | `60` | no | yes | Per-request timeout for AI provider calls. |
+| `MYMEAL_AI_TIMEOUT_SECONDS` | enum/int | `60` | no | yes | Per-request timeout for AI provider calls. HA option: `ai_timeout_seconds`. |
 | `MYMEAL_AI_CONFIDENCE_THRESHOLD` | enum/int | `0.8` | no | yes | Auto-tagging: a proposed tag at/above this model-reported confidence (and matching an existing tag) is applied automatically; below it, or a new tag, goes to the review queue. |
 
 ### MCP (Home Assistant Assist)

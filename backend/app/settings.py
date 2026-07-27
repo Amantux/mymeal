@@ -253,7 +253,9 @@ FIELDS: tuple[Field, ...] = (
     Field("OPENAI_MODEL", as_str, "gpt-4o-mini", "Model for the openai provider.",
           ha_option="openai_model"),
     Field("OPENAI_BASE_URL", as_str, "",
-          "Override the OpenAI API base URL (for compatible gateways)."),
+          "Override the OpenAI API base URL (for compatible gateways / local SLM "
+          "servers such as LM Studio, vLLM, llama.cpp).",
+          ha_option="openai_base_url"),
     Field("OLLAMA_HOST", http_url, "http://localhost:11434",
           "Base URL of the Ollama server. A local server needs no key; set "
           "OLLAMA_API_KEY for Ollama Cloud or a secured/proxied instance.",
@@ -269,7 +271,8 @@ FIELDS: tuple[Field, ...] = (
           "a recipe by name. Blank falls back to OLLAMA_API_KEY.",
           secret=True, supports_file=True, ha_option="ollama_search_key"),
     Field("AI_TIMEOUT_SECONDS", int_between(1, 600), 60,
-          "Per-request timeout for AI provider calls."),
+          "Per-request timeout for AI provider calls.",
+          ha_option="ai_timeout_seconds"),
     Field("AI_CONFIDENCE_THRESHOLD", float_between(0.0, 1.0), 0.8,
           "Auto-tagging: a proposed tag at/above this model-reported confidence "
           "(and matching an existing tag) is applied automatically; below it, or a "
