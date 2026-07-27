@@ -115,6 +115,7 @@ def create_app(config_object=None):
     app.config["JWT_EXPIRES"] = timedelta(hours=settings.JWT_HOURS)
     app.config["DISABLE_AUTH"] = settings.DISABLE_AUTH
     app.config["ALLOW_REGISTRATION"] = settings.ALLOW_REGISTRATION
+    app.config["WORKER_ENABLED"] = settings.WORKER_ENABLED
     app.config["SQLALCHEMY_DATABASE_URI"] = settings.sqlalchemy_uri
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     # pool_pre_ping recycles connections dropped by a remote Postgres / network
@@ -156,6 +157,9 @@ def create_app(config_object=None):
     _register_blueprints(app)
     _register_spa(app)
     _register_errors(app)
+
+    from .worker import start_worker
+    start_worker(app)  # background job poller (no-op when WORKER_ENABLED is False)
     return app
 
 
@@ -229,6 +233,7 @@ def _register_blueprints(app):
     from .api.edibl import bp as edibl_bp
     from .api.preferences import bp as preferences_bp
     from .api.public import bp as public_bp
+    from .api.jobs import bp as jobs_bp
 
     prefix = "/api/v1"
     for bp in (
@@ -249,6 +254,7 @@ def _register_blueprints(app):
         edibl_bp,
         preferences_bp,
         public_bp,
+        jobs_bp,
     ):
         app.register_blueprint(bp, url_prefix=prefix)
 

@@ -69,6 +69,24 @@ def get_provider(settings=None) -> AIProvider:
     return provider
 
 
+def provider_for_group(gid, settings=None) -> AIProvider:
+    """Build the provider for a specific group OUTSIDE a request context (e.g. the
+    background worker, where ``g.current_group`` isn't set). Resolves that group's
+    saved provider overrides explicitly so a UI-configured provider still applies."""
+    from .provider_config import effective_settings
+    from .settings_access import resolved
+    eff = effective_settings(resolved(settings), gid)
+    name = _configured_name(eff)
+    if not name:
+        raise ProviderError("No AI provider configured.")
+    if name not in _REGISTRY:
+        raise ProviderError(f"Unknown AI provider '{name}'.")
+    provider = _instance(name, eff)
+    if not provider.available():
+        raise ProviderError(f"AI provider '{name}' is not fully configured.")
+    return provider
+
+
 def list_providers(settings=None) -> list[dict]:
     """Report every provider, whether it's available, and which is active."""
     eff = _effective(settings)

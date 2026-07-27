@@ -12,6 +12,7 @@ def app(tmp_path):
         DATABASE_URL = f"sqlite:///{tmp_path}/test.db"
         DISABLE_AUTH = False
         SECRET_KEY = "test-secret-key-that-is-long-enough-32b"
+        WORKER_ENABLED = False  # tests drive job functions directly, no poller thread
 
     app = create_app(TestConfig)
     yield app
@@ -45,5 +46,6 @@ def noauth_app(tmp_path):
         DATABASE_URL = f"sqlite:///{tmp_path}/test.db"
         DISABLE_AUTH = True
         SECRET_KEY = "test-secret-key-that-is-long-enough-32b"
+        WORKER_ENABLED = False
 
     return create_app(NoAuthConfig)

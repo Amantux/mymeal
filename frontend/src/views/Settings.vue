@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, onMounted, computed, watch, nextTick } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import { api } from '../api'
 import { useUI } from '../stores/ui'
 
@@ -74,6 +74,48 @@ async function load() {
   }
 }
 onMounted(load)
+
+// Bulk nutrition estimation — an async background job with progress.
+const nutriJob = ref(null)
+const nutriStarting = ref(false)
+let nutriTimer = null
+let nutriFails = 0
+const nutriActive = computed(() =>
+  nutriJob.value && ['pending', 'running'].includes(nutriJob.value.status))
+
+async function startNutrition() {
+  if (nutriStarting.value) return
+  nutriStarting.value = true
+  try { nutriJob.value = await api.post('/jobs/nutrition'); pollNutrition() }
+  catch (e) { ui.error(e.message || 'Could not start.') }
+  finally { nutriStarting.value = false }
+}
+async function pollNutrition() {
+  if (!nutriJob.value) return
+  const id = nutriJob.value.id
+  try {
+    nutriJob.value = await api.get(`/jobs/${id}`); nutriFails = 0
+    if (nutriJob.value.status === 'done') {
+      const r = nutriJob.value.result || {}
+      ui.toast(`Estimated nutrition for ${r.estimated ?? 0} recipe(s).` +
+        (r.remaining ? ` ${r.remaining} left — run again to continue.` : ''))
+      return
+    }
+    if (nutriJob.value.status === 'error') { ui.error(nutriJob.value.error || 'Failed.'); return }
+  } catch (e) {
+    if (++nutriFails >= 5) { nutriJob.value = null; ui.error('Lost track of the job.'); return }
+  }
+  nutriTimer = setTimeout(pollNutrition, 1500)
+}
+async function resumeNutrition() {
+  try {
+    const r = await api.get('/jobs?kind=nutrition')
+    const active = (r.items || []).find(j => ['pending', 'running'].includes(j.status))
+    if (active) { nutriJob.value = active; pollNutrition() }
+  } catch (e) { /* optional */ }
+}
+onMounted(resumeNutrition)
+onUnmounted(() => clearTimeout(nutriTimer))
 
 async function save() {
   saving.value = true
@@ -371,6 +413,19 @@ async function findOllama() {
         <button type="submit" class="secondary" :disabled="saving">{{ saving ? 'Saving…' : 'Save' }}</button>
       </div>
     </form>
+  </div>
+
+  <div class="card" v-if="!loading">
+    <h2>Nutrition</h2>
+    <p class="muted">Estimate per-serving nutrition for every recipe that doesn't have it yet,
+      using your configured AI provider. Runs in the background — you can leave this page.</p>
+    <button v-if="!nutriActive" type="button" class="secondary" :disabled="nutriStarting"
+      @click="startNutrition">{{ nutriStarting ? 'Starting…' : 'Estimate missing nutrition' }}</button>
+    <div v-else style="max-width:420px">
+      <div class="muted" style="font-size:.85rem;margin-bottom:6px">
+        Estimating… {{ nutriJob.done }}<span v-if="nutriJob.total">/{{ nutriJob.total }}</span> recipes</div>
+      <progress :value="nutriJob.done" :max="nutriJob.total || 1" style="width:100%"></progress>
+    </div>
   </div>
 
   <div class="card" v-if="!loading">

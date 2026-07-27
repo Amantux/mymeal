@@ -293,6 +293,9 @@ FIELDS: tuple[Field, ...] = (
           "Gunicorn worker processes. SQLite is single-writer: more workers "
           "raises write contention, it does not raise write throughput."),
     Field("THREADS", int_between(1, 64), 4, "Gunicorn threads per worker."),
+    Field("WORKER_ENABLED", parse_bool, True,
+          "Run the in-process background-job worker thread (async AI tooling, e.g. "
+          "bulk nutrition estimation)."),
     Field("TIMEOUT", int_between(5, 3600), 120, "Gunicorn worker timeout (seconds)."),
     Field("GRACEFUL_TIMEOUT", int_between(1, 3600), 30,
           "Seconds to finish in-flight requests on shutdown."),

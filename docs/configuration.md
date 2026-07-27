@@ -106,6 +106,7 @@ docker compose run --rm app python3 -m app.config_check
 |---|---|---|---|---|---|
 | `MYMEAL_WORKERS` | enum/int | `2` | no | yes | Gunicorn worker processes. SQLite is single-writer: more workers raises write contention, it does not raise write throughput. |
 | `MYMEAL_THREADS` | enum/int | `4` | no | yes | Gunicorn threads per worker. |
+| `MYMEAL_WORKER_ENABLED` | boolean | `true` | no | yes | Run the in-process background-job worker thread (async AI tooling, e.g. bulk nutrition estimation). |
 | `MYMEAL_TIMEOUT` | enum/int | `120` | no | yes | Gunicorn worker timeout (seconds). |
 | `MYMEAL_GRACEFUL_TIMEOUT` | enum/int | `30` | no | yes | Seconds to finish in-flight requests on shutdown. |
 | `MYMEAL_MAX_UPLOAD_MB` | enum/int | `50` | no | yes | Maximum upload size in MB. |
