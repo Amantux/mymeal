@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.1.56
+
+Build-only republish; no user-visible change.
+
 ## 1.1.55
 
 - Note + model override on myMeal AI-organize; nits (selectinload, docs type).
