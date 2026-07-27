@@ -77,6 +77,23 @@ Recipe import tries the page's embedded structured data **first** and only falls
 back to the AI when a site doesn't publish any — so most imports cost nothing
 even with a paid provider configured.
 
+**Local model server** (LM Studio, vLLM, llama.cpp): use `MYMEAL_AI_PROVIDER=openai`
+and set `openai_base_url` (add-on option) to its OpenAI-compatible endpoint.
+
+Unlike the other apps, myMeal's provider is set in the **Settings** page (or add-on
+options), and each household remembers its own choice.
+
+### AI organize (Settings page)
+
+Once a provider is on, two background jobs help tidy your collection:
+
+- **Nutrition** — estimate per-serving nutrition for every recipe that lacks it.
+- **AI organize** — **Auto-tag recipes** (confident tags matching an existing tag
+  apply automatically; the rest wait for review) and **Propose collections** (named
+  groupings like "Weeknight dinners"). Review pending suggestions on the **Review**
+  page (accept/reject); your choices train later runs. Add a *note* or override the
+  *model* per run if you like.
+
 ## Connect Edibl (food inventory)
 
 If you also run the companion **Edibl** app, connecting it powers
