@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.1.54
+
+- Expose OPENAI_BASE_URL + AI_TIMEOUT_SECONDS as HA add-on options (Phase 5).
+
 ## 1.1.53
 
 - AI organize for myMeal — auto-tag recipes + collections with a review queue.
