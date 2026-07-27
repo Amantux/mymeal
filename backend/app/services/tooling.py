@@ -11,6 +11,7 @@ import json
 import logging
 
 from flask import current_app
+from sqlalchemy.orm import selectinload
 
 from ..extensions import db
 from ..models import AiSuggestion, Recipe, Tag, utcnow
@@ -76,12 +77,12 @@ def icl_examples(gid, kind, limit=8) -> str:
     return "\n".join(parts)
 
 
-def _job_provider(gid):
+def _job_provider(gid, model=None):
     from .ai.base import ProviderError
     from .ai.registry import provider_for_group
     from .jobs import JobError
     try:
-        return provider_for_group(gid)
+        return provider_for_group(gid, model=model)
     except ProviderError as exc:
         raise JobError(str(exc)) from exc
 
@@ -97,7 +98,7 @@ def run_categorize(job) -> dict:
     gid = job.group_id
     opts = json.loads(job.params) if job.params else {}
     note = str(opts.get("note") or "")
-    provider = _job_provider(gid)
+    provider = _job_provider(gid, opts.get("model"))
     tags = existing_tags(gid)
     examples = icl_examples(gid, "categorize")
     threshold = _threshold()
@@ -107,6 +108,7 @@ def run_categorize(job) -> dict:
                .filter(AiSuggestion.group_id == gid, AiSuggestion.kind == "categorize",
                        AiSuggestion.status == "pending", AiSuggestion.recipe_id.isnot(None)))
     recipes = (db.session.query(Recipe)
+               .options(selectinload(Recipe.tags), selectinload(Recipe.ingredients))
                .filter(Recipe.group_id == gid, ~Recipe.tags.any())
                .filter(~Recipe.id.in_(pending))
                .order_by(Recipe.created_at.asc()).limit(_CATEGORIZE_MAX).all())
@@ -152,7 +154,7 @@ def run_cluster(job) -> dict:
     gid = job.group_id
     opts = json.loads(job.params) if job.params else {}
     note = str(opts.get("note") or "")
-    provider = _job_provider(gid)
+    provider = _job_provider(gid, opts.get("model"))
     recipes = (db.session.query(Recipe).filter(Recipe.group_id == gid)
                .order_by(Recipe.created_at.asc()).limit(_CLUSTER_ITEMS_MAX).all())
     bump(job, done=0, total=1)

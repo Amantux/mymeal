@@ -141,8 +141,8 @@ def render_reference() -> str:
         for name in names:
             f = by_name[name]
             typ = getattr(f.parse, "__name__", "str")
-            typ = {"parse": "enum/int", "as_str": "string", "parse_bool": "boolean",
-                   "http_url": "url", "csv_list": "list"}.get(typ, typ)
+            typ = {"parse": "enum/int", "parse_float": "number", "as_str": "string",
+                   "parse_bool": "boolean", "http_url": "url", "csv_list": "list"}.get(typ, typ)
             default = _shown_default(f) or "_(empty)_"
             note = f.doc.replace("|", "/")
             if f.ha_option:

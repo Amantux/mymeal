@@ -135,6 +135,13 @@ const {
     ? ui.error(j.error || 'Grouping failed.')
     : ui.toast(`Found ${j.result?.proposed ?? 0} collection(s) to review.`),
 })
+const organizeForm = ref({ note: '', model: '' })
+function organizeBody() {
+  const b = {}
+  if (organizeForm.value.note.trim()) b.note = organizeForm.value.note.trim()
+  if (organizeForm.value.model.trim()) b.model = organizeForm.value.model.trim()
+  return b
+}
 onMounted(() => { resumeCategorize(); resumeCluster() })
 onUnmounted(() => { stopCategorize(); stopCluster() })
 
@@ -454,11 +461,21 @@ async function findOllama() {
     <p class="muted">Auto-tag recipes and propose collections with your AI provider.
       Confident tags are applied automatically; the rest wait for your review, and your
       accept/reject choices teach later runs.</p>
+    <div style="display:flex;gap:8px;max-width:520px;margin-bottom:10px">
+      <label style="flex:2">
+        <span class="muted" style="font-size:0.85rem">Note (optional guidance)</span>
+        <input v-model="organizeForm.note" placeholder="e.g. tag by cuisine" style="width:100%;margin-top:4px" />
+      </label>
+      <label style="flex:1">
+        <span class="muted" style="font-size:0.85rem">Model (optional)</span>
+        <input v-model="organizeForm.model" placeholder="override model" style="width:100%;margin-top:4px" />
+      </label>
+    </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <button type="button" class="secondary" :disabled="catStarting || catActive" @click="startCategorize()">
+      <button type="button" class="secondary" :disabled="catStarting || catActive" @click="startCategorize(organizeBody())">
         {{ catActive ? `Tagging… ${catJob.done}/${catJob.total || '…'}` : 'Auto-tag recipes' }}
       </button>
-      <button type="button" class="secondary" :disabled="cluStarting || cluActive" @click="startCluster()">
+      <button type="button" class="secondary" :disabled="cluStarting || cluActive" @click="startCluster(organizeBody())">
         {{ cluActive ? 'Finding collections…' : 'Propose collections' }}
       </button>
       <router-link to="/review" class="muted" style="font-size:.9rem">Review suggestions →</router-link>

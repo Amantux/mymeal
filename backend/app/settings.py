@@ -114,7 +114,7 @@ def int_between(low: int, high: int) -> Callable[[str], int]:
 
 
 def float_between(low: float, high: float) -> Callable[[str], float]:
-    def parse(raw: str) -> float:
+    def parse_float(raw: str) -> float:
         try:
             value = float(str(raw).strip())
         except (TypeError, ValueError):
@@ -122,7 +122,7 @@ def float_between(low: float, high: float) -> Callable[[str], float]:
         if not (low <= value <= high):
             raise ValueError(f"expected a number between {low} and {high}, got {value}")
         return value
-    return parse
+    return parse_float
 
 
 def one_of(*allowed: str) -> Callable[[str], str]:

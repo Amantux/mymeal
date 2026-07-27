@@ -27,7 +27,7 @@ class _FakeProvider:
 
 def _use_provider(monkeypatch, provider):
     monkeypatch.setattr("app.services.ai.registry.provider_for_group",
-                        lambda gid, settings=None: provider)
+                        lambda gid, settings=None, model=None: provider)
 
 
 def _run(kind, gid):
@@ -142,6 +142,21 @@ def test_delete_recipe_with_suggestion_succeeds(auth_client, app):
     assert auth_client.delete(f"/api/v1/recipes/{rid}").status_code in (200, 204)
     with app.app_context():
         assert db.session.query(AiSuggestion).filter_by(recipe_id=rid).count() == 0
+
+
+def test_categorize_applies_model_override(auth_client, app, monkeypatch):
+    gid = _gid(app)
+    captured = {}
+    with app.app_context():
+        _recipe(gid, "X")
+
+        def fake_pfg(gid, settings=None, model=None):
+            captured["model"] = model
+            return _FakeProvider({"label": "T", "confidence": 0.1})
+        monkeypatch.setattr("app.services.ai.registry.provider_for_group", fake_pfg)
+        jobs.enqueue("categorize", gid, {"model": "llama3.2"})
+        jobs.run_job(jobs.claim_one())
+        assert captured["model"] == "llama3.2"
 
 
 def test_suggestion_cross_group_404(auth_client, app):

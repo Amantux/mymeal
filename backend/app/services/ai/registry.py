@@ -69,10 +69,11 @@ def get_provider(settings=None) -> AIProvider:
     return provider
 
 
-def provider_for_group(gid, settings=None) -> AIProvider:
+def provider_for_group(gid, settings=None, model=None) -> AIProvider:
     """Build the provider for a specific group OUTSIDE a request context (e.g. the
     background worker, where ``g.current_group`` isn't set). Resolves that group's
-    saved provider overrides explicitly so a UI-configured provider still applies."""
+    saved provider overrides explicitly so a UI-configured provider still applies.
+    ``model`` overrides the provider's model for this run."""
     from .provider_config import effective_settings
     from .settings_access import resolved
     eff = effective_settings(resolved(settings), gid)
@@ -84,6 +85,8 @@ def provider_for_group(gid, settings=None) -> AIProvider:
     provider = _instance(name, eff)
     if not provider.available():
         raise ProviderError(f"AI provider '{name}' is not fully configured.")
+    if model:
+        provider.model = str(model)[:100]  # per-run model override
     return provider
 
 
