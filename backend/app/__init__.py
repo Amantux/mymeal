@@ -116,6 +116,7 @@ def create_app(config_object=None):
     app.config["DISABLE_AUTH"] = settings.DISABLE_AUTH
     app.config["ALLOW_REGISTRATION"] = settings.ALLOW_REGISTRATION
     app.config["WORKER_ENABLED"] = settings.WORKER_ENABLED
+    app.config["AI_CONFIDENCE_THRESHOLD"] = settings.AI_CONFIDENCE_THRESHOLD
     app.config["SQLALCHEMY_DATABASE_URI"] = settings.sqlalchemy_uri
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     # pool_pre_ping recycles connections dropped by a remote Postgres / network
@@ -234,6 +235,7 @@ def _register_blueprints(app):
     from .api.preferences import bp as preferences_bp
     from .api.public import bp as public_bp
     from .api.jobs import bp as jobs_bp
+    from .api.suggestions import bp as suggestions_bp
 
     prefix = "/api/v1"
     for bp in (
@@ -255,6 +257,7 @@ def _register_blueprints(app):
         preferences_bp,
         public_bp,
         jobs_bp,
+        suggestions_bp,
     ):
         app.register_blueprint(bp, url_prefix=prefix)
 

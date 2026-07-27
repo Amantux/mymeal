@@ -10,6 +10,7 @@ import RecipeImport from './views/RecipeImport.vue'
 import MealPlan from './views/MealPlan.vue'
 import ShoppingList from './views/ShoppingList.vue'
 import Settings from './views/Settings.vue'
+import Review from './views/Review.vue'
 import HomeAssistant from './views/HomeAssistant.vue'
 import Database from './views/Database.vue'
 import PublicRecipe from './views/PublicRecipe.vue'
@@ -26,6 +27,7 @@ const routes = [
   { path: '/pantry', redirect: '/' },  // pantry removed; inventory is owned by Edibl
   { path: '/shopping', component: ShoppingList },
   { path: '/settings', component: Settings, meta: { owner: true } },
+  { path: '/review', component: Review },
   { path: '/home-assistant', component: HomeAssistant, meta: { owner: true } },
   { path: '/database', component: Database, meta: { owner: true } },
   { path: '/share/:token', component: PublicRecipe, meta: { public: true } },

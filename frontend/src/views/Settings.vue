@@ -1,5 +1,6 @@
 <script setup>
 import { ref, reactive, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
+import { useJobRunner } from '../composables/useJobRunner'
 import { api } from '../api'
 import { useUI } from '../stores/ui'
 
@@ -116,6 +117,26 @@ async function resumeNutrition() {
 }
 onMounted(resumeNutrition)
 onUnmounted(() => clearTimeout(nutriTimer))
+
+// AI organize: auto-tag recipes + propose collections (jobs).
+const {
+  job: catJob, starting: catStarting, active: catActive,
+  start: startCategorize, resume: resumeCategorize, stop: stopCategorize,
+} = useJobRunner('categorize', {
+  onDone: (j) => j.status === 'error'
+    ? ui.error(j.error || 'Tagging failed.')
+    : ui.toast(`Tagging: ${j.result?.applied ?? 0} applied, ${j.result?.queued ?? 0} to review.`),
+})
+const {
+  starting: cluStarting, active: cluActive,
+  start: startCluster, resume: resumeCluster, stop: stopCluster,
+} = useJobRunner('cluster', {
+  onDone: (j) => j.status === 'error'
+    ? ui.error(j.error || 'Grouping failed.')
+    : ui.toast(`Found ${j.result?.proposed ?? 0} collection(s) to review.`),
+})
+onMounted(() => { resumeCategorize(); resumeCluster() })
+onUnmounted(() => { stopCategorize(); stopCluster() })
 
 async function save() {
   saving.value = true
@@ -425,6 +446,22 @@ async function findOllama() {
       <div class="muted" style="font-size:.85rem;margin-bottom:6px">
         Estimating… {{ nutriJob.done }}<span v-if="nutriJob.total">/{{ nutriJob.total }}</span> recipes</div>
       <progress :value="nutriJob.done" :max="nutriJob.total || 1" style="width:100%"></progress>
+    </div>
+  </div>
+
+  <div class="card" v-if="!loading">
+    <h2>AI organize</h2>
+    <p class="muted">Auto-tag recipes and propose collections with your AI provider.
+      Confident tags are applied automatically; the rest wait for your review, and your
+      accept/reject choices teach later runs.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button type="button" class="secondary" :disabled="catStarting || catActive" @click="startCategorize()">
+        {{ catActive ? `Tagging… ${catJob.done}/${catJob.total || '…'}` : 'Auto-tag recipes' }}
+      </button>
+      <button type="button" class="secondary" :disabled="cluStarting || cluActive" @click="startCluster()">
+        {{ cluActive ? 'Finding collections…' : 'Propose collections' }}
+      </button>
+      <router-link to="/review" class="muted" style="font-size:.9rem">Review suggestions →</router-link>
     </div>
   </div>
 

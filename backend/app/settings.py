@@ -113,6 +113,18 @@ def int_between(low: int, high: int) -> Callable[[str], int]:
     return parse
 
 
+def float_between(low: float, high: float) -> Callable[[str], float]:
+    def parse(raw: str) -> float:
+        try:
+            value = float(str(raw).strip())
+        except (TypeError, ValueError):
+            raise ValueError(f"expected a number, got {raw!r}")
+        if not (low <= value <= high):
+            raise ValueError(f"expected a number between {low} and {high}, got {value}")
+        return value
+    return parse
+
+
 def one_of(*allowed: str) -> Callable[[str], str]:
     def parse(raw: str) -> str:
         v = str(raw).strip()
@@ -258,6 +270,10 @@ FIELDS: tuple[Field, ...] = (
           secret=True, supports_file=True, ha_option="ollama_search_key"),
     Field("AI_TIMEOUT_SECONDS", int_between(1, 600), 60,
           "Per-request timeout for AI provider calls."),
+    Field("AI_CONFIDENCE_THRESHOLD", float_between(0.0, 1.0), 0.8,
+          "Auto-tagging: a proposed tag at/above this model-reported confidence "
+          "(and matching an existing tag) is applied automatically; below it, or a "
+          "new tag, goes to the review queue."),
 
     # --- Edibl (sibling food-inventory app) ---
     Field("EDIBL_URL", as_str, "",

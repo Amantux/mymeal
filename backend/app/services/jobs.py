@@ -168,3 +168,15 @@ def _nutrition_job(job: Job) -> dict:
             estimated += 1
         bump(job, done=i)
     return {"estimated": estimated, "scanned": len(recipes), "remaining": missing_q().count()}
+
+
+@register("categorize")
+def _categorize_job(job: Job) -> dict:
+    from .tooling import run_categorize
+    return run_categorize(job)
+
+
+@register("cluster")
+def _cluster_job(job: Job) -> dict:
+    from .tooling import run_cluster
+    return run_cluster(job)

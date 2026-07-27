@@ -32,6 +32,8 @@ class Group(IDMixin, TimestampMixin, db.Model):
         "ChatSession", back_populates="group", cascade="all, delete-orphan"
     )
     jobs = relationship("Job", back_populates="group", cascade="all, delete-orphan")
+    ai_suggestions = relationship(
+        "AiSuggestion", back_populates="group", cascade="all, delete-orphan")
     invitations = relationship(
         "GroupInvitation", back_populates="group", cascade="all, delete-orphan"
     )
