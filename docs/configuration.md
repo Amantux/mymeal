@@ -78,6 +78,7 @@ docker compose run --rm app python3 -m app.config_check
 | `MYMEAL_OLLAMA_HOST` | url | `http://localhost:11434` | no | yes | Base URL of the Ollama server. A local server needs no key; set OLLAMA_API_KEY for Ollama Cloud or a secured/proxied instance. HA option: `ollama_host`. |
 | `MYMEAL_OLLAMA_MODEL` | string | `llama3.1` | no | yes | Model for the ollama provider. HA option: `ollama_model`. |
 | `MYMEAL_OLLAMA_API_KEY` | string | `_(empty)_` | **yes** | yes | Optional bearer token for the ollama provider (Ollama Cloud or a secured instance). Blank for a plain local server. HA option: `ollama_api_key`. Supports `MYMEAL_OLLAMA_API_KEY_FILE`. |
+| `MYMEAL_OLLAMA_SEARCH_KEY` | string | `_(empty)_` | **yes** | yes | ollama.com API key for hosted web search (import a recipe by name). Falls back to `OLLAMA_API_KEY` when blank; empty disables web search. HA option: `ollama_search_key`. Supports `MYMEAL_OLLAMA_SEARCH_KEY_FILE`. |
 | `MYMEAL_AI_TIMEOUT_SECONDS` | enum/int | `60` | no | yes | Per-request timeout for AI provider calls. |
 
 ### MCP (Home Assistant Assist)
