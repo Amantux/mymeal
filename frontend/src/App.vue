@@ -6,6 +6,7 @@ import { useUI } from './stores/ui'
 import { useLiveSync } from './composables/useLiveSync'
 import Toasts from './components/Toasts.vue'
 import ChatAssistant from './components/ChatAssistant.vue'
+import ReportBug from './components/ReportBug.vue'
 
 const route = useRoute()
 const auth = useAuth()
@@ -18,6 +19,7 @@ const bare = computed(() => route.meta.public)
 
 // Mobile nav drawer. The sidebar is off-canvas below 720px; this toggles it.
 const menuOpen = ref(false)
+const showReport = ref(false)
 // Close the drawer whenever the route changes (i.e. a nav link was tapped).
 watch(() => route.fullPath, () => { menuOpen.value = false })
 
@@ -76,6 +78,8 @@ const nav = [
           >☰</button>
           <span class="topbar-brand only-mobile"><span class="logo">🍽️</span> myMeal</span>
           <div class="grow"></div>
+          <button class="secondary icon-btn" title="Report a bug" aria-label="Report a bug"
+                  @click="showReport = true">🐞</button>
           <button class="secondary icon-btn" title="Toggle theme" @click="ui.toggleTheme()">🌓</button>
           <div v-if="!auth.authDisabled" class="dropdown">
             <button class="secondary" @click="auth.logout()">Sign out</button>
@@ -87,6 +91,7 @@ const nav = [
         </div>
       </div>
     </div>
+    <ReportBug v-if="showReport" @close="showReport = false" />
     <Toasts />
     <ChatAssistant />
   </template>

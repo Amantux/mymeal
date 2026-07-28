@@ -3,7 +3,34 @@ import os
 
 from flask import Blueprint, current_app, jsonify
 
+from ..auth import login_required
+
 bp = Blueprint("misc", __name__)
+
+
+@bp.get("/diagnostics")
+@login_required
+def diagnostics():
+    """Coarse, non-sensitive runtime facts for a user-initiated bug report.
+
+    Login-gated so it doesn't reveal AI-configured state to anonymous callers, and
+    deliberately returns only publishable facts — never secrets (API keys, provider
+    base URLs, the DB URL) or any recipe content — because the report they seed
+    becomes a PUBLIC GitHub issue."""
+    settings = current_app.config.get("SETTINGS")
+    uri = current_app.config["SQLALCHEMY_DATABASE_URI"]
+    try:
+        from ..services.ai import registry
+        provider = registry._configured_name(registry._effective()) or "none"
+    except Exception:  # noqa: BLE001 - diagnostics must never 500
+        provider = (getattr(settings, "AI_PROVIDER", "") if settings else "") or "none"
+    return jsonify({
+        "app": "myMeal",
+        "dbBackend": "sqlite" if uri.startswith("sqlite") else "postgresql",
+        "aiProvider": provider,
+        "mcpEnabled": bool(getattr(settings, "MCP_ENABLED", False)) if settings else False,
+        "authDisabled": bool(current_app.config.get("DISABLE_AUTH")),
+    })
 
 
 @bp.get("/status")
