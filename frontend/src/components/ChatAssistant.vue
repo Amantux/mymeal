@@ -119,16 +119,21 @@ async function sendStream(content) {
   msgs.value.push({ role: 'assistant', content: '', actions: [] })
   const idx = msgs.value.length - 1 // mutate via the reactive proxy, not the raw object
   let errored = null
-  await streamPost('/ai/chat/stream', { sessionId: sessionId.value, message: content }, (ev) => {
-    const a = msgs.value[idx]
-    if (ev.type === 'delta') { a.content += ev.text; scrollDown() }
-    else if (ev.type === 'done') {
-      sessionId.value = ev.sessionId
-      a.content = ev.reply || a.content
-      a.actions = ev.actions || []
-      if (a.actions.length) ui.dataChanged()
-    } else if (ev.type === 'error') { errored = new Error(ev.error || 'Something went wrong.') }
-  })
+  try {
+    await streamPost('/ai/chat/stream', { sessionId: sessionId.value, message: content }, (ev) => {
+      const a = msgs.value[idx]
+      if (ev.type === 'delta') { a.content += ev.text; scrollDown() }
+      else if (ev.type === 'done') {
+        sessionId.value = ev.sessionId
+        a.content = ev.reply || a.content
+        a.actions = ev.actions || []
+        if (a.actions.length) ui.dataChanged()
+      } else if (ev.type === 'error') { errored = new Error(ev.error || 'Something went wrong.') }
+    })
+  } catch (e) {
+    if (!msgs.value[idx].content) msgs.value.splice(idx, 1)
+    throw e
+  }
   if (errored) { msgs.value.pop(); throw errored }
 }
 
