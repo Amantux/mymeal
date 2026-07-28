@@ -139,12 +139,14 @@ def _nutrition_job(job: Job) -> dict:
 
     from .ai.base import ProviderError
     from .ai.nutrition import estimate_nutrition
-    from .ai.registry import provider_for_group
+    from .ai.registry import provider_for_group, resolve_job_provider
     from ..models import Recipe
 
     gid = job.group_id
+    opts = _json.loads(job.params) if job.params else {}
     try:
-        provider = provider_for_group(gid)
+        # Per-run override > the stored "Nutrition" async preference > chat provider.
+        provider = resolve_job_provider("nutrition", gid, opts=opts) or provider_for_group(gid)
     except ProviderError as exc:
         raise JobError(str(exc)) from exc
 

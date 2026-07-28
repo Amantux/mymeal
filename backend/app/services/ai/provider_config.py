@@ -99,10 +99,44 @@ def set_chat_stream(gid: str, on: bool) -> None:
     db.session.commit()
 
 
-def effective_settings(base, gid: str | None):
-    """Env-derived settings with the ACTIVE provider's fields overridden by this
+# --- async-job AI preference ---------------------------------------------
+# A provider+model default for background jobs, separate from chat. "enrich"
+# covers the nutrition job; "organize" covers the categorize + cluster jobs.
+def job_preference(gid: str | None, kind: str) -> tuple[str | None, str | None]:
+    """Stored async default ``(provider, model)`` for a background job. Blank → None
+    (same as the chat provider)."""
+    prefix = "enrich" if kind == "nutrition" else "organize"
+    over = _all(gid) if gid else {}
+    return (over.get(f"{prefix}_provider") or None, over.get(f"{prefix}_model") or None)
+
+
+def get_job_prefs(gid: str | None) -> dict:
+    over = _all(gid) if gid else {}
+    return {area: {"provider": over.get(f"{area}_provider", ""),
+                   "model": over.get(f"{area}_model", "")}
+            for area in ("enrich", "organize")}
+
+
+def set_job_prefs(gid: str, prefs: dict) -> None:
+    for area in ("enrich", "organize"):
+        blk = prefs.get(area)
+        if not isinstance(blk, dict):
+            continue
+        if "provider" in blk:
+            _set(gid, f"{area}_provider", str(blk.get("provider") or ""))
+        if "model" in blk:
+            _set(gid, f"{area}_model", str(blk.get("model") or "")[:100])
+    db.session.commit()
+
+
+def effective_settings(base, gid: str | None, provider: str | None = None):
+    """Env-derived settings with the chosen provider's fields overridden by this
     group's non-empty DB values. Per-provider namespacing means a stored key or
-    host for one provider can never leak into another."""
+    host for one provider can never leak into another.
+
+    ``provider`` forces which provider is resolved (e.g. a background job that runs
+    on a different provider than the group's active chat one); default None resolves
+    the group's active provider."""
     over = _all(gid) if gid else {}
 
     def pick(provider, field, fallback):
@@ -110,7 +144,7 @@ def effective_settings(base, gid: str | None):
         return v if v else fallback  # non-empty override wins; else env default
 
     ns = SimpleNamespace(**{attr: getattr(base, attr) for attr in _PASSTHROUGH})
-    ns.AI_PROVIDER = over.get(KEY_PROVIDER) or base.AI_PROVIDER
+    ns.AI_PROVIDER = provider or over.get(KEY_PROVIDER) or base.AI_PROVIDER
 
     if ns.AI_PROVIDER in ("ollama", "ollama_cloud"):
         p = ns.AI_PROVIDER

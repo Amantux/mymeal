@@ -117,6 +117,26 @@ async function saveChatDefault(on) {
 }
 onMounted(loadChatDefault)
 
+// Async-job AI preference: a provider+model default for background jobs, separate
+// from chat. Blank provider = same as chat. A per-run choice still wins.
+const jobAi = ref({ enrich: { provider: '', model: '' }, organize: { provider: '', model: '' } })
+const jobAiSaving = ref(false)
+const JOB_AREAS = [
+  { k: 'enrich', l: 'Nutrition' },
+  { k: 'organize', l: 'Background (auto-tag + collections)' },
+]
+async function loadJobAi() {
+  try { jobAi.value = await api.get('/ai/job-settings') } catch (e) { /* keep defaults */ }
+}
+async function saveJobAi() {
+  jobAiSaving.value = true
+  try {
+    jobAi.value = await api.put('/ai/job-settings', jobAi.value)
+    ui.toast('Saved background-task AI')
+  } catch (e) { ui.toast(e.message || 'Could not save', 'error') } finally { jobAiSaving.value = false }
+}
+onMounted(loadJobAi)
+
 // Bulk nutrition estimation — an async background job with progress.
 const nutriJob = ref(null)
 const nutriStarting = ref(false)
@@ -498,6 +518,27 @@ async function findOllama() {
         @change="saveChatDefault($event.target.checked)" />
       <span>Stream chat responses by default</span>
     </label>
+  </div>
+
+  <div class="card" v-if="!loading">
+    <h2>AI for background tasks</h2>
+    <p class="muted">Optionally run background jobs on a different model than chat — e.g. a
+      cheap or local model for bulk work. <strong>Same as chat</strong> uses the provider above.
+      A per-run choice still wins.</p>
+    <div v-for="area in JOB_AREAS" :key="area.k" style="margin-bottom:14px">
+      <div class="muted" style="font-size:0.85rem;font-weight:600;margin-bottom:4px">{{ area.l }}</div>
+      <div class="row" style="gap:8px">
+        <select v-model="jobAi[area.k].provider" style="flex:1">
+          <option value="">Same as chat</option>
+          <option v-for="o in ['claude', 'openai', 'ollama', 'ollama_cloud']" :key="o" :value="o">{{ labels[o] }}</option>
+        </select>
+        <input v-model="jobAi[area.k].model" placeholder="model (optional)" style="flex:1" />
+      </div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button type="button" class="secondary" :disabled="jobAiSaving" @click="saveJobAi">
+        {{ jobAiSaving ? 'Saving…' : 'Save' }}</button>
+    </div>
   </div>
 
   <div class="card" v-if="!loading">

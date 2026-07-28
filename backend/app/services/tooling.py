@@ -77,12 +77,14 @@ def icl_examples(gid, kind, limit=8) -> str:
     return "\n".join(parts)
 
 
-def _job_provider(gid, model=None):
+def _job_provider(gid, opts=None, kind="categorize"):
+    """Provider for an organize (categorize/cluster) run. Precedence: per-run
+    override > the stored "Background" async preference > the chat provider."""
     from .ai.base import ProviderError
-    from .ai.registry import provider_for_group
+    from .ai.registry import provider_for_group, resolve_job_provider
     from .jobs import JobError
     try:
-        return provider_for_group(gid, model=model)
+        return resolve_job_provider(kind, gid, opts=opts) or provider_for_group(gid)
     except ProviderError as exc:
         raise JobError(str(exc)) from exc
 
@@ -98,7 +100,7 @@ def run_categorize(job) -> dict:
     gid = job.group_id
     opts = json.loads(job.params) if job.params else {}
     note = str(opts.get("note") or "")
-    provider = _job_provider(gid, opts.get("model"))
+    provider = _job_provider(gid, opts, "categorize")
     tags = existing_tags(gid)
     examples = icl_examples(gid, "categorize")
     threshold = _threshold()
@@ -154,7 +156,7 @@ def run_cluster(job) -> dict:
     gid = job.group_id
     opts = json.loads(job.params) if job.params else {}
     note = str(opts.get("note") or "")
-    provider = _job_provider(gid, opts.get("model"))
+    provider = _job_provider(gid, opts, "cluster")
     recipes = (db.session.query(Recipe).filter(Recipe.group_id == gid)
                .order_by(Recipe.created_at.asc()).limit(_CLUSTER_ITEMS_MAX).all())
     bump(job, done=0, total=1)

@@ -95,6 +95,30 @@ def put_chat_settings():
     return jsonify({"stream": stream})
 
 
+@bp.get("/ai/job-settings")
+@login_required
+def get_ai_job_settings():
+    """The async-job AI preference: a provider+model default for background work,
+    separate from chat. `enrich` = the nutrition job; `organize` = categorize +
+    cluster. Blank provider = same as chat."""
+    from ..services.ai.provider_config import get_job_prefs
+    return jsonify(get_job_prefs(current_group().id))
+
+
+@bp.put("/ai/job-settings")
+@owner_required
+def put_ai_job_settings():
+    from ..services.ai.provider_config import VALID_PROVIDERS, get_job_prefs, set_job_prefs
+    data = request.get_json(silent=True) or {}
+    for area in ("enrich", "organize"):
+        blk = data.get(area)
+        if isinstance(blk, dict) and blk.get("provider"):
+            if str(blk["provider"]) not in VALID_PROVIDERS:
+                return jsonify({"error": f"unknown provider {blk['provider']!r}"}), 422
+    set_job_prefs(current_group().id, data)
+    return jsonify(get_job_prefs(current_group().id))
+
+
 def _base_settings():
     from flask import current_app
     return current_app.config["SETTINGS"]

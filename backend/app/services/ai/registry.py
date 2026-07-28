@@ -69,14 +69,15 @@ def get_provider(settings=None) -> AIProvider:
     return provider
 
 
-def provider_for_group(gid, settings=None, model=None) -> AIProvider:
+def provider_for_group(gid, settings=None, model=None, provider=None) -> AIProvider:
     """Build the provider for a specific group OUTSIDE a request context (e.g. the
     background worker, where ``g.current_group`` isn't set). Resolves that group's
     saved provider overrides explicitly so a UI-configured provider still applies.
-    ``model`` overrides the provider's model for this run."""
+    ``provider`` forces a specific provider (else the group's active one); ``model``
+    overrides the provider's model for this run."""
     from .provider_config import effective_settings
     from .settings_access import resolved
-    eff = effective_settings(resolved(settings), gid)
+    eff = effective_settings(resolved(settings), gid, provider=provider)
     name = _configured_name(eff)
     if not name:
         raise ProviderError("No AI provider configured.")
@@ -88,6 +89,28 @@ def provider_for_group(gid, settings=None, model=None) -> AIProvider:
     if model:
         provider.model = str(model)[:100]  # per-run model override
     return provider
+
+
+def resolve_job_provider(kind, gid, settings=None, opts=None) -> AIProvider | None:
+    """Provider override for a background job of ``kind`` (nutrition / categorize /
+    cluster), or None to fall back to the group's configured chat provider.
+    Precedence: per-run ``opts`` (provider/model) > the stored async preference for
+    this kind. Raises ``ProviderError`` if the chosen provider is unavailable."""
+    from .provider_config import job_preference
+    opts = opts or {}
+    pref_provider, pref_model = job_preference(gid, kind)
+    provider = opts.get("provider") or pref_provider
+    model = opts.get("model") or pref_model
+    if not (provider or model):
+        return None
+    # Only pass provider= when actually switching provider, so a model-only override
+    # keeps the original call shape.
+    kwargs = {}
+    if model:
+        kwargs["model"] = model
+    if provider:
+        kwargs["provider"] = provider
+    return provider_for_group(gid, settings, **kwargs)
 
 
 def list_providers(settings=None) -> list[dict]:
