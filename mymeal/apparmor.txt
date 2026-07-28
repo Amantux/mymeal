@@ -1,0 +1,52 @@
+#include <tunables/global>
+
+# myMeal add-on AppArmor profile.
+#
+# Runtime: python:3.11-slim base (no s6-overlay; init: false). /app/docker-entrypoint.sh
+# runs a config check + optional Postgres provisioning, then gunicorn (the web/API app)
+# plus, alongside it, the MCP server. It talks to the Supervisor API (hassio_api) for
+# Edibl discovery, and to the AI provider / optional Postgres. Data lives in /data and
+# the mapped /share.
+#
+# Strategy: allow the app's own file I/O (broad `file` rule) but let AppArmor's
+# default-deny confine everything else — every Linux capability, mount, module load,
+# ptrace and raw socket NOT granted below is denied. Paths can be tightened to explicit
+# allow-lists once validated under enforcement on a real Home Assistant install.
+profile mymeal flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # The app reads/writes its own files: code in /app, the SQLite DB + recipe images
+  # in /data, the mapped /share, /tmp, /proc, and the Python runtime/site-packages.
+  file,
+
+  # Signals: the gunicorn master ↔ its workers, and clean shutdown forwarding.
+  signal,
+
+  # Ownership/permission handling at boot (also covers gosu if introduced later).
+  capability setuid,
+  capability setgid,
+  capability dac_override,
+  capability chown,
+  capability fowner,
+  capability fsetid,
+  capability kill,
+
+  # Execute the entrypoint, interpreters and helper binaries within THIS profile
+  # (ix = inherit), so gunicorn/python3 stay confined by the same rules.
+  /app/** ix,
+  /bin/** ix,
+  /usr/bin/** ix,
+  /usr/local/bin/** ix,
+  /usr/sbin/** ix,
+
+  # Networking: serve the app + MCP over TCP, reach the Supervisor API, the AI
+  # provider and optional Postgres (TCP egress), resolve DNS (UDP + netlink), local
+  # sockets.
+  network inet stream,
+  network inet6 stream,
+  network inet dgram,
+  network inet6 dgram,
+  network netlink raw,
+  network unix stream,
+  network unix dgram,
+}
