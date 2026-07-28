@@ -4,7 +4,6 @@ More AI features (meal planning, pantry suggestions, the cooking agent) attach
 to this blueprint in later milestones.
 """
 import json
-import re
 from datetime import date, timedelta
 
 import httpx
@@ -59,6 +58,25 @@ def providers():
     return jsonify({"providers": list_providers()})
 
 
+@bp.get("/ai/status")
+@login_required
+def ai_status():
+    """Whether a usable AI provider is configured, for the chat widget's setup
+    state. Readable by any member (not just the owner who edits it). Returns the
+    effective provider NAME only — never a key or URL."""
+    from ..services.ai import registry
+    try:
+        name = registry._configured_name(registry._effective()) or ""
+    except Exception:  # noqa: BLE001 - status must never 500
+        name = ""
+    try:
+        get_provider()
+        enabled = True
+    except ProviderError:
+        enabled = False
+    return jsonify({"enabled": enabled, "provider": name})
+
+
 @bp.get("/ai/chat-settings")
 @login_required
 def get_chat_settings():
@@ -111,13 +129,16 @@ def put_ai_settings():
     if provider is not None and str(provider) not in VALID_PROVIDERS:
         return jsonify({"error": f"unknown provider {provider!r}"}), 422
 
-    # A non-empty base URL must be http(s). It is operator-set config, but the
-    # DB path bypasses the env-layer URL parser, so validate here to avoid
-    # storing a scheme (file:, gopher:, javascript:) that a later server-side
-    # httpx call would act on.
+    # A non-empty base URL is SSRF-guarded: the DB path bypasses the env-layer
+    # URL parser, so validate the scheme AND the resolved address here to avoid
+    # storing a host a later server-side httpx call would fetch from (cloud
+    # metadata / link-local). Loopback + LAN stay allowed (local Ollama/SLM).
     base_url = data.get("baseUrl")
-    if base_url and not re.match(r"^https?://", str(base_url).strip()):
-        return jsonify({"error": "baseUrl must start with http:// or https://"}), 422
+    if base_url:
+        from ..services.ai.url_guard import llm_url_ok
+        ok, err = llm_url_ok(str(base_url).strip())
+        if not ok:
+            return jsonify({"error": err}), 422
 
     kwargs = {}
     if "provider" in data:
@@ -146,10 +167,16 @@ def list_ai_models():
     'List models' does not save the form as a side effect. Best-effort — returns
     [] rather than erroring."""
     from ..services.ai.provider_config import list_models, probe_config
+    from ..services.ai.url_guard import llm_url_ok
 
     data = request.get_json(silent=True) or {}
+    base_url = data.get("baseUrl")
+    if base_url:
+        ok, err = llm_url_ok(str(base_url).strip())
+        if not ok:
+            return jsonify({"error": err}), 422
     eff = probe_config(_base_settings(), current_group().id,
-                       provider=data.get("provider"), base_url=data.get("baseUrl"),
+                       provider=data.get("provider"), base_url=base_url,
                        api_key=data.get("apiKey"))
     return jsonify({"provider": eff.AI_PROVIDER, "models": list_models(eff)})
 

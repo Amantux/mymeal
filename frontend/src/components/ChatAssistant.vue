@@ -26,8 +26,13 @@ function setStreaming(on) {
   streamOverride.value = !!on
   localStorage.setItem(STREAM_KEY, on ? 'true' : 'false')
 }
+// Whether a usable AI provider is configured, so the widget can show a proactive
+// setup state instead of only failing when you send. Optimistic until loaded.
+const aiStatus = ref({ enabled: true, provider: '' })
+const notConfigured = computed(() => aiStatus.value.enabled === false)
 onMounted(async () => {
   try { householdDefault.value = !!(await api.get('/ai/chat-settings')).stream } catch (e) { /* default false */ }
+  try { aiStatus.value = await api.get('/ai/status') } catch (e) { /* stay optimistic */ }
 })
 
 // Maps a structured undo descriptor (from the server) to a known, safe API
@@ -175,7 +180,12 @@ async function send(text) {
     <transition name="asst-panel">
       <section v-if="open" class="panel" role="dialog" aria-label="Cooking assistant">
         <header class="phead">
-          <strong>🍳 Assistant</strong>
+          <div style="display:flex;gap:8px;align-items:center">
+            <strong>🍳 Assistant</strong>
+            <span class="ai-tag" :class="aiStatus.enabled ? 'on' : 'off'">
+              {{ aiStatus.enabled ? (aiStatus.provider || 'ready') : 'not set up' }}
+            </span>
+          </div>
           <div style="display:flex;gap:10px;align-items:center">
             <label class="stream-toggle" title="Stream the reply as it's written (this browser)">
               <input type="checkbox" :checked="streaming" @change="setStreaming($event.target.checked)" /> Stream
@@ -186,13 +196,21 @@ async function send(text) {
 
         <div ref="body" class="pbody">
           <div v-if="!msgs.length" class="empty">
-            <p class="muted">Ask me about recipes, planning, or your shopping list.</p>
-            <button
-              v-for="s in suggestions"
-              :key="s"
-              class="chip"
-              @click="send(s)"
-            >{{ s }}</button>
+            <template v-if="notConfigured">
+              <p class="muted">🔌 No AI provider is set up yet. Choose one — including a
+                fully-local <strong>Ollama</strong> — in
+                <router-link to="/settings" @click="toggle">Settings → AI provider</router-link>,
+                where you can <strong>Find Ollama</strong> and see its available models.</p>
+            </template>
+            <template v-else>
+              <p class="muted">Ask me about recipes, planning, or your shopping list.</p>
+              <button
+                v-for="s in suggestions"
+                :key="s"
+                class="chip"
+                @click="send(s)"
+              >{{ s }}</button>
+            </template>
           </div>
 
           <div v-for="(m, i) in msgs" :key="i" class="turn" :class="m.role">
@@ -226,12 +244,12 @@ async function send(text) {
           <input
             v-model="input"
             class="pinput"
-            placeholder="Message the assistant…"
-            :disabled="busy"
+            :placeholder="notConfigured ? 'Set up an AI provider to chat' : 'Message the assistant…'"
+            :disabled="busy || notConfigured"
             @keyup.enter="send()"
             aria-label="Message the assistant"
           />
-          <button class="send" :disabled="busy || !input.trim()" @click="send()">Send</button>
+          <button class="send" :disabled="busy || notConfigured || !input.trim()" @click="send()">Send</button>
         </div>
       </section>
     </transition>
@@ -283,6 +301,9 @@ async function send(text) {
 .linkish { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 0.8rem; }
 .stream-toggle { display: flex; align-items: center; gap: 5px; font-size: 0.78rem; color: var(--muted); cursor: pointer; user-select: none; }
 .stream-toggle input { width: auto; margin: 0; }
+.ai-tag { font-size: 0.66rem; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); white-space: nowrap; }
+.ai-tag.on { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.ai-tag.off { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
 
 .pbody { flex: 1; overflow-y: auto; padding: 16px; }
 .empty { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }

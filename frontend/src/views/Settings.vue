@@ -39,6 +39,9 @@ const allowsKey = computed(() => needsKey.value || form.provider === 'ollama')
 // hydration assignment in load() — Vue flushes watchers asynchronously, so a
 // plain `loading` flag wouldn't cover it.
 const suppress = ref(false)
+// Providers whose models we can enumerate from the server (Ollama /api/tags,
+// OpenAI /models). Claude has no list endpoint → free-text only.
+const canList = computed(() => ['ollama', 'ollama_cloud', 'openai'].includes(form.provider))
 watch(() => form.provider, () => {
   if (suppress.value) return
   form.baseUrl = ''
@@ -46,7 +49,29 @@ watch(() => form.provider, () => {
   form.apiKey = ''
   apiKeySet.value = false
   models.value = []
+  scheduleListModels()   // selecting Ollama probes the default host right away
 })
+// Re-probe (debounced) as the host is typed, so the available models appear
+// without hunting for a button — the whole point of the Ollama setup.
+watch(() => form.baseUrl, scheduleListModels)
+
+let _modelsTimer = null
+function scheduleListModels() {
+  clearTimeout(_modelsTimer)
+  _modelsTimer = setTimeout(autoListModels, 500)
+}
+// Best-effort SILENT model probe for the auto-list path (no toasts); the manual
+// "List models" button keeps loadModels() with its feedback.
+async function autoListModels() {
+  if (!canList.value) return
+  loadingModels.value = true
+  try {
+    const res = await api.post('/ai/models', {
+      provider: form.provider, baseUrl: form.baseUrl, apiKey: form.apiKey || undefined,
+    })
+    models.value = res.models || []
+  } catch (e) { /* auto-probe is best-effort */ } finally { loadingModels.value = false }
+}
 
 async function load() {
   loading.value = true
@@ -450,6 +475,10 @@ async function findOllama() {
             <option v-for="m in models" :key="m" :value="m" />
           </datalist>
           <span v-if="models.length" class="help">{{ models.length }} models available — pick from the list.</span>
+          <span v-else-if="loadingModels" class="help">Looking for available models…</span>
+          <span v-else-if="canList && form.baseUrl" class="help">
+            No models found at that host yet — check it's running, or type the model name.
+          </span>
         </label>
       </template>
 
