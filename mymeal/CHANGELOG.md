@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.1.63
+
+- Easier Ollama setup — auto-list models, widget setup state, SSRF guard.
+
 ## 1.1.62
 
 - Bundle a custom AppArmor profile.
