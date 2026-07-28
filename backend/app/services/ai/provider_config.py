@@ -86,6 +86,19 @@ def set_overrides(gid, provider=None, base_url=None, model=None,
     db.session.commit()
 
 
+CHAT_STREAM_KEY = "chat_streaming"
+
+
+def get_chat_stream(gid: str | None) -> bool:
+    """This group's household default for streaming chat replies (default False)."""
+    return (_all(gid).get(CHAT_STREAM_KEY) or "").strip().lower() == "true" if gid else False
+
+
+def set_chat_stream(gid: str, on: bool) -> None:
+    _set(gid, CHAT_STREAM_KEY, "true" if on else "false")
+    db.session.commit()
+
+
 def effective_settings(base, gid: str | None):
     """Env-derived settings with the ACTIVE provider's fields overridden by this
     group's non-empty DB values. Per-provider namespacing means a stored key or

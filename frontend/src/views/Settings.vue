@@ -76,6 +76,22 @@ async function load() {
 }
 onMounted(load)
 
+// Household default for streaming chat replies (owner-editable here; each browser
+// overrides it on the chat widget). Default is classic POST.
+const chatStreamDefault = ref(false)
+const chatSaving = ref(false)
+async function loadChatDefault() {
+  try { chatStreamDefault.value = !!(await api.get('/ai/chat-settings')).stream } catch (e) { /* keep default */ }
+}
+async function saveChatDefault(on) {
+  chatSaving.value = true
+  try {
+    chatStreamDefault.value = !!(await api.put('/ai/chat-settings', { stream: on })).stream
+    ui.toast('Saved chat default')
+  } catch (e) { ui.toast(e.message || 'Could not save', 'error') } finally { chatSaving.value = false }
+}
+onMounted(loadChatDefault)
+
 // Bulk nutrition estimation — an async background job with progress.
 const nutriJob = ref(null)
 const nutriStarting = ref(false)
@@ -441,6 +457,18 @@ async function findOllama() {
         <button type="submit" class="secondary" :disabled="saving">{{ saving ? 'Saving…' : 'Save' }}</button>
       </div>
     </form>
+  </div>
+
+  <div class="card" v-if="!loading">
+    <h2>Chat</h2>
+    <p class="muted">Household default for how chat replies arrive. <strong>Stream</strong>
+      shows the answer as it's written; <strong>classic</strong> shows it all at once.
+      Each person can override this for their own browser on the chat widget.</p>
+    <label style="display:flex;gap:8px;align-items:center">
+      <input type="checkbox" style="width:auto" :checked="chatStreamDefault" :disabled="chatSaving"
+        @change="saveChatDefault($event.target.checked)" />
+      <span>Stream chat responses by default</span>
+    </label>
   </div>
 
   <div class="card" v-if="!loading">

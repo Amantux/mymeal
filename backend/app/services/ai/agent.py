@@ -588,3 +588,63 @@ def run_chat(
     # Exhausted the loop — ask once more for a plain answer.
     final = provider.chat(messages, system=system)
     return {"reply": final.content or "", "trace": trace}
+
+
+def run_chat_stream(gid, provider, history, user_message, max_iters=6):
+    """Streaming variant of :func:`run_chat`.
+
+    Yields ``{"type":"delta","text"}`` / ``{"type":"tool","name"}`` events and a
+    terminal ``{"type":"done","reply","trace"}``. Same tool loop as
+    :func:`run_chat` (Edibl tools + prefs folded in identically); each model turn
+    is streamed live. The caller owns the single commit — tools only ``flush``."""
+    messages = list(history) + [{"role": "user", "content": user_message}]
+    trace: list[dict] = []
+    connected = _edibl_connected()
+    tools = TOOLS + _EDIBL_TOOLS if connected else TOOLS
+    system = SYSTEM + _EDIBL_PROMPT if connected else SYSTEM
+    prefs = preferences_text(gid)
+    if prefs:
+        system += (
+            f" This household's food preferences (honour them; never suggest a "
+            f"listed allergen): {prefs}."
+        )
+
+    def _turn(use_tools: bool):
+        result = None
+        for ev in provider.chat_stream(messages, system=system,
+                                       tools=(tools if use_tools else None)):
+            if ev["type"] == "delta":
+                if ev["text"]:
+                    yield {"type": "delta", "text": ev["text"]}
+            elif ev["type"] == "final":
+                result = ev["result"]
+        yield {"type": "_result", "result": result}
+
+    for _ in range(max_iters):
+        result = None
+        for ev in _turn(True):
+            if ev["type"] == "_result":
+                result = ev["result"]
+            else:
+                yield ev
+        if result is None or not result.tool_calls:
+            yield {"type": "done", "reply": (result.content if result else ""), "trace": trace}
+            return
+        messages.append({"role": "assistant", "content": result.content or "(using tools)"})
+        for call in result.tool_calls:
+            yield {"type": "tool", "name": call.name}
+            try:
+                output = execute_tool(gid, call.name, call.arguments)
+            except Exception as exc:  # noqa: BLE001 - feed errors back, never 500
+                output = {"error": f"{call.name} failed: {exc}"}
+            trace.append({"tool": call.name, "args": call.arguments, "result": output})
+            messages.append({"role": "user", "content": (
+                f"Result of {call.name}({json.dumps(call.arguments)}): "
+                f"{json.dumps(output)}")})
+    result = None
+    for ev in _turn(False):
+        if ev["type"] == "_result":
+            result = ev["result"]
+        else:
+            yield ev
+    yield {"type": "done", "reply": (result.content if result else ""), "trace": trace}

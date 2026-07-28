@@ -59,6 +59,24 @@ def providers():
     return jsonify({"providers": list_providers()})
 
 
+@bp.get("/ai/chat-settings")
+@login_required
+def get_chat_settings():
+    """This household's default for streaming chat replies. Any member reads it
+    (each browser can also override on the chat widget); only the owner sets it."""
+    from ..services.ai.provider_config import get_chat_stream
+    return jsonify({"stream": get_chat_stream(current_group().id)})
+
+
+@bp.put("/ai/chat-settings")
+@owner_required
+def put_chat_settings():
+    from ..services.ai.provider_config import set_chat_stream
+    stream = bool((request.get_json(force=True) or {}).get("stream"))
+    set_chat_stream(current_group().id, stream)
+    return jsonify({"stream": stream})
+
+
 def _base_settings():
     from flask import current_app
     return current_app.config["SETTINGS"]

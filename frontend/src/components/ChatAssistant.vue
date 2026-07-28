@@ -3,11 +3,32 @@
 // from Edibl's ChatAssistant so the two apps share one chat experience. Reuses
 // myMeal's session-based /ai/chat backend (multi-turn within an open panel);
 // shows suggestion chips when empty and action chips for what the assistant did.
-import { ref, computed, watch, nextTick } from 'vue'
-import { api } from '../api'
+import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import { api, streamPost } from '../api'
 import { useUI } from '../stores/ui'
 
 const ui = useUI()
+
+// Transport: per-browser override (localStorage) wins over the household default
+// (backend), which defaults to classic POST. See docs/chat-and-providers.md.
+const STREAM_KEY = 'mymeal_chat_stream'
+const householdDefault = ref(false)
+const streamOverride = ref(readStreamOverride())
+const streaming = computed(() =>
+  streamOverride.value === null ? householdDefault.value : streamOverride.value)
+function readStreamOverride() {
+  const v = localStorage.getItem(STREAM_KEY)
+  if (v === 'true') return true
+  if (v === 'false') return false
+  return null
+}
+function setStreaming(on) {
+  streamOverride.value = !!on
+  localStorage.setItem(STREAM_KEY, on ? 'true' : 'false')
+}
+onMounted(async () => {
+  try { householdDefault.value = !!(await api.get('/ai/chat-settings')).stream } catch (e) { /* default false */ }
+})
 
 // Maps a structured undo descriptor (from the server) to a known, safe API
 // call. The server never dictates an arbitrary method/path — it names a `kind`
@@ -84,6 +105,33 @@ function reset() {
   sessionId.value = null
 }
 
+async function sendPost(content) {
+  const res = await api.post('/ai/chat', { sessionId: sessionId.value, message: content })
+  sessionId.value = res.sessionId
+  const actions = res.actions || []
+  msgs.value.push({ role: 'assistant', content: res.reply, actions })
+  // If the assistant changed anything (planned a meal, added to the list, …),
+  // signal live views to refresh so the change shows without a manual reload.
+  if (actions.length) ui.dataChanged()
+}
+
+async function sendStream(content) {
+  msgs.value.push({ role: 'assistant', content: '', actions: [] })
+  const idx = msgs.value.length - 1 // mutate via the reactive proxy, not the raw object
+  let errored = null
+  await streamPost('/ai/chat/stream', { sessionId: sessionId.value, message: content }, (ev) => {
+    const a = msgs.value[idx]
+    if (ev.type === 'delta') { a.content += ev.text; scrollDown() }
+    else if (ev.type === 'done') {
+      sessionId.value = ev.sessionId
+      a.content = ev.reply || a.content
+      a.actions = ev.actions || []
+      if (a.actions.length) ui.dataChanged()
+    } else if (ev.type === 'error') { errored = new Error(ev.error || 'Something went wrong.') }
+  })
+  if (errored) { msgs.value.pop(); throw errored }
+}
+
 async function send(text) {
   const content = (text ?? input.value).trim()
   if (!content || busy.value) return
@@ -92,13 +140,8 @@ async function send(text) {
   busy.value = true
   await scrollDown()
   try {
-    const res = await api.post('/ai/chat', { sessionId: sessionId.value, message: content })
-    sessionId.value = res.sessionId
-    const actions = res.actions || []
-    msgs.value.push({ role: 'assistant', content: res.reply, actions })
-    // If the assistant changed anything (planned a meal, added to the list, …),
-    // signal live views to refresh so the change shows without a manual reload.
-    if (actions.length) ui.dataChanged()
+    if (streaming.value) await sendStream(content)
+    else await sendPost(content)
   } catch (e) {
     // 503 = no AI provider configured; surface the server's guidance inline.
     msgs.value.push({
@@ -128,7 +171,12 @@ async function send(text) {
       <section v-if="open" class="panel" role="dialog" aria-label="Cooking assistant">
         <header class="phead">
           <strong>🍳 Assistant</strong>
-          <button v-if="msgs.length" class="linkish" @click="reset">New chat</button>
+          <div style="display:flex;gap:10px;align-items:center">
+            <label class="stream-toggle" title="Stream the reply as it's written (this browser)">
+              <input type="checkbox" :checked="streaming" @change="setStreaming($event.target.checked)" /> Stream
+            </label>
+            <button v-if="msgs.length" class="linkish" @click="reset">New chat</button>
+          </div>
         </header>
 
         <div ref="body" class="pbody">
@@ -143,7 +191,10 @@ async function send(text) {
           </div>
 
           <div v-for="(m, i) in msgs" :key="i" class="turn" :class="m.role">
-            <div class="bubble" :class="{ err: m.error }">{{ m.content }}</div>
+            <div class="bubble" :class="{ err: m.error }">
+              <template v-if="m.content">{{ m.content }}</template>
+              <span v-else-if="!m.error" class="muted">…</span>
+            </div>
             <div v-if="m.actions && m.actions.length" class="actions">
               <span
                 v-for="(a, j) in m.actions"
@@ -163,7 +214,7 @@ async function send(text) {
             </div>
           </div>
 
-          <div v-if="busy" class="muted thinking">Thinking…</div>
+          <div v-if="busy && !streaming" class="muted thinking">Thinking…</div>
         </div>
 
         <div class="pfoot">
@@ -225,6 +276,8 @@ async function send(text) {
   border-bottom: 1px solid var(--border);
 }
 .linkish { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 0.8rem; }
+.stream-toggle { display: flex; align-items: center; gap: 5px; font-size: 0.78rem; color: var(--muted); cursor: pointer; user-select: none; }
+.stream-toggle input { width: auto; margin: 0; }
 
 .pbody { flex: 1; overflow-y: auto; padding: 16px; }
 .empty { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }

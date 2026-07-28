@@ -8,6 +8,8 @@ for Ollama Cloud or a secured/proxied instance.
 """
 from __future__ import annotations
 
+import json
+
 import httpx
 
 from .base import AIProvider, ChatResult, ProviderError, ToolCall
@@ -109,6 +111,53 @@ class OllamaProvider(AIProvider):
                 )
             )
         return out
+
+    def chat_stream(self, messages, system="", tools=None, max_tokens=2048):
+        """True token streaming via Ollama's NDJSON stream (one JSON object per
+        line, each with an incremental ``message.content``; tool calls arrive in
+        the message object, typically on the final chunk)."""
+        msgs = ([{"role": "system", "content": system}] if system else []) + messages
+        payload = {
+            "model": self.model,
+            "stream": True,
+            "options": {"num_predict": max_tokens},
+            "messages": msgs,
+        }
+        if tools:
+            payload["tools"] = [
+                {"type": "function", "function": {
+                    "name": t["name"], "description": t.get("description", ""),
+                    "parameters": t.get("parameters", {"type": "object"})}}
+                for t in tools
+            ]
+        content = ""
+        raw_calls: list[dict] = []
+        try:
+            with httpx.stream("POST", f"{self.host}/api/chat", json=payload,
+                              headers=self._headers(), timeout=self.timeout) as r:
+                r.raise_for_status()
+                for line in r.iter_lines():
+                    if not line:
+                        continue
+                    obj = json.loads(line)
+                    msg = obj.get("message") or {}
+                    piece = msg.get("content") or ""
+                    if piece:
+                        content += piece
+                        yield {"type": "delta", "text": piece}
+                    for call in msg.get("tool_calls") or []:
+                        raw_calls.append(call)
+                    if obj.get("done"):
+                        break
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"ollama request failed: {exc}") from exc
+        out = ChatResult(content=content)
+        for i, call in enumerate(raw_calls):
+            fn = call.get("function", {})
+            out.tool_calls.append(ToolCall(
+                id=f"call_{i}", name=fn.get("name", ""),
+                arguments=fn.get("arguments", {}) or {}))
+        yield {"type": "final", "result": out}
 
 
 class OllamaCloudProvider(OllamaProvider):
