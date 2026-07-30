@@ -137,6 +137,86 @@ async function saveJobAi() {
 }
 onMounted(loadJobAi)
 
+// --- Sync AI settings across the companion apps (Edibl / HomeHoard / myMeal) ---
+// They deploy together, so this exports the AI config as a portable string you paste
+// into each app's Settings. The API key is NEVER part of the string — it is set per
+// app so a copied config can't leak a secret between browsers/apps.
+const syncOut = ref('')     // the string we produced (shown for manual copy)
+const syncIn = ref('')      // a string pasted from another app
+const syncErr = ref('')
+const syncBusy = ref(false)
+
+function b64encode(s) {
+  const bytes = new TextEncoder().encode(s)
+  let bin = ''
+  for (const b of bytes) bin += String.fromCharCode(b)
+  return btoa(bin)
+}
+function b64decode(s) {
+  const bytes = Uint8Array.from(atob(s), (c) => c.charCodeAt(0))
+  return new TextDecoder().decode(bytes)
+}
+
+function encodeAiSettings() {
+  // App-agnostic field names so the same string applies in Edibl/HomeHoard/myMeal.
+  const cfg = {
+    v: 1,
+    provider: form.provider || '',
+    baseUrl: form.baseUrl || '',
+    model: form.model || '',
+    stream: !!chatStreamDefault.value,
+    jobEnrich: { provider: jobAi.value.enrich?.provider || '', model: jobAi.value.enrich?.model || '' },
+    jobOrganize: { provider: jobAi.value.organize?.provider || '', model: jobAi.value.organize?.model || '' },
+  }
+  return 'AICFG1:' + b64encode(JSON.stringify(cfg))
+}
+
+async function copyAiSettings() {
+  const str = encodeAiSettings()
+  syncOut.value = str
+  try {
+    await navigator.clipboard.writeText(str)
+    ui.toast('Copied — paste into the other apps’ Settings (the API key is not included)')
+  } catch (e) {
+    ui.toast('Select the text below and copy it', 'info')
+  }
+}
+
+async function applyAiSettings() {
+  syncErr.value = ''
+  const raw = (syncIn.value || '').trim()
+  if (!raw.startsWith('AICFG1:')) {
+    syncErr.value = 'Paste a settings string that starts with AICFG1:'
+    return
+  }
+  let cfg
+  try { cfg = JSON.parse(b64decode(raw.slice(7))) } catch (e) { cfg = null }
+  if (!cfg || typeof cfg !== 'object') {
+    syncErr.value = 'That settings string is not valid — copy it again from the other app.'
+    return
+  }
+  syncBusy.value = true
+  try {
+    // Provider settings — the API key is deliberately never part of the string, so
+    // this leaves this app's stored key untouched (a blank apiKey is not sent).
+    await api.put('/ai/settings', {
+      provider: cfg.provider || '', baseUrl: cfg.baseUrl || '', model: cfg.model || '',
+    })
+    await api.put('/ai/chat-settings', { stream: !!cfg.stream })
+    await api.put('/ai/job-settings', {
+      enrich: cfg.jobEnrich || { provider: '', model: '' },
+      organize: cfg.jobOrganize || { provider: '', model: '' },
+    })
+    syncIn.value = ''
+    await Promise.all([load(), loadChatDefault(), loadJobAi()])
+    ui.toast('AI settings applied — add this app’s API key below if the provider needs one')
+  } catch (e) {
+    syncErr.value = e.message || 'Could not apply the settings.'
+  } finally {
+    syncBusy.value = false
+  }
+}
+
 // Model picker for the background-task preference: probe the chosen provider
 // (blank = the chat provider) for its models, so you can pick a small/local SLM
 // instead of typing it. Uses that provider's saved config.
@@ -560,6 +640,32 @@ async function findOllama() {
     <div class="row" style="margin-top:8px">
       <button type="button" class="secondary" :disabled="jobAiSaving" @click="saveJobAi">
         {{ jobAiSaving ? 'Saving…' : 'Save' }}</button>
+    </div>
+  </div>
+
+  <div class="card" v-if="!loading">
+    <h2>Sync AI settings across apps</h2>
+    <p class="muted">myMeal, Edibl and HomeHoard usually run side by side. Copy this app's AI
+      configuration — provider, model, chat and background-task defaults — as a portable string,
+      then paste it into the other apps' Settings so they all match. The
+      <strong>API key is never included</strong>; set each app's key on its own below.</p>
+    <div class="row" style="margin-bottom:8px">
+      <button type="button" class="secondary" @click="copyAiSettings">📋 Copy AI settings</button>
+    </div>
+    <textarea v-if="syncOut" readonly rows="2" :value="syncOut"
+      style="width:100%;font-family:monospace;font-size:.78rem" @focus="$event.target.select()"
+      aria-label="AI settings string to copy"></textarea>
+
+    <div style="margin-top:14px">
+      <label for="ai-sync-in" class="muted" style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:4px">
+        Paste settings from another app</label>
+      <textarea id="ai-sync-in" v-model="syncIn" rows="2" placeholder="AICFG1:…"
+        style="width:100%;font-family:monospace;font-size:.78rem"></textarea>
+      <p v-if="syncErr" class="help danger" style="margin:4px 0 0">{{ syncErr }}</p>
+      <div class="row" style="margin-top:8px">
+        <button type="button" class="secondary" :disabled="syncBusy || !syncIn.trim()" @click="applyAiSettings">
+          {{ syncBusy ? 'Applying…' : 'Apply settings' }}</button>
+      </div>
     </div>
   </div>
 
