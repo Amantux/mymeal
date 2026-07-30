@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.1.67
+
+- Report-a-bug walkthrough in the assistant.
+
 ## 1.1.66
 
 - Pick the background-task model from a selectable dropdown.
