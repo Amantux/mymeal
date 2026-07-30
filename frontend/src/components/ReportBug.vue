@@ -14,11 +14,13 @@ const VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'unkn
 const MAX_URL = 6800
 
 const emit = defineEmits(['close'])
+// `initial` prefills the form when opened from the chat "report a bug" walkthrough.
+const props = defineProps({ initial: { type: Object, default: null } })
 const route = useRoute()
 
-const type = ref('bug') // 'bug' | 'feature'
+const type = ref(props.initial?.type || 'bug') // 'bug' | 'feature'
 const title = ref('')
-const description = ref('')
+const description = ref(props.initial?.description || '')
 const includeDiag = ref(true)
 const diagText = ref('')
 const loading = ref(true)

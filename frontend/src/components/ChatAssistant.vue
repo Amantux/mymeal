@@ -110,11 +110,21 @@ function reset() {
   sessionId.value = null
 }
 
+// The assistant ends a bug-report walkthrough with [[REPORT_BUG]]; hide the marker
+// and expose the summary so we can offer to open the prefilled bug reporter.
+const BUG_MARKER = '[[REPORT_BUG]]'
+function extractBug(text) {
+  if (!text || !text.includes(BUG_MARKER)) return { content: text, summary: null }
+  const content = text.split(BUG_MARKER).join('').trimEnd()
+  return { content, summary: content }
+}
+
 async function sendPost(content) {
   const res = await api.post('/ai/chat', { sessionId: sessionId.value, message: content })
   sessionId.value = res.sessionId
   const actions = res.actions || []
-  msgs.value.push({ role: 'assistant', content: res.reply, actions })
+  const { content: clean, summary } = extractBug(res.reply)
+  msgs.value.push({ role: 'assistant', content: clean, actions, bugReportSummary: summary })
   // If the assistant changed anything (planned a meal, added to the list, …),
   // signal live views to refresh so the change shows without a manual reload.
   if (actions.length) ui.dataChanged()
@@ -130,7 +140,9 @@ async function sendStream(content) {
       if (ev.type === 'delta') { a.content += ev.text; scrollDown() }
       else if (ev.type === 'done') {
         sessionId.value = ev.sessionId
-        a.content = ev.reply || a.content
+        const { content: clean, summary } = extractBug(ev.reply || a.content)
+        a.content = clean
+        a.bugReportSummary = summary
         a.actions = ev.actions || []
         if (a.actions.length) ui.dataChanged()
       } else if (ev.type === 'error') { errored = new Error(ev.error || 'Something went wrong.') }
@@ -234,6 +246,12 @@ async function send(text) {
                 >{{ a.undoing ? '…' : 'Undo' }}</button>
                 <span v-else-if="a.undone" class="undone-tag">Undone</span>
               </span>
+            </div>
+            <div v-if="m.bugReportSummary" class="actions">
+              <button class="bug-report-btn"
+                      @click="ui.openBugReport({ description: m.bugReportSummary, type: 'bug' })">
+                🐞 Open bug report
+              </button>
             </div>
           </div>
 
@@ -346,6 +364,12 @@ async function send(text) {
   padding: 3px 4px 3px 9px;
 }
 .action.undone { background: var(--surface-2); color: var(--muted); text-decoration: line-through; }
+.bug-report-btn {
+  font-size: 0.78rem; font-weight: 600; cursor: pointer;
+  background: var(--accent); color: #fff; border: none;
+  border-radius: 999px; padding: 5px 12px;
+}
+.bug-report-btn:hover { filter: brightness(0.95); }
 .undo {
   border: 1px solid currentColor;
   background: transparent;

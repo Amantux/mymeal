@@ -12,6 +12,9 @@ export const useUI = defineStore('ui', {
     assistantOpen: false,
     // Optional text to prefill/send when the assistant opens from elsewhere.
     assistantPrompt: null,
+    // When set (e.g. from a chat "report a bug" walkthrough), the Report-a-bug
+    // modal opens prefilled with this {description, type} payload.
+    bugReport: null,
     // Bumped whenever data is mutated in-app (e.g. a chat-assistant action) so
     // every live view refetches instantly instead of waiting for the poll.
     dataVersion: 0,
@@ -30,6 +33,12 @@ export const useUI = defineStore('ui', {
     },
     toggleAssistant() {
       this.assistantOpen = !this.assistantOpen
+    },
+    openBugReport(payload = {}) {
+      this.bugReport = payload
+    },
+    closeBugReport() {
+      this.bugReport = null
     },
     applyTheme() {
       const resolved =

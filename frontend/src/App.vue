@@ -91,7 +91,8 @@ const nav = [
         </div>
       </div>
     </div>
-    <ReportBug v-if="showReport" @close="showReport = false" />
+    <ReportBug v-if="showReport || ui.bugReport" :initial="ui.bugReport"
+               @close="showReport = false; ui.closeBugReport()" />
     <Toasts />
     <ChatAssistant />
   </template>
