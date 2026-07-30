@@ -6,6 +6,7 @@
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { api, streamPost } from '../api'
 import { useUI } from '../stores/ui'
+import { hideMarker, finalizeReply } from '../utils/bugMarker'
 
 const ui = useUI()
 
@@ -110,20 +111,11 @@ function reset() {
   sessionId.value = null
 }
 
-// The assistant ends a bug-report walkthrough with [[REPORT_BUG]]; hide the marker
-// and expose the summary so we can offer to open the prefilled bug reporter.
-const BUG_MARKER = '[[REPORT_BUG]]'
-function extractBug(text) {
-  if (!text || !text.includes(BUG_MARKER)) return { content: text, summary: null }
-  const content = text.split(BUG_MARKER).join('').trimEnd()
-  return { content, summary: content }
-}
-
 async function sendPost(content) {
   const res = await api.post('/ai/chat', { sessionId: sessionId.value, message: content })
   sessionId.value = res.sessionId
   const actions = res.actions || []
-  const { content: clean, summary } = extractBug(res.reply)
+  const { content: clean, summary } = finalizeReply(res.reply)
   msgs.value.push({ role: 'assistant', content: clean, actions, bugReportSummary: summary })
   // If the assistant changed anything (planned a meal, added to the list, …),
   // signal live views to refresh so the change shows without a manual reload.
@@ -131,16 +123,18 @@ async function sendPost(content) {
 }
 
 async function sendStream(content) {
-  msgs.value.push({ role: 'assistant', content: '', actions: [] })
+  msgs.value.push({ role: 'assistant', content: '', raw: '', actions: [] })
   const idx = msgs.value.length - 1 // mutate via the reactive proxy, not the raw object
   let errored = null
   try {
     await streamPost('/ai/chat/stream', { sessionId: sessionId.value, message: content }, (ev) => {
       const a = msgs.value[idx]
-      if (ev.type === 'delta') { a.content += ev.text; scrollDown() }
+      // Accumulate the raw stream but DISPLAY a marker-hidden view, so [[REPORT_BUG]]
+      // (even a half-streamed partial) never flashes in the bubble before `done`.
+      if (ev.type === 'delta') { a.raw += ev.text; a.content = hideMarker(a.raw); scrollDown() }
       else if (ev.type === 'done') {
         sessionId.value = ev.sessionId
-        const { content: clean, summary } = extractBug(ev.reply || a.content)
+        const { content: clean, summary } = finalizeReply(ev.reply || a.raw || a.content)
         a.content = clean
         a.bugReportSummary = summary
         a.actions = ev.actions || []
