@@ -272,6 +272,10 @@ def _user_from_api_token(raw: str):
     )
     if record is None:
         return None
+    # Scope gate: an MCP-only key must not authenticate the REST API (it is issued
+    # for the MCP server alone). full/rest (and legacy NULL → "full") pass.
+    if (record.scope or "full") == "mcp":
+        return None
     # Record usage, but at most once a minute to avoid a write on every request.
     now = datetime.utcnow()
     if record.last_used_at is None or (now - record.last_used_at).total_seconds() > 60:

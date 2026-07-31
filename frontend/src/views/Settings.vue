@@ -490,6 +490,7 @@ async function setAdmin(m, makeAdmin) {
 // --- API keys (machine-client tokens: HACS integration, MCP, Edibl link) ---
 const keys = ref([])
 const newKeyName = ref('')
+const newKeyScope = ref('full')      // full (REST+MCP) | rest | mcp
 const mintedKey = ref(null)          // raw token, shown once
 const keysBusy = ref(false)
 
@@ -500,9 +501,11 @@ async function loadKeys() {
 async function mintKey() {
   keysBusy.value = true
   try {
-    const r = await api.post('/tokens', { name: newKeyName.value || 'Connected app' })
+    const r = await api.post('/tokens', {
+      name: newKeyName.value || 'Connected app', scope: newKeyScope.value })
     mintedKey.value = r.token
     newKeyName.value = ''
+    newKeyScope.value = 'full'
     await loadKeys()
   } catch (e) {
     ui.error(e.message || 'Could not create key')
@@ -876,8 +879,17 @@ async function findOllama() {
 
     <div class="row" style="margin:12px 0;max-width:520px">
       <input v-model="newKeyName" class="fill" placeholder="Name (e.g. Home Assistant)" />
+      <select v-model="newKeyScope" aria-label="Key scope">
+        <option value="full">Full (REST + MCP)</option>
+        <option value="rest">REST only</option>
+        <option value="mcp">MCP only</option>
+      </select>
       <button type="button" class="secondary" :disabled="keysBusy" @click="mintKey">Create key</button>
     </div>
+    <p class="muted" style="font-size:0.78rem;max-width:520px;margin:-4px 0 0">
+      Use an <strong>MCP</strong>-scoped key to expose the MCP server outside Home
+      Assistant — it works only against the MCP endpoint, not the REST API.
+    </p>
 
     <div v-if="!keys.length" class="key-empty muted">
       <span class="ke-ico">🔑</span> No API keys yet — create one above to connect a client.
@@ -891,7 +903,7 @@ async function findOllama() {
       <div class="fill">
         <div style="font-weight:600">{{ k.name || 'API key' }}</div>
         <div class="muted" style="font-size:0.78rem">
-          {{ k.hint }} · created {{ (k.createdAt || '').slice(0, 10) }}
+          {{ k.hint }} · <span style="text-transform:uppercase">{{ k.scope || 'full' }}</span> · created {{ (k.createdAt || '').slice(0, 10) }}
           <span v-if="k.lastUsedAt"> · last used {{ (k.lastUsedAt || '').slice(0, 10) }}</span>
           <span v-else> · never used</span>
         </div>

@@ -6,6 +6,7 @@ from .api_token import (  # noqa: F401
     generate_raw_token,
     hash_token,
     TOKEN_PREFIX,
+    TOKEN_SCOPES,
 )
 from .food import Food, Unit  # noqa: F401
 from .category import Category, recipe_categories  # noqa: F401
@@ -31,6 +32,7 @@ __all__ = [
     "generate_raw_token",
     "hash_token",
     "TOKEN_PREFIX",
+    "TOKEN_SCOPES",
     "Food",
     "Unit",
     "Category",

@@ -8,7 +8,9 @@ can I make right now?", and manage the shopping list by voice via Assist.
 Run:  python mcp_server.py    (serves SSE on MYMEAL_MCP_HOST:MYMEAL_MCP_PORT/sse)
 """
 import datetime
+import hmac
 import os
+import sys
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -273,11 +275,132 @@ def remove_from_shopping_list(item: str) -> str:
     return f"Removed {removed} of {len(matches)} item(s) from {sl['name']}."
 
 
+def _bool_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+_app = None
+
+
+def _get_app():
+    """A minimal DB-only Flask app for API-key lookups, built once. We deliberately
+    do NOT call the app's create_app() here — that would start a second background
+    job worker in this sidecar. The main process/entrypoint already initialized the
+    schema, so this only needs a session bound to the same database."""
+    global _app
+    if _app is None:
+        from flask import Flask
+        from app.extensions import db
+        from app.settings import load_settings
+        import app.models  # noqa: F401 — register tables on db.metadata
+
+        s = load_settings()
+        flask_app = Flask("mymeal-mcp-auth")
+        flask_app.config["SQLALCHEMY_DATABASE_URI"] = s.sqlalchemy_uri
+        flask_app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+        # Match the REST app: pre-ping so a pooled connection dropped by an idle
+        # timeout (shared Postgres) doesn't make a key lookup raise → spurious 401.
+        flask_app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True}
+        db.init_app(flask_app)
+        _app = flask_app
+    return _app
+
+
+def _key_ok(raw: str) -> bool:
+    """True if `raw` is a live ApiToken whose scope allows MCP (`mcp` or `full`)."""
+    if not raw:
+        return False
+    try:
+        app = _get_app()
+        from app.extensions import db
+        from app.models import ApiToken, hash_token
+        with app.app_context():
+            rec = (
+                db.session.query(ApiToken)
+                .filter_by(token_hash=hash_token(raw))
+                .first()
+            )
+            ok = rec is not None and (rec.scope or "full") in ("mcp", "full")
+            db.session.remove()
+            return ok
+    except Exception as exc:  # noqa: BLE001 — fail closed on any lookup error
+        print(f"mymeal-mcp: key check failed: {exc}", file=sys.stderr)
+        return False
+
+
+def _mcp_capable_key_exists_when_ready(retries: int = 15, delay: float = 2.0) -> bool:
+    """`_mcp_capable_key_exists`, tolerant of a not-yet-migrated DB at boot. The
+    sidecar can start before the main app has run migrations, so a missing table or
+    the `scope` column would otherwise make the startup check exit permanently (the
+    supervise loop never restarts it). Retry on a DB structural error for a bounded
+    window; a clean "no key" result (no exception) returns immediately. Re-raises
+    after exhausting retries so the caller still fails closed."""
+    import time
+
+    from sqlalchemy.exc import OperationalError, ProgrammingError
+
+    last = None
+    for _ in range(retries):
+        try:
+            return _mcp_capable_key_exists()
+        except (OperationalError, ProgrammingError) as exc:
+            last = exc
+            print(f"mymeal-mcp: DB not ready for the key check, retrying: {exc}",
+                  file=sys.stderr)
+            time.sleep(delay)
+    raise last if last is not None else RuntimeError("DB schema never became ready")
+
+
+def _mcp_capable_key_exists() -> bool:
+    """True if at least one live key can authorize MCP (scope mcp or full). Used to
+    refuse to serve when external exposure is on but no usable key exists yet."""
+    app = _get_app()
+    from app.extensions import db
+    from app.models import ApiToken
+    with app.app_context():
+        exists = (
+            db.session.query(ApiToken.id)
+            .filter(ApiToken.scope.in_(("mcp", "full")))
+            .first()
+            is not None
+        )
+        db.session.remove()
+        return exists
+
+
+def _authorized(header_value: str, server_token: str) -> bool:
+    """Authorized if the request presents the static server token (when configured)
+    or a live REST key whose scope allows MCP."""
+    if server_token and hmac.compare_digest(header_value, f"Bearer {server_token}"):
+        return True
+    if header_value.startswith("Bearer "):
+        return _key_ok(header_value[len("Bearer "):].strip())
+    return False
+
+
+def _guard(asgi_app, server_token: str):
+    """ASGI gate requiring auth on every HTTP request — used when the MCP server is
+    exposed outside Home Assistant. Accepts the static server token or a scoped key."""
+    async def wrapper(scope, receive, send):
+        if scope["type"] == "http":
+            # latin-1 decode never raises on arbitrary bytes (unlike utf-8), so a
+            # malformed Authorization header 401s cleanly instead of 500ing.
+            header = dict(scope.get("headers") or []).get(
+                b"authorization", b"").decode("latin-1")
+            if not _authorized(header, server_token):
+                await send({"type": "http.response.start", "status": 401,
+                            "headers": [(b"content-type", b"text/plain")]})
+                await send({"type": "http.response.body", "body": b"unauthorized"})
+                return
+        await asgi_app(scope, receive, send)
+
+    return wrapper
+
+
 def _require_token(asgi_app, token: str):
-    """ASGI wrapper: reject HTTP requests without `Authorization: Bearer <token>`.
-    Mirrors Edibl/HomeHoard so Home Assistant can authenticate to the MCP server
-    (important now that it can create recipes and delete meal plans)."""
-    import hmac
+    """ASGI wrapper for the internal/HA-voice path: reject requests without the
+    static `Authorization: Bearer <token>` (used when a token is set but the
+    endpoint is NOT exposed externally)."""
     expected = f"Bearer {token}".encode()
 
     async def wrapper(scope, receive, send):
@@ -296,13 +419,32 @@ def _require_token(asgi_app, token: str):
 
 
 if __name__ == "__main__":
-    import sys
-
     host = os.environ.get("MYMEAL_MCP_HOST", "0.0.0.0")
     port = int(os.environ.get("MYMEAL_MCP_PORT", "7851"))
     server_token = os.environ.get("MYMEAL_MCP_SERVER_TOKEN", "")
+    expose_external = _bool_env("MYMEAL_MCP_EXPOSE_EXTERNAL")
+
     app = mcp.sse_app()
-    if server_token:
+    if expose_external:
+        # Reachable from outside HA → auth is MANDATORY. Refuse to serve at all
+        # unless there is a way to authenticate (a scoped key or the static token),
+        # so the endpoint is never open to the network.
+        try:
+            has_key = _mcp_capable_key_exists_when_ready()
+        except Exception as exc:  # noqa: BLE001 — fail closed
+            print(f"mymeal-mcp: could not check API keys ({exc}); refusing to serve "
+                  "the externally-exposed MCP endpoint.", file=sys.stderr)
+            sys.exit(1)
+        if not has_key and not server_token:
+            print("mymeal-mcp: mcp_expose_external is ON but no MCP/Full API key "
+                  "exists. Mint one in Settings → Access & keys (scope MCP), then "
+                  "restart. Refusing to serve an unauthenticated public endpoint.",
+                  file=sys.stderr)
+            sys.exit(1)
+        app = _guard(app, server_token)
+        print("mymeal-mcp: external exposure ON — every request must present a "
+              "Full/MCP API key.", file=sys.stderr)
+    elif server_token:
         app = _require_token(app, server_token)
     else:
         print("WARNING: MYMEAL_MCP_SERVER_TOKEN unset — MCP endpoint is "

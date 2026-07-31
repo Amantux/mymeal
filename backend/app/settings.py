@@ -304,6 +304,12 @@ FIELDS: tuple[Field, ...] = (
           "Bearer token Home Assistant must present to reach the MCP server. "
           "Blank leaves it unauthenticated (only safe on a trusted network).",
           ha_option="mcp_server_token", secret=True, supports_file=True),
+    Field("MCP_EXPOSE_EXTERNAL", parse_bool, False,
+          "Reach the MCP server from OUTSIDE Home Assistant. When on, every "
+          "request must present a Full- or MCP-scoped API key, and the server "
+          "refuses to start until such a key exists — so it is never open. You "
+          "must also map port 7851 in the add-on's Network tab.",
+          ha_option="mcp_expose_external"),
     Field("MCP_REQUIRED", parse_bool, False,
           "Treat a dead MCP process as making the whole app UNREADY."),
 

@@ -19,6 +19,12 @@ from .base import IDMixin, TimestampMixin
 # without a database round-trip, and so users recognize a myMeal key.
 TOKEN_PREFIX = "mm_"
 
+# What a key may be used for:
+#   full — REST API + MCP (default; the legacy all-access key)
+#   rest — REST API only (rejected at the MCP server)
+#   mcp  — MCP server only (rejected at the REST API)
+TOKEN_SCOPES = ("full", "rest", "mcp")
+
 
 def generate_raw_token() -> str:
     return TOKEN_PREFIX + secrets.token_urlsafe(32)
@@ -35,6 +41,11 @@ class ApiToken(IDMixin, TimestampMixin, db.Model):
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     # First few chars of the raw token, kept for display ("mm_ab12…").
     hint: Mapped[str] = mapped_column(String(16), default="")
+    # full | rest | mcp — see TOKEN_SCOPES. server_default so keys created before
+    # this column existed keep full (REST + MCP) access.
+    scope: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="full", server_default="full"
+    )
     last_used_at: Mapped[str] = mapped_column(DateTime, nullable=True)
 
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))

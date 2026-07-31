@@ -92,6 +92,7 @@ docker compose run --rm app python3 -m app.config_check
 | `MYMEAL_MCP_API` | string | `_(empty)_` | no | yes | Backend API URL the MCP server calls. Blank = derived from PORT. |
 | `MYMEAL_MCP_API_TOKEN` | string | `_(empty)_` | **yes** | yes | Token the MCP server uses when app auth is enabled. Supports `MYMEAL_MCP_API_TOKEN_FILE`. |
 | `MYMEAL_MCP_SERVER_TOKEN` | string | `_(empty)_` | **yes** | yes | Bearer token Home Assistant must present to reach the MCP server. Blank leaves it unauthenticated (only safe on a trusted network). HA option: `mcp_server_token`. Supports `MYMEAL_MCP_SERVER_TOKEN_FILE`. |
+| `MYMEAL_MCP_EXPOSE_EXTERNAL` | boolean | `false` | no | yes | Reach the MCP server from OUTSIDE Home Assistant. When on, every request must present a Full- or MCP-scoped API key, and the server refuses to start until such a key exists — so it is never open. You must also map port 7851 in the add-on's Network tab. HA option: `mcp_expose_external`. |
 | `MYMEAL_MCP_REQUIRED` | boolean | `false` | no | yes | Treat a dead MCP process as making the whole app UNREADY. |
 
 ### Edibl integration (companion inventory app)

@@ -34,7 +34,7 @@ ports:
   7851/tcp: null
 ports_description:
   7850/tcp: myMeal REST API — map only for direct LAN / HACS-over-network access (Ingress does not need it)
-  7851/tcp: myMeal MCP server (SSE) — map only to reach it from outside Home Assistant
+  7851/tcp: myMeal MCP server (SSE) — to reach it from outside HA, turn on mcp_expose_external and mint a Full/MCP API key first, then map this port
 map:
   - share:rw
 options:
@@ -42,6 +42,7 @@ options:
   allow_registration: false
   enable_mcp: true
   mcp_server_token: ""
+  mcp_expose_external: false
   ai_provider: ""
   ollama_host: ""
   ollama_model: ""
@@ -65,6 +66,9 @@ schema:
   # Token Home Assistant's MCP Client must present. Leave blank on a trusted
   # network; set it before mapping the MCP port to the LAN.
   mcp_server_token: "password?"
+  # Expose the MCP server outside Home Assistant. On = every request needs a
+  # Full/MCP API key and the server won't start without one. Also map port 7851.
+  mcp_expose_external: bool
   ai_provider: "list(|claude|ollama|ollama_cloud|openai)?"
   # AI provider config can be set here OR in the app UI (the app remembers UI
   # changes and they override these). Keys use HA's masked password type.

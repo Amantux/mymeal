@@ -39,6 +39,7 @@ from app.settings import load_settings
 s = load_settings()
 print(f"RESOLVED_PORT={s.PORT}")
 print(f"RESOLVED_MCP_ENABLED={'true' if s.MCP_ENABLED else 'false'}")
+print(f"RESOLVED_MCP_EXPOSE_EXTERNAL={'true' if s.MCP_EXPOSE_EXTERNAL else 'false'}")
 print(f"RESOLVED_MCP_PORT={s.MCP_PORT}")
 print(f"RESOLVED_MCP_API={s.mcp_api}")
 print(f"RESOLVED_WORKERS={s.WORKERS}")
@@ -77,6 +78,7 @@ if [ "$RESOLVED_MCP_ENABLED" = "true" ] && [ -f mcp_server.py ]; then
   MYMEAL_MCP_API="$RESOLVED_MCP_API" \
     MYMEAL_MCP_PORT="$RESOLVED_MCP_PORT" \
     MYMEAL_MCP_SERVER_TOKEN="$MCP_SERVER_TOKEN" \
+    MYMEAL_MCP_EXPOSE_EXTERNAL="$RESOLVED_MCP_EXPOSE_EXTERNAL" \
     python3 mcp_server.py &
   MCP_PID=$!
   echo "myMeal: MCP server started (pid $MCP_PID) on :${RESOLVED_MCP_PORT}/sse"

@@ -34,7 +34,29 @@ gatekeeper. It is *not* safe on a port exposed to your network — see
 | `allow_registration` | `false` | Whether strangers can create accounts. Irrelevant while `disable_auth` is on. |
 | `enable_mcp` | `true` | Runs the MCP server on port 7851 so Assist can use myMeal as a tool. |
 | `mcp_server_token` | _(blank)_ | Bearer token Home Assistant must present to the MCP server. Blank is fine while the port stays internal; set it before mapping 7851 to your LAN. |
+| `mcp_expose_external` | `false` | Reach the MCP server from **outside** Home Assistant. See "Exposing the MCP server" below — this requires a scoped API key and refuses to start without one. |
 | `ai_provider` | _(blank)_ | `claude`, `ollama`, or `openai`. Blank = AI features off; everything else still works. |
+
+### Exposing the MCP server outside Home Assistant
+
+By default the MCP server is only reachable on Home Assistant's internal network
+(for the Assist voice integration). To let an external MCP client — e.g. Claude
+Desktop or another agent on your LAN — connect, do **all** of the following, in
+order:
+
+1. **Mint a scoped key.** In myMeal → Settings → API keys, create a key with scope
+   **MCP** (or **Full**). Copy it once (it's shown only at creation).
+2. **Turn on `mcp_expose_external`** in the add-on Configuration. With it on, every
+   MCP request must carry that key as `Authorization: Bearer <key>`, and the server
+   **refuses to start** if no MCP/Full key exists — so the endpoint is never open.
+3. **Map port 7851** in the add-on's *Network* tab.
+
+Point your client at `http://<home-assistant-host>:7851/sse` with the key as a
+bearer token. An MCP-scoped key works **only** at the MCP server — it cannot be
+used against the REST API. Revoke a key any time in Settings to cut that client
+off. ⚠️ The MCP tools can modify your recipes and meal plans, so treat the key
+like a password and prefer putting it behind your own HTTPS reverse proxy when
+crossing untrusted networks.
 
 ### Turning on the AI features
 
