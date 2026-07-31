@@ -4,6 +4,24 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.2.0 — Stable release
+
+A stability milestone bringing this cycle's work together.
+
+- **Recipes that build on recipes.** Link a sub-recipe as a component (French onion
+  soup → a stock/base) and its ingredients now flow everywhere — shopping lists,
+  meal-plan shopping, "what can I cook", and nutrition — scaled correctly, shown as
+  their own "Made with these recipes" section.
+- **Tweak, experiment, keep what works.** Every edit is snapshotted to a restorable
+  history, and you can branch an **experiment** to change the method separately, cook
+  it, log a rating + feedback, then **promote** the winner or discard it — all from a
+  Versions & experiments panel on the recipe.
+- **One AI setup across your apps + safer keys.** Copy AI provider settings between
+  myMeal / Edibl / HomeHoard (optionally including the key), expose the MCP server
+  outside Home Assistant behind per-client keys, and every API key now has a scope
+  (Full / REST / MCP) and an access class — **Read-Only or Read-Write**.
+- **Report a bug from chat**, and streaming replies are a Settings toggle.
+
 ## 1.1.75
 
 - Version-controlled recipes — auto-history + experiments.
