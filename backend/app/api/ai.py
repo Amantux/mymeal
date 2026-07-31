@@ -438,7 +438,9 @@ def suggest():
         return jsonify({"suggestions": [], "inventorySource": "edibl",
                         "ediblAvailable": False, "message": inv["reason"]})
 
-    recipes = db.session.query(Recipe).filter_by(group_id=gid).all()
+    from ..services.components import component_load_opts
+    recipes = (db.session.query(Recipe).filter_by(group_id=gid)
+               .options(*component_load_opts()).all())
     return jsonify({"suggestions": rank_recipes(recipes, inv["items"])[:limit],
                     "inventorySource": "edibl", "ediblAvailable": True})
 

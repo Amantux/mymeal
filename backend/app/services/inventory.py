@@ -11,6 +11,8 @@ by an on-hand item (name / alias substring match), and rank by coverage.
 """
 from __future__ import annotations
 
+from .components import iter_leaf_ingredients
+
 
 def _name_set(on_hand: list[dict]) -> set[str]:
     names: set[str] = set()
@@ -44,7 +46,10 @@ def rank_recipes(recipes: list, on_hand: list[dict]) -> list[dict]:
     names = _name_set(on_hand)
     scored = []
     for recipe in recipes:
-        ings = list(recipe.ingredients)
+        # Expand linked components so a sub-recipe's ingredients count toward the
+        # match (a French onion soup that links a stock recipe is judged on the
+        # stock's ingredients too, not one opaque "stock" line).
+        ings = [ing for ing, _ in iter_leaf_ingredients(recipe)]
         total = len(ings)
         if total == 0:
             continue

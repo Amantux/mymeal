@@ -131,3 +131,73 @@ def test_shopping_display_not_doubled_for_unstructured_lines(auth_client):
     assert by["bone-in chicken thighs"]["quantity"] == 6
     assert "olive oil" in by and by["olive oil"]["unit"] == "tbsp"
     assert by["olive oil"]["quantity"] == 2
+
+
+def _recipe_with(client, name, ingredients, **extra):
+    payload = {"name": name,
+               "ingredients": [{"display": d, "food": d} for d in ingredients]}
+    payload.update(extra)
+    return client.post("/api/v1/recipes", json=payload).get_json()
+
+
+def test_effective_nutrition_includes_components(auth_client):
+    sauce = _recipe_with(auth_client, "Stock", ["water", "bones"],
+                         nutrition={"calories": 100, "protein": 5})
+    dish = auth_client.post("/api/v1/recipes", json={
+        "name": "Soup", "nutrition": {"calories": 50},
+        "ingredients": [
+            {"display": "onions", "food": "onions"},
+            {"display": "2 batches Stock", "quantity": 2, "refRecipeId": sauce["id"]},
+        ]}).get_json()
+    out = auth_client.get(f"/api/v1/recipes/{dish['id']}").get_json()
+    assert out["nutrition"] == {"calories": 50}          # the recipe's own only
+    assert out["effectiveNutrition"]["calories"] == 250  # 50 + 100*2
+    assert out["effectiveNutrition"]["protein"] == 10     # 0 + 5*2
+
+
+def test_effective_nutrition_null_when_none(auth_client):
+    plain = _recipe(auth_client, "Toast", ["bread"])
+    out = auth_client.get(f"/api/v1/recipes/{plain['id']}").get_json()
+    assert out["effectiveNutrition"] is None
+
+
+def test_meal_plan_demand_expands_components(auth_client, app):
+    from types import SimpleNamespace
+
+    from app.models import Recipe
+    from app.services.plan_ingredients import flatten_plan
+
+    sauce = _recipe(auth_client, "Confit", ["garlic", "olive oil"])
+    dish = auth_client.post("/api/v1/recipes", json={
+        "name": "Pasta", "servings": 4, "ingredients": [
+            {"display": "pasta", "food": "pasta"},
+            {"display": "1 batch Confit", "quantity": 1, "refRecipeId": sauce["id"]},
+        ]}).get_json()
+    with app.app_context():
+        r = __import__("app.extensions", fromlist=["db"]).db.session.get(Recipe, dish["id"])
+        entry = SimpleNamespace(recipe=r, servings=None, date=None, meal_type="dinner")
+        names = {i["name"] for i in flatten_plan([entry])}
+    # the component's own ingredients flow through, not a single "Confit" line
+    assert {"garlic", "olive oil", "pasta"} <= names
+
+
+def test_inventory_matches_component_ingredients(auth_client, app):
+    from app.extensions import db
+    from app.models import Recipe
+    from app.services.inventory import rank_recipes
+
+    sauce = _recipe(auth_client, "Base", ["garlic", "olive oil"])
+    dish = auth_client.post("/api/v1/recipes", json={
+        "name": "Dish", "ingredients": [
+            {"display": "flour", "food": "flour"},
+            {"display": "1 batch Base", "quantity": 1, "refRecipeId": sauce["id"]},
+        ]}).get_json()
+    with app.app_context():
+        r = db.session.get(Recipe, dish["id"])
+        on_hand = [{"name": "garlic"}, {"name": "olive oil"}, {"name": "flour"}]
+        scored = rank_recipes([r], on_hand)
+    # 3 leaf ingredients (flour + garlic + olive oil), all covered — not a
+    # 2-ingredient recipe with an opaque "Base" component line.
+    assert scored[0]["totalCount"] == 3
+    assert scored[0]["haveCount"] == 3
+    assert scored[0]["coverage"] == 1.0

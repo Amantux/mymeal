@@ -51,6 +51,9 @@ const viewServings = ref(null)
 const useWeight = ref(false)
 const scaled = ref(null) // null → show the recipe's own ingredients
 const shownIngredients = computed(() => scaled.value || recipe.value?.ingredients || [])
+// Linked sub-recipes (components) get their own section; plain ingredients the list.
+const plainIngredients = computed(() => shownIngredients.value.filter((i) => !i.refRecipe))
+const componentIngredients = computed(() => shownIngredients.value.filter((i) => i.refRecipe))
 
 async function refreshView() {
   const r = recipe.value
@@ -413,17 +416,28 @@ const imageSrc = computed(() =>
               :aria-pressed="useWeight" @click="useWeight = !useWeight">⚖️ Weights</button>
           </div>
         </div>
-        <ul v-if="shownIngredients.length" style="margin:0;padding-left:20px">
-          <li v-for="ing in shownIngredients" :key="ing.id">
-            <template v-if="ing.refRecipe">
-              <a class="ing-link" href="#" @click.prevent="router.push(`/recipes/${ing.refRecipe.id}`)">
-                🔗 {{ ing.display || ing.refRecipe.name }}
-              </a>
-            </template>
-            <template v-else>{{ ing.display }}</template>
-          </li>
+        <ul v-if="plainIngredients.length" style="margin:0;padding-left:20px">
+          <li v-for="ing in plainIngredients" :key="ing.id">{{ ing.display }}</li>
         </ul>
-        <p v-else class="muted">No ingredients listed.</p>
+        <p v-else-if="!componentIngredients.length" class="muted">No ingredients listed.</p>
+
+        <div v-if="componentIngredients.length" class="components">
+          <h3 class="components-h">🔗 Made with these recipes</h3>
+          <ul class="component-list">
+            <li v-for="ing in componentIngredients" :key="ing.id" class="component-row">
+              <a class="ing-link" href="#"
+                 @click.prevent="router.push(`/recipes/${ing.refRecipe.id}`)">
+                {{ ing.refRecipe.name }}
+              </a>
+              <span v-if="ing.quantity" class="muted component-amt">
+                × {{ ing.quantity }}{{ ing.quantity == 1 ? ' batch' : ' batches' }}
+              </span>
+            </li>
+          </ul>
+          <p class="muted component-note">
+            Their ingredients are included in shopping lists, nutrition, and “what can I cook”.
+          </p>
+        </div>
       </div>
 
       <div class="card">
@@ -546,6 +560,12 @@ const imageSrc = computed(() =>
 .ing-tools .active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .ing-link { color: var(--accent); font-weight: 600; text-decoration: none; }
 .ing-link:hover { text-decoration: underline; }
+.components { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.components-h { font-size: 0.95rem; margin: 0 0 6px; }
+.component-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.component-row { display: flex; align-items: baseline; gap: 8px; }
+.component-amt { font-size: 0.85rem; }
+.component-note { font-size: 0.8rem; margin: 8px 0 0; }
 .cat-picker { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 4px; }
 .cat-opt { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; cursor: pointer; }
 .cat-opt input { width: auto; }

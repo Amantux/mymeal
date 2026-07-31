@@ -174,6 +174,52 @@ def chat_session_out(s):
     return data
 
 
+def _nutrition_dict(recipe):
+    if not recipe.nutrition:
+        return {}
+    try:
+        val = json.loads(recipe.nutrition)
+    except (ValueError, TypeError):
+        return {}
+    return val if isinstance(val, dict) else {}
+
+
+def _as_number(value):
+    """Coerce a nutrition value to float — accepts ints/floats and numeric strings
+    (the AI parser sometimes stores "100"); rejects bools and non-numeric. None if
+    not a number, so the caller skips it."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except (ValueError, AttributeError):
+            return None
+    return None
+
+
+def _effective_nutrition(r):
+    """The recipe's own nutrition plus each linked component's nutrition, scaled by
+    the component multiplier (cycle-guarded / capped via iter_recipe_tree). Only
+    numeric values are summed; returns None if nothing numeric was found."""
+    from ..services.components import iter_recipe_tree
+
+    total: dict[str, float] = {}
+    found = False
+    for node, mult in iter_recipe_tree(r):
+        for key, value in _nutrition_dict(node).items():
+            num = _as_number(value)   # coerce numeric strings ("100") like the raw field
+            if num is None:
+                continue
+            total[key] = total.get(key, 0.0) + num * mult
+            found = True
+    if not found:
+        return None
+    return {k: round(v, 2) for k, v in total.items()}
+
+
 def recipe_out(r):
     data = recipe_summary(r)
     data.update(
@@ -183,6 +229,7 @@ def recipe_out(r):
             "cookMinutes": r.cook_minutes,
             "notes": r.notes,
             "nutrition": json.loads(r.nutrition) if r.nutrition else None,
+            "effectiveNutrition": _effective_nutrition(r),
             "shareToken": r.share_token,
             "ingredients": [ingredient_out(i) for i in r.ingredients],
             "steps": [step_out(s) for s in r.steps],

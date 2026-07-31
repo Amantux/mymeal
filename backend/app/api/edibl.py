@@ -141,10 +141,14 @@ def push_plan():
     data = request.get_json(silent=True) or {}
     days = to_int(data.get("days"), 7)
     start, end = upcoming_window(date.today(), days)
+    from sqlalchemy.orm import selectinload
+
+    from ..services.components import component_load_opts
     entries = (
         db.session.query(MealPlanEntry)
         .filter(MealPlanEntry.group_id == current_group().id)
         .filter(MealPlanEntry.date >= start, MealPlanEntry.date <= end)
+        .options(*component_load_opts(selectinload(MealPlanEntry.recipe)))
         .order_by(MealPlanEntry.date.asc())
         .all()
     )

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+from .components import iter_leaf_ingredients
+
 
 def _ingredient_name(ing) -> str:
     """Prefer the canonical food name; fall back to the free-text display."""
@@ -52,11 +54,14 @@ def flatten_plan(entries) -> list[dict]:
             continue
         mult = _servings_multiplier(entry, recipe)
         needed_by = entry.date.isoformat() if entry.date else None
-        for ing in recipe.ingredients:
+        # Expand linked components so the sub-recipe's ingredients count toward
+        # demand too; iter_leaf_ingredients folds the component multiplier into
+        # the per-serving `mult`.
+        for ing, cmult in iter_leaf_ingredients(recipe, mult):
             name = _ingredient_name(ing)
             if not name:
                 continue
-            qty = (ing.quantity or 0) * mult
+            qty = (ing.quantity or 0) * cmult
             items.append({
                 "name": name,
                 "quantity": round(qty, 3) if qty else None,

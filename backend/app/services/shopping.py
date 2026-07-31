@@ -8,34 +8,12 @@ for tidy shopping. Purely deterministic — no AI involved.
 from __future__ import annotations
 
 from ..models import Recipe
+from .components import (  # noqa: F401 — re-exported for callers/tests
+    _MAX_COMPONENT_DEPTH,
+    _MAX_COMPONENT_EXPANSIONS,
+    iter_leaf_ingredients,
+)
 from .units import parse_line
-
-# Bound component expansion so a pathological/adversarial nest of linked recipes
-# (each referencing many others) can't fan out exponentially and hang a worker.
-# Beyond these limits a component is left as a single line rather than expanded.
-_MAX_COMPONENT_DEPTH = 4
-_MAX_COMPONENT_EXPANSIONS = 100
-
-
-def _flatten_ingredients(recipe, seen, state, depth=0, mult=1.0):
-    """Yield ``(ingredient, multiplier)`` for a recipe, expanding any linked
-    COMPONENT into its sub-recipe's ingredients (recursively). ``seen`` guards
-    against cycles on the current path; ``state['n']`` caps TOTAL expansions and
-    ``depth`` caps nesting — together bounding total work. ``mult`` scales an
-    expanded sub-recipe by the component row's quantity (e.g. "2 batches"). A
-    component that can't be expanded (cycle, cap, missing target) is yielded as
-    a plain line."""
-    for ing in recipe.ingredients:
-        ref = ing.ref_recipe_id
-        if (ref and ref not in seen and ing.ref_recipe is not None
-                and depth < _MAX_COMPONENT_DEPTH
-                and state["n"] < _MAX_COMPONENT_EXPANSIONS):
-            state["n"] += 1
-            sub_mult = mult * (float(ing.quantity or 0) or 1.0)
-            yield from _flatten_ingredients(
-                ing.ref_recipe, seen | {ref}, state, depth + 1, sub_mult)
-        else:
-            yield ing, mult
 
 
 def build_from_recipes(recipes: list[Recipe]) -> list[dict]:
@@ -47,8 +25,7 @@ def build_from_recipes(recipes: list[Recipe]) -> list[dict]:
     agg: dict[tuple, dict] = {}
     order: list[tuple] = []
     for recipe in recipes:
-        state = {"n": 0}
-        for ing, mult in _flatten_ingredients(recipe, frozenset({recipe.id}), state):
+        for ing, mult in iter_leaf_ingredients(recipe):
             text = (ing.display or "").strip()
             if not text and not ing.food:
                 continue
