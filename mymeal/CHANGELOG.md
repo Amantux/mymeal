@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.1.72
+
+- Don't let Alembic disable the app logger.
+
 ## 1.1.71
 
 - Optionally include the API key in AI-settings sync (opt-in).
