@@ -491,6 +491,7 @@ async function setAdmin(m, makeAdmin) {
 const keys = ref([])
 const newKeyName = ref('')
 const newKeyScope = ref('full')      // full (REST+MCP) | rest | mcp
+const newKeyAccess = ref('write')    // write (read+mutate) | read (read-only)
 const mintedKey = ref(null)          // raw token, shown once
 const keysBusy = ref(false)
 
@@ -502,10 +503,12 @@ async function mintKey() {
   keysBusy.value = true
   try {
     const r = await api.post('/tokens', {
-      name: newKeyName.value || 'Connected app', scope: newKeyScope.value })
+      name: newKeyName.value || 'Connected app', scope: newKeyScope.value,
+      access: newKeyAccess.value })
     mintedKey.value = r.token
     newKeyName.value = ''
     newKeyScope.value = 'full'
+    newKeyAccess.value = 'write'
     await loadKeys()
   } catch (e) {
     ui.error(e.message || 'Could not create key')
@@ -884,6 +887,10 @@ async function findOllama() {
         <option value="rest">REST only</option>
         <option value="mcp">MCP only</option>
       </select>
+      <select v-model="newKeyAccess" aria-label="Key access">
+        <option value="write">Read &amp; write</option>
+        <option value="read">Read only</option>
+      </select>
       <button type="button" class="secondary" :disabled="keysBusy" @click="mintKey">Create key</button>
     </div>
     <p class="muted" style="font-size:0.78rem;max-width:520px;margin:-4px 0 0">
@@ -903,7 +910,7 @@ async function findOllama() {
       <div class="fill">
         <div style="font-weight:600">{{ k.name || 'API key' }}</div>
         <div class="muted" style="font-size:0.78rem">
-          {{ k.hint }} · <span style="text-transform:uppercase">{{ k.scope || 'full' }}</span> · created {{ (k.createdAt || '').slice(0, 10) }}
+          {{ k.hint }} · <span style="text-transform:uppercase">{{ k.scope || 'full' }}</span> · {{ (k.access || 'write') === 'read' ? 'read-only' : 'read/write' }} · created {{ (k.createdAt || '').slice(0, 10) }}
           <span v-if="k.lastUsedAt"> · last used {{ (k.lastUsedAt || '').slice(0, 10) }}</span>
           <span v-else> · never used</span>
         </div>

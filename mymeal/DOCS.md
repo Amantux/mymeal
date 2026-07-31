@@ -45,7 +45,10 @@ Desktop or another agent on your LAN — connect, do **all** of the following, i
 order:
 
 1. **Mint a scoped key.** In myMeal → Settings → API keys, create a key with scope
-   **MCP** (or **Full**). Copy it once (it's shown only at creation).
+   **MCP** (or **Full**). Copy it once (it's shown only at creation). Set its access
+   to **Read only** to give a client that can query recipes/plans/inventory but
+   cannot modify anything (it's blocked from every mutating MCP tool and, if it's a
+   Full key, from POST/PUT/DELETE on the REST API); **Read & write** is the default.
 2. **Turn on `mcp_expose_external`** in the add-on Configuration. With it on, every
    MCP request must carry that key as `Authorization: Bearer <key>`, and the server
    **refuses to start** if no MCP/Full key exists — so the endpoint is never open.

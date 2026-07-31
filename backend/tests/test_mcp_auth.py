@@ -49,6 +49,104 @@ def test_create_rejects_unknown_scope(noauth_app):
     assert _mint(_owner_client(noauth_app), scope="root").status_code == 400
 
 
+# --- access class (read-write vs read-only) -----------------------------------
+
+def _mint_access(client, access, scope="full", name="k"):
+    return client.post("/api/v1/tokens", json={"name": name, "scope": scope, "access": access},
+                       headers=_hdr("owner"), environ_overrides=SUP)
+
+
+def test_create_defaults_to_write_access(noauth_app):
+    assert _mint(_owner_client(noauth_app)).get_json()["access"] == "write"
+
+
+def test_create_accepts_read_access(noauth_app):
+    r = _mint_access(_owner_client(noauth_app), "read")
+    assert r.status_code == 201 and r.get_json()["access"] == "read"
+
+
+def test_create_rejects_unknown_access(noauth_app):
+    assert _mint_access(_owner_client(noauth_app), "admin").status_code == 400
+
+
+# --- REST: a read-only key can GET but not mutate -----------------------------
+
+def test_read_key_blocked_from_mutating_rest(noauth_app):
+    c = _owner_client(noauth_app)
+    raw = _mint_access(c, "read").get_json()["token"]
+    bearer = {"Authorization": f"Bearer {raw}"}
+    assert c.get("/api/v1/tokens", headers=bearer).status_code == 200      # read ok
+    assert c.post("/api/v1/tokens", json={"name": "x"}, headers=bearer).status_code == 403
+
+
+def test_write_key_can_mutate_rest(noauth_app):
+    c = _owner_client(noauth_app)
+    raw = _mint_access(c, "write").get_json()["token"]
+    bearer = {"Authorization": f"Bearer {raw}"}
+    assert c.post("/api/v1/tokens", json={"name": "x"}, headers=bearer).status_code == 201
+
+
+# --- MCP: a read-only key is limited to READ_TOOLS ----------------------------
+
+def _run_guard_post(monkeypatch, body, access="read"):
+    import json as _json
+    monkeypatch.setattr(mcp_server, "_key_ok", lambda raw: True)
+    monkeypatch.setattr(mcp_server, "_key_access", lambda raw: access)
+    result = {"code": None, "passed": False, "got_body": None}
+
+    async def inner(scope, receive, send):
+        msg = await receive()                 # inner must still see the replayed body
+        result["passed"] = True
+        result["got_body"] = msg.get("body", b"")
+
+    guarded = mcp_server._guard(inner, server_token="")
+    pending = [{"type": "http.request", "body": _json.dumps(body).encode(), "more_body": False}]
+
+    async def receive():
+        return pending.pop(0) if pending else {"type": "http.disconnect"}
+
+    async def send(msg):
+        if msg["type"] == "http.response.start":
+            result["code"] = msg["status"]
+
+    scope = {"type": "http", "method": "POST", "path": "/messages/",
+             "headers": [(b"authorization", b"Bearer x")]}
+    asyncio.run(guarded(scope, receive, send))
+    return result
+
+
+def _call(name):
+    return {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name}}
+
+
+def test_read_key_blocked_from_write_tool(monkeypatch):
+    r = _run_guard_post(monkeypatch, _call("add_recipe"), access="read")
+    assert r["code"] == 403 and r["passed"] is False
+
+
+def test_read_key_allows_read_tool_and_replays_body(monkeypatch):
+    body = _call("search_recipes")
+    r = _run_guard_post(monkeypatch, body, access="read")
+    assert r["code"] is None and r["passed"] is True
+    import json as _json
+    assert _json.loads(r["got_body"]) == body        # body replayed intact to the app
+
+
+def test_read_key_allows_non_tool_methods(monkeypatch):
+    r = _run_guard_post(monkeypatch, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, access="read")
+    assert r["passed"] is True and r["code"] is None
+
+
+def test_read_key_denies_unknown_tool(monkeypatch):
+    r = _run_guard_post(monkeypatch, _call("definitely_not_a_tool"), access="read")
+    assert r["code"] == 403 and r["passed"] is False   # fail-safe: unlisted tool denied
+
+
+def test_write_key_allows_write_tool(monkeypatch):
+    r = _run_guard_post(monkeypatch, _call("add_recipe"), access="write")
+    assert r["passed"] is True and r["code"] is None
+
+
 # --- REST rejects an mcp-scoped key -------------------------------------------
 
 def test_mcp_scope_key_rejected_at_rest_but_full_and_rest_pass(noauth_app):
@@ -152,3 +250,17 @@ def test_capable_key_check_reraises_after_retries(monkeypatch):
     except OperationalError:
         raised = True
     assert raised is True   # exhausted retries → re-raise so __main__ fails closed
+
+
+def test_get_shopping_list_never_auto_creates(monkeypatch):
+    # A read tool must not mutate: with no shopping list yet, get_shopping_list must
+    # return an empty list WITHOUT POSTing to create one (which a read-only key would
+    # otherwise be able to trigger).
+    posted = []
+    monkeypatch.setattr(mcp_server, "_get", lambda path: {"items": []})
+    monkeypatch.setattr(mcp_server, "_post",
+                        lambda *a, **k: posted.append(a) or {"id": 1, "name": "x", "items": []})
+    fn = getattr(mcp_server.get_shopping_list, "fn", mcp_server.get_shopping_list)
+    out = fn()
+    assert out["items"] == []
+    assert posted == []   # no create call

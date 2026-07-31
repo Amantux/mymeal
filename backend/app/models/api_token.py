@@ -25,6 +25,11 @@ TOKEN_PREFIX = "mm_"
 #   mcp  — MCP server only (rejected at the REST API)
 TOKEN_SCOPES = ("full", "rest", "mcp")
 
+# What a key may DO wherever its scope lets it work (orthogonal to scope):
+#   write — read + mutate (default; every pre-existing key)
+#   read  — read-only: REST rejects non-GET/HEAD, MCP rejects mutating tools
+TOKEN_ACCESS = ("write", "read")
+
 
 def generate_raw_token() -> str:
     return TOKEN_PREFIX + secrets.token_urlsafe(32)
@@ -45,6 +50,11 @@ class ApiToken(IDMixin, TimestampMixin, db.Model):
     # this column existed keep full (REST + MCP) access.
     scope: Mapped[str] = mapped_column(
         String(16), nullable=False, default="full", server_default="full"
+    )
+    # write | read — see TOKEN_ACCESS. server_default so keys created before this
+    # column existed keep full mutate access.
+    access: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="write", server_default="write"
     )
     last_used_at: Mapped[str] = mapped_column(DateTime, nullable=True)
 

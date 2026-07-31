@@ -276,6 +276,9 @@ def _user_from_api_token(raw: str):
     # for the MCP server alone). full/rest (and legacy NULL → "full") pass.
     if (record.scope or "full") == "mcp":
         return None
+    # Access class: a read-only key may authenticate but only for safe methods —
+    # the decorators below 403 a mutating request. Legacy NULL → "write".
+    g.token_access = record.access or "write"
     # Record usage, but at most once a minute to avoid a write on every request.
     now = datetime.utcnow()
     if record.last_used_at is None or (now - record.last_used_at).total_seconds() > 60:
@@ -284,12 +287,25 @@ def _user_from_api_token(raw: str):
     return db.session.get(User, record.user_id)
 
 
+def _read_only_blocked():
+    """A read-only API key may only make safe (GET/HEAD/OPTIONS) requests. Returns a
+    403 response when the authenticated token is read-only and the method mutates,
+    else None. Non-token users (JWT/ingress/default) have no `token_access` → allowed."""
+    if (getattr(g, "token_access", "write") == "read"
+            and request.method not in ("GET", "HEAD", "OPTIONS")):
+        return jsonify({"error": "this API key is read-only"}), 403
+    return None
+
+
 def login_required(fn):
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         user = load_current_user()
         if user is None:
             return jsonify({"error": "unauthorized"}), 401
+        blocked = _read_only_blocked()
+        if blocked is not None:
+            return blocked
         g.current_user = user
         g.current_group = user.group
         return fn(*args, **kwargs)
@@ -307,6 +323,9 @@ def owner_required(fn):
             return jsonify({"error": "unauthorized"}), 401
         if not user.is_owner:
             return jsonify({"error": "owner privileges required"}), 403
+        blocked = _read_only_blocked()
+        if blocked is not None:
+            return blocked
         g.current_user = user
         g.current_group = user.group
         return fn(*args, **kwargs)

@@ -143,7 +143,12 @@ def what_can_i_cook() -> list[dict]:
 @mcp.tool()
 def get_shopping_list() -> dict:
     """Show the current shopping list (unchecked items)."""
-    sl = _default_list()
+    # Read-only: never auto-create a list (that would be a write). If none exists
+    # yet, report an empty list rather than calling _default_list()'s create path.
+    lists = _get("/shopping-lists").get("items", [])
+    if not lists:
+        return {"list": "Shopping List", "items": []}
+    sl = lists[0]
     items = [i["display"] for i in sl.get("items", []) if not i.get("checked")]
     return {"list": sl["name"], "items": items}
 
@@ -368,6 +373,96 @@ def _mcp_capable_key_exists() -> bool:
         return exists
 
 
+# Tools a read-only key MAY call. Anything not listed (mutating tools + any future
+# tool) is denied to a read-only key — fail-safe, so a new tool is never silently
+# writable. start_cooking/next_step only mutate an in-process narration dict.
+READ_TOOLS = frozenset({
+    "search_recipes", "get_recipe", "whats_for_dinner", "what_can_i_cook",
+    "get_shopping_list", "list_inventory", "start_cooking", "next_step",
+})
+
+
+def _key_access(raw: str) -> str | None:
+    """The access class ('write'|'read') of a live MCP-usable key, else None. Fails
+    to None (caller treats as write, since _authorized already validated the key)."""
+    if not raw:
+        return None
+    try:
+        app = _get_app()
+        from app.extensions import db
+        from app.models import ApiToken, hash_token
+        with app.app_context():
+            rec = (
+                db.session.query(ApiToken)
+                .filter_by(token_hash=hash_token(raw))
+                .first()
+            )
+            access = None
+            if rec is not None and (rec.scope or "full") in ("mcp", "full"):
+                access = rec.access or "write"
+            db.session.remove()
+            return access
+    except Exception as exc:  # noqa: BLE001 — treat as write (already authorized)
+        print(f"mymeal-mcp: access check failed: {exc}", file=sys.stderr)
+        return None
+
+
+def _access_for(header_value: str, server_token: str) -> str:
+    """Access class of the authenticated caller. The static server token is full
+    write; a Bearer key uses its stored access. Fail CLOSED: if a key's access can't
+    be determined (DB error), treat it as `read` so a transient fault can't upgrade a
+    read-only key to write."""
+    if server_token and hmac.compare_digest(header_value, f"Bearer {server_token}"):
+        return "write"
+    if header_value.startswith("Bearer "):
+        return _key_access(header_value[len("Bearer "):].strip()) or "read"
+    return "write"
+
+
+def _is_tools_call_body(raw_body: bytes):
+    """Parse an MCP JSON-RPC POST body; return True if it contains a `tools/call`
+    to a tool NOT in READ_TOOLS (i.e. a write a read-only key must be denied)."""
+    import json as _json
+    try:
+        data = _json.loads(raw_body or b"{}")
+    except Exception:  # noqa: BLE001 — unparseable → let the app 400 it, don't block
+        return False
+
+    def is_write(msg):
+        return (isinstance(msg, dict) and msg.get("method") == "tools/call"
+                and (msg.get("params") or {}).get("name") not in READ_TOOLS)
+
+    if isinstance(data, list):   # JSON-RPC batch
+        return any(is_write(m) for m in data)
+    return is_write(data)
+
+
+async def _read_body(receive):
+    """Drain and return (buffered_messages, body_bytes) from an ASGI receive."""
+    messages, body, more = [], b"", True
+    while more:
+        msg = await receive()
+        messages.append(msg)
+        if msg["type"] == "http.request":
+            body += msg.get("body", b"")
+            more = msg.get("more_body", False)
+        else:
+            more = False
+    return messages, body
+
+
+def _replay(messages, receive):
+    """A receive() that yields buffered messages first, then defers to the original."""
+    pending = list(messages)
+
+    async def _recv():
+        if pending:
+            return pending.pop(0)
+        return await receive()
+
+    return _recv
+
+
 def _authorized(header_value: str, server_token: str) -> bool:
     """Authorized if the request presents the static server token (when configured)
     or a live REST key whose scope allows MCP."""
@@ -392,6 +487,19 @@ def _guard(asgi_app, server_token: str):
                             "headers": [(b"content-type", b"text/plain")]})
                 await send({"type": "http.response.body", "body": b"unauthorized"})
                 return
+            # Read-only keys: block mutating tool calls (the SSE message POST). The
+            # tool runs in a separate task, so we screen the JSON-RPC body here.
+            if (scope.get("method") == "POST"
+                    and "/messages" in scope.get("path", "")
+                    and _access_for(header, server_token) == "read"):
+                messages, body = await _read_body(receive)
+                if _is_tools_call_body(body):
+                    await send({"type": "http.response.start", "status": 403,
+                                "headers": [(b"content-type", b"text/plain")]})
+                    await send({"type": "http.response.body",
+                                "body": b"this API key is read-only"})
+                    return
+                receive = _replay(messages, receive)
         await asgi_app(scope, receive, send)
 
     return wrapper

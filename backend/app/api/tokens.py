@@ -2,7 +2,7 @@
 from flask import Blueprint, request, jsonify, abort
 
 from ..extensions import db
-from ..models import ApiToken, TOKEN_SCOPES, generate_raw_token, hash_token
+from ..models import ApiToken, TOKEN_SCOPES, TOKEN_ACCESS, generate_raw_token, hash_token
 from ..auth import owner_required, current_group, current_user
 from ..schemas.serializers import iso
 
@@ -15,6 +15,7 @@ def _token_out(t):
         "name": t.name,
         "hint": t.hint,
         "scope": t.scope or "full",
+        "access": t.access or "write",
         "lastUsedAt": iso(t.last_used_at),
         "createdAt": iso(t.created_at),
     }
@@ -36,12 +37,16 @@ def create_token_():
     scope = (data.get("scope") or "full").strip().lower()
     if scope not in TOKEN_SCOPES:
         return jsonify({"error": f"scope must be one of {', '.join(TOKEN_SCOPES)}"}), 400
+    access = (data.get("access") or "write").strip().lower()
+    if access not in TOKEN_ACCESS:
+        return jsonify({"error": f"access must be one of {', '.join(TOKEN_ACCESS)}"}), 400
     raw = generate_raw_token()
     token = ApiToken(
         name=data.get("name", ""),
         token_hash=hash_token(raw),
         hint=raw[:7] + "…",
         scope=scope,
+        access=access,
         user_id=current_user().id,
         group_id=current_group().id,
     )
