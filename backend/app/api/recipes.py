@@ -287,6 +287,20 @@ def _apply_view(out: dict, recipe: Recipe, args):
 @login_required
 def update_recipe(recipe_id):
     recipe = _get(recipe_id)
+    # Snapshot the pre-edit state into the auto-history timeline before overwriting,
+    # then prune to the cap. (Component-only relationship traversal is already loaded.)
+    from .recipe_versions import snapshot_current, prune_auto
+    if recipe.ingredients or recipe.steps or recipe.name:
+        # Auto-history is best-effort: a snapshot failure must NEVER block the edit.
+        # A SAVEPOINT rolls back only the (half-added) version on error, leaving the
+        # update to proceed on the outer transaction.
+        try:
+            with db.session.begin_nested():
+                snapshot_current(recipe, kind="auto", label="Edit")
+                prune_auto(recipe)
+        except Exception:  # noqa: BLE001 — history is optional; the edit must still land
+            current_app.logger.warning(
+                "recipe %s: auto-snapshot failed, continuing with the edit", recipe.id)
     _apply(recipe, request.get_json(force=True) or {})
     db.session.commit()
     return jsonify(recipe_out(recipe))

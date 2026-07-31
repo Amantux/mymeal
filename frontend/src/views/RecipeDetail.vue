@@ -137,6 +137,7 @@ async function load() {
 }
 onMounted(async () => {
   await load()
+  if (recipe.value) await loadVersions()
   try { allCategories.value = (await api.get('/categories')) || [] } catch { /* optional */ }
 })
 
@@ -207,13 +208,105 @@ async function save() {
       .map((text, position) => ({ text, position })),
   }
   try {
-    recipe.value = await api.put(`/recipes/${recipe.value.id}`, payload)
-    editing.value = false
-    ui.toast('Saved')
+    if (editingVersionId.value) {
+      // Editing an experiment: save into the version's snapshot, NOT the live recipe.
+      await api.put(`/recipes/${recipe.value.id}/versions/${editingVersionId.value}`, payload)
+      editingVersionId.value = null
+      editing.value = false
+      await loadVersions()
+      ui.toast('Experiment saved')
+    } else {
+      recipe.value = await api.put(`/recipes/${recipe.value.id}`, payload)
+      editing.value = false
+      await loadVersions()   // the pre-edit auto snapshot now exists
+      ui.toast('Saved')
+    }
   } catch (e) {
     ui.error(e.message)
   }
 }
+
+// --- Versions & experiments -------------------------------------------------
+const versions = ref([])
+const editingVersionId = ref(null)   // set → the editor targets an experiment snapshot
+
+async function loadVersions() {
+  try {
+    const items = (await api.get(`/recipes/${recipe.value.id}/versions`)).items || []
+    // Seed editable feedback buffers so the inputs show any saved rating/notes.
+    versions.value = items.map((v) => ({ ...v, _rating: v.rating ?? undefined, _feedback: v.feedback || '' }))
+  } catch { versions.value = [] }
+}
+
+function loadBuffersFrom(snap) {
+  form.value = {
+    name: snap.name, description: snap.description, recipeYield: snap.recipeYield,
+    servings: snap.servings, prepMinutes: snap.prepMinutes, cookMinutes: snap.cookMinutes,
+    totalMinutes: snap.totalMinutes, sourceUrl: snap.sourceUrl, notes: snap.notes,
+  }
+  nutritionForm.value = { ...(snap.nutrition || {}) }
+  selectedCategoryIds.value = snap.categoryIds || []
+  editIngredients.value = (snap.ingredients || []).map((i) =>
+    i.refRecipeId
+      ? { quantity: i.quantity || '', unit: i.unit || '', food: i.food || i.display || 'component',
+          note: i.note || '', refRecipeId: i.refRecipeId, refRecipeName: i.food || i.display || 'recipe' }
+      : { quantity: i.quantity || '', unit: i.unit || '', food: i.food || i.display || '', note: i.note || '' })
+  editSteps.value = (snap.steps || []).map((s) => ({ text: s.text }))
+}
+
+async function startExperiment() {
+  const label = prompt('Name this experiment (e.g. "More caramelised onions")')
+  if (label === null) return
+  try {
+    const v = await api.post(`/recipes/${recipe.value.id}/versions`, { label: label || 'Experiment' })
+    await loadVersions()
+    ui.toast('Experiment started — edit it, cook it, then promote or discard')
+    editExperiment(v)
+  } catch (e) { ui.error(e.message || 'Could not start experiment') }
+}
+
+async function editExperiment(v) {
+  try {
+    const full = v.snapshot ? v : await api.get(`/recipes/${recipe.value.id}/versions/${v.id}`)
+    loadBuffersFrom(full.snapshot || {})
+    editingVersionId.value = v.id
+    editing.value = true
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  } catch (e) { ui.error(e.message || 'Could not open experiment') }
+}
+
+async function promoteVersion(v) {
+  const what = v.kind === 'experiment' ? 'promote this experiment into' : 'restore this version to'
+  if (!confirm(`This will ${what} the live recipe (a snapshot of the current version is kept first). Continue?`)) return
+  try {
+    const path = v.kind === 'experiment' ? 'promote' : 'restore'
+    recipe.value = await api.post(`/recipes/${recipe.value.id}/versions/${v.id}/${path}`)
+    await load()
+    await loadVersions()
+    ui.toast(v.kind === 'experiment' ? 'Experiment promoted' : 'Version restored')
+  } catch (e) { ui.error(e.message || 'Could not apply version') }
+}
+
+async function discardVersion(v) {
+  if (!confirm('Delete this version?')) return
+  try {
+    await api.del(`/recipes/${recipe.value.id}/versions/${v.id}`)
+    await loadVersions()
+  } catch (e) { ui.error(e.message || 'Could not delete version') }
+}
+
+async function saveFeedback(v) {
+  try {
+    await api.post(`/recipes/${recipe.value.id}/versions/${v.id}/feedback`,
+      { rating: v._rating ?? v.rating, feedback: v._feedback ?? v.feedback })
+    await loadVersions()
+    ui.toast('Feedback saved')
+  } catch (e) { ui.error(e.message || 'Could not save feedback') }
+}
+
+const experiments = computed(() => versions.value.filter((v) => v.kind === 'experiment'))
+const history = computed(() => versions.value.filter((v) => v.kind === 'auto'))
+function fmtDate(s) { try { return new Date(s).toLocaleString() } catch { return s } }
 
 const shoppingBusy = ref(false)
 async function addToShopping() {
@@ -371,7 +464,8 @@ const imageSrc = computed(() =>
         <button class="danger" @click="remove">Delete</button>
       </template>
       <template v-else>
-        <button class="secondary" @click="editing = false">Cancel</button>
+        <span v-if="editingVersionId" class="badge" style="align-self:center">✎ Editing experiment</span>
+        <button class="secondary" @click="editing = false; editingVersionId = null">Cancel</button>
         <button @click="save">Save</button>
       </template>
     </div>
@@ -475,6 +569,60 @@ const imageSrc = computed(() =>
       </div>
 
       <div class="card">
+        <div class="page-head" style="margin-bottom:10px">
+          <h2>Versions &amp; experiments</h2>
+          <div class="grow"></div>
+          <button class="secondary sm" @click="startExperiment">🧪 Start an experiment</button>
+        </div>
+        <p class="muted" style="margin:0 0 12px;font-size:0.88rem">
+          Branch an experiment to tweak this recipe, cook it, and log how it turned out —
+          then promote the winner or discard it. Every save also keeps an automatic snapshot you can restore.
+        </p>
+
+        <div v-if="experiments.length" class="stack" style="gap:10px">
+          <div v-for="v in experiments" :key="v.id" class="exp-card">
+            <div class="row" style="gap:8px;align-items:center">
+              <strong class="fill">{{ v.label || 'Experiment' }}</strong>
+              <span class="badge" :class="{ ok: v.status === 'promoted', off: v.status === 'discarded' }">
+                {{ v.status }}
+              </span>
+            </div>
+            <div class="row" style="gap:6px;align-items:center;margin-top:8px">
+              <span class="muted sm">Rating</span>
+              <select v-model.number="v._rating" class="sm" :aria-label="`Rating for ${v.label}`"
+                      @change="v._rating = v._rating">
+                <option :value="undefined">—</option>
+                <option v-for="n in [0,1,2,3,4,5]" :key="n" :value="n">{{ n }}★</option>
+              </select>
+              <input v-model="v._feedback" class="fill sm" placeholder="How did it turn out? What to change next?"
+                     :aria-label="`Feedback for ${v.label}`" />
+              <button class="secondary sm" @click="saveFeedback(v)">Save</button>
+            </div>
+            <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap">
+              <button v-if="v.status === 'open'" class="secondary sm" @click="editExperiment(v)">✎ Edit</button>
+              <button v-if="v.status === 'open'" class="sm" @click="promoteVersion(v)">⬆ Promote</button>
+              <button class="secondary sm danger" @click="discardVersion(v)">Discard</button>
+              <span class="muted sm" style="align-self:center">{{ fmtDate(v.createdAt) }}</span>
+            </div>
+          </div>
+        </div>
+
+        <details v-if="history.length" class="hist">
+          <summary>Edit history ({{ history.length }})</summary>
+          <ul class="hist-list">
+            <li v-for="v in history" :key="v.id" class="row" style="gap:8px;align-items:center">
+              <span class="muted sm fill">{{ fmtDate(v.createdAt) }}</span>
+              <button class="secondary sm" @click="promoteVersion(v)">Restore</button>
+              <button class="secondary sm danger" @click="discardVersion(v)">✕</button>
+            </li>
+          </ul>
+        </details>
+        <p v-if="!experiments.length && !history.length" class="muted" style="margin:0">
+          No versions yet — start an experiment, or edit the recipe to begin a history.
+        </p>
+      </div>
+
+      <div class="card">
         <h2>Share &amp; export</h2>
         <div v-if="recipe.shareToken" class="share-live">
           <p class="muted" style="font-size:0.85rem;margin:8px 0">
@@ -566,6 +714,15 @@ const imageSrc = computed(() =>
 .component-row { display: flex; align-items: baseline; gap: 8px; }
 .component-amt { font-size: 0.85rem; }
 .component-note { font-size: 0.8rem; margin: 8px 0 0; }
+.exp-card { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; }
+.badge.ok { background: var(--success-soft, #e6f5ec); color: var(--success, #1a7f43); }
+.badge.off { opacity: 0.6; }
+.sm { font-size: 0.85rem; }
+select.sm { padding: 2px 6px; }
+.hist { margin-top: 14px; }
+.hist summary { cursor: pointer; color: var(--muted); font-size: 0.88rem; }
+.hist-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.danger { color: var(--danger, #b3261e); }
 .cat-picker { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 4px; }
 .cat-opt { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; cursor: pointer; }
 .cat-opt input { width: auto; }

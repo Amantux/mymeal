@@ -61,6 +61,15 @@ class Recipe(IDMixin, TimestampMixin, db.Model):
     )
     tags = relationship("Tag", secondary="recipe_tags", back_populates="recipes")
 
+    # Version history + experiments (auto snapshots on save + deliberate branches).
+    versions = relationship(
+        "RecipeVersion",
+        back_populates="recipe",
+        foreign_keys="RecipeVersion.recipe_id",
+        cascade="all, delete-orphan",
+        order_by="RecipeVersion.created_at.desc()",
+    )
+
 
 class RecipeIngredient(IDMixin, TimestampMixin, db.Model):
     __tablename__ = "recipe_ingredients"
@@ -106,3 +115,34 @@ class RecipeStep(IDMixin, TimestampMixin, db.Model):
 
     recipe_id: Mapped[str] = mapped_column(String(36), ForeignKey("recipes.id"))
     recipe = relationship("Recipe", back_populates="steps")
+
+
+class RecipeVersion(IDMixin, TimestampMixin, db.Model):
+    """A point-in-time snapshot of a recipe's content (JSON in the `_apply`
+    payload shape). `kind="auto"` rows form the edit-history timeline (captured
+    before each save, pruned to a cap); `kind="experiment"` rows are deliberate
+    branches the cook edits, cooks, rates, and either promotes into the live
+    recipe or discards. Group-scoped like everything else."""
+
+    __tablename__ = "recipe_versions"
+
+    recipe_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("recipes.id", ondelete="CASCADE"), index=True
+    )
+    recipe = relationship("Recipe", back_populates="versions", foreign_keys=[recipe_id])
+
+    group_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("groups.id"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(16), default="auto")  # auto | experiment
+    # experiment lifecycle: open | promoted | discarded (auto rows stay "open").
+    status: Mapped[str] = mapped_column(String(16), default="open")
+    label: Mapped[str] = mapped_column(String(255), default="")
+    note: Mapped[str] = mapped_column(Text, default="")  # the experiment idea
+    rating: Mapped[int | None] = mapped_column(Integer, nullable=True)  # feedback 0-5
+    feedback: Mapped[str] = mapped_column(Text, default="")  # how it turned out
+    parent_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    snapshot: Mapped[str] = mapped_column(Text, default="")  # JSON, _apply-shaped
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=True
+    )

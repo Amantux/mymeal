@@ -12,7 +12,7 @@ from .api_token import (  # noqa: F401
 from .food import Food, Unit  # noqa: F401
 from .category import Category, recipe_categories  # noqa: F401
 from .tag import Tag, recipe_tags  # noqa: F401
-from .recipe import Recipe, RecipeIngredient, RecipeStep  # noqa: F401
+from .recipe import Recipe, RecipeIngredient, RecipeStep, RecipeVersion  # noqa: F401
 from .mealplan import MealPlanEntry  # noqa: F401
 from .shopping import ShoppingList, ShoppingListItem  # noqa: F401
 from .chat import ChatSession, ChatMessage  # noqa: F401
@@ -44,6 +44,7 @@ __all__ = [
     "Recipe",
     "RecipeIngredient",
     "RecipeStep",
+    "RecipeVersion",
     "MealPlanEntry",
     "ShoppingList",
     "ShoppingListItem",

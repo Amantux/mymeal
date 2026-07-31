@@ -92,6 +92,26 @@ def step_out(s):
     return {"id": s.id, "position": s.position, "title": s.title, "text": s.text}
 
 
+def version_out(v, include_snapshot=False):
+    """A recipe version/experiment. The snapshot (full recipe payload) is only
+    included on the detail view; never leaks another group's data (callers are
+    group-scoped)."""
+    d = {
+        "id": v.id,
+        "kind": v.kind,
+        "status": v.status,
+        "label": v.label,
+        "note": v.note,
+        "rating": v.rating,
+        "feedback": v.feedback,
+        "parentVersionId": v.parent_version_id,
+        "createdAt": iso(v.created_at),
+    }
+    if include_snapshot:
+        d["snapshot"] = json.loads(v.snapshot) if v.snapshot else None
+    return d
+
+
 def recipe_summary(r):
     return {
         "id": r.id,

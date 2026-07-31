@@ -223,6 +223,7 @@ def _register_blueprints(app):
     from .api.misc import bp as misc_bp
     from .api.lookup import bp as lookup_bp
     from .api.recipes import bp as recipes_bp
+    from .api.recipe_versions import bp as recipe_versions_bp
     from .api.foods import bp as foods_bp
     from .api.categories import bp as categories_bp
     from .api.tags import bp as tags_bp
@@ -245,6 +246,7 @@ def _register_blueprints(app):
         misc_bp,
         lookup_bp,
         recipes_bp,
+        recipe_versions_bp,
         foods_bp,
         categories_bp,
         tags_bp,
