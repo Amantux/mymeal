@@ -145,6 +145,11 @@ const syncOut = ref('')     // the string we produced (shown for manual copy)
 const syncIn = ref('')      // a string pasted from another app
 const syncErr = ref('')
 const syncBusy = ref(false)
+// Opt-in: also embed the API key in the copied string (AICFG2). Its own dedicated
+// field — the provider form's apiKey is write-only and cleared after save, so we
+// can't read it back here. Default OFF; the key is a secret, so we warn and clear it.
+const syncInclKey = ref(false)
+const syncKey = ref('')
 
 function b64encode(s) {
   const bytes = new TextEncoder().encode(s)
@@ -168,48 +173,66 @@ function encodeAiSettings() {
     jobEnrich: { provider: jobAi.value.enrich?.provider || '', model: jobAi.value.enrich?.model || '' },
     jobOrganize: { provider: jobAi.value.organize?.provider || '', model: jobAi.value.organize?.model || '' },
   }
+  // Only when the user opts in AND supplies a key does the string carry it — and
+  // then it's tagged AICFG2 so a reader knows a secret may be present.
+  const key = syncInclKey.value ? (syncKey.value || '').trim() : ''
+  if (key) {
+    cfg.apiKey = key
+    return 'AICFG2:' + b64encode(JSON.stringify(cfg))
+  }
   return 'AICFG1:' + b64encode(JSON.stringify(cfg))
 }
 
 async function copyAiSettings() {
   const str = encodeAiSettings()
-  syncOut.value = str
+  const withKey = str.startsWith('AICFG2:')
   try {
     await navigator.clipboard.writeText(str)
-    ui.toast('Copied — paste into the other apps’ Settings (the API key is not included)')
+    // On success, never leave a key-bearing string rendered on screen; keyless
+    // strings can stay visible so the user sees what was copied.
+    syncOut.value = withKey ? '' : str
+    ui.toast(withKey
+      ? 'Copied WITH your API key — treat it like a password; only paste into your own apps'
+      : 'Copied — paste into the other apps’ Settings (the API key is not included)')
   } catch (e) {
+    // Clipboard blocked: show the string so the user can copy it manually.
+    syncOut.value = str
     ui.toast('Select the text below and copy it', 'info')
   }
+  syncKey.value = ''  // don't leave the secret sitting in the field
 }
 
 async function applyAiSettings() {
   syncErr.value = ''
   const raw = (syncIn.value || '').trim()
-  if (!raw.startsWith('AICFG1:')) {
-    syncErr.value = 'Paste a settings string that starts with AICFG1:'
+  if (!raw.startsWith('AICFG1:') && !raw.startsWith('AICFG2:')) {
+    syncErr.value = 'Paste a settings string that starts with AICFG1: or AICFG2:'
     return
   }
   let cfg
-  try { cfg = JSON.parse(b64decode(raw.slice(7))) } catch (e) { cfg = null }
+  try { cfg = JSON.parse(b64decode(raw.slice(raw.indexOf(':') + 1))) } catch (e) { cfg = null }
   if (!cfg || typeof cfg !== 'object') {
     syncErr.value = 'That settings string is not valid — copy it again from the other app.'
     return
   }
   syncBusy.value = true
   try {
-    // Provider settings — the API key is deliberately never part of the string, so
-    // this leaves this app's stored key untouched (a blank apiKey is not sent).
-    await api.put('/ai/settings', {
-      provider: cfg.provider || '', baseUrl: cfg.baseUrl || '', model: cfg.model || '',
-    })
+    // Provider settings. Only an AICFG2 string carries a key; when present we store
+    // it, otherwise a blank apiKey is not sent and this app's stored key is untouched.
+    const body = { provider: cfg.provider || '', baseUrl: cfg.baseUrl || '', model: cfg.model || '' }
+    if (typeof cfg.apiKey === 'string' && cfg.apiKey.trim()) body.apiKey = cfg.apiKey.trim()
+    await api.put('/ai/settings', body)
     await api.put('/ai/chat-settings', { stream: !!cfg.stream })
     await api.put('/ai/job-settings', {
       enrich: cfg.jobEnrich || { provider: '', model: '' },
       organize: cfg.jobOrganize || { provider: '', model: '' },
     })
+    const keyApplied = typeof cfg.apiKey === 'string' && cfg.apiKey.trim()
     syncIn.value = ''
     await Promise.all([load(), loadChatDefault(), loadJobAi()])
-    ui.toast('AI settings applied — add this app’s API key below if the provider needs one')
+    ui.toast(keyApplied
+      ? 'AI settings and API key applied'
+      : 'AI settings applied — add this app’s API key below if the provider needs one')
   } catch (e) {
     syncErr.value = e.message || 'Could not apply the settings.'
   } finally {
@@ -647,8 +670,18 @@ async function findOllama() {
     <h2>Sync AI settings across apps</h2>
     <p class="muted">myMeal, Edibl and HomeHoard usually run side by side. Copy this app's AI
       configuration — provider, model, chat and background-task defaults — as a portable string,
-      then paste it into the other apps' Settings so they all match. The
-      <strong>API key is never included</strong>; set each app's key on its own below.</p>
+      then paste it into the other apps' Settings so they all match. By default the
+      <strong>API key is not included</strong>; opt in below to embed it too.</p>
+    <label style="display:flex;gap:8px;align-items:center;margin-bottom:6px;font-size:.9rem">
+      <input type="checkbox" v-model="syncInclKey" style="width:auto" />
+      <span>Also include my API key in the copied text</span>
+    </label>
+    <div v-if="syncInclKey" style="margin-bottom:8px">
+      <input type="password" v-model="syncKey" autocomplete="off" placeholder="Paste the API key to share"
+        aria-label="API key to include in the sync string" style="width:100%;max-width:420px" />
+      <p class="help" style="margin:4px 0 0">Your API key will be embedded in the copied text —
+        treat it like a password and only paste it into your own apps.</p>
+    </div>
     <div class="row" style="margin-bottom:8px">
       <button type="button" class="secondary" @click="copyAiSettings">📋 Copy AI settings</button>
     </div>
@@ -659,7 +692,7 @@ async function findOllama() {
     <div style="margin-top:14px">
       <label for="ai-sync-in" class="muted" style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:4px">
         Paste settings from another app</label>
-      <textarea id="ai-sync-in" v-model="syncIn" rows="2" placeholder="AICFG1:…"
+      <textarea id="ai-sync-in" v-model="syncIn" rows="2" placeholder="AICFG1:… or AICFG2:…"
         style="width:100%;font-family:monospace;font-size:.78rem"></textarea>
       <p v-if="syncErr" class="help danger" style="margin:4px 0 0">{{ syncErr }}</p>
       <div class="row" style="margin-top:8px">
