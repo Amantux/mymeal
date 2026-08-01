@@ -18,6 +18,26 @@ cd /app/backend
 export MYMEAL_DATA_DIR
 mkdir -p "$MYMEAL_DATA_DIR"
 
+# Drop privileges: the container starts as root so it can create/own the HA
+# add-on's /data, then every long-running process runs as the unprivileged `app`
+# user via gosu. If we're already non-root (some runtimes), RUN_AS stays empty
+# and commands run directly. Matches HomeHoard/Edibl.
+RUN_AS=""
+if [ "$(id -u)" = "0" ]; then
+  # A root-owned /data from a previous release is fixed here (root can always
+  # chown). The failure case is a read-only or non-chownable mount (ro bind,
+  # some SMB/NFS-backed setups): the chown no-ops, we drop to uid 1000, and the
+  # first request dies with "unable to open database file" hours later with no
+  # explanation. So verify writability AS the app user and fail loudly now.
+  chown -R app:app "$MYMEAL_DATA_DIR" 2>/dev/null || true
+  if ! gosu app test -w "$MYMEAL_DATA_DIR"; then
+    echo "myMeal: $MYMEAL_DATA_DIR is not writable by the 'app' user (uid 1000)." >&2
+    echo "        The data directory must be writable by the container's app user." >&2
+    exit 1
+  fi
+  RUN_AS="gosu app"
+fi
+
 # NOTE: MYMEAL_SECRET_KEY is intentionally NOT defaulted here. It used to be
 # `head -c 32 /dev/urandom`, which minted a NEW signing key on every container
 # start — silently logging every user out and voiding every issued API token on
@@ -28,13 +48,13 @@ mkdir -p "$MYMEAL_DATA_DIR"
 # 1. Validate. Prints every problem at once; in the add-on this lands in the
 #    Log tab, which is where an operator will actually look.
 # ---------------------------------------------------------------------------
-if ! python3 -m app.config_check; then
+if ! $RUN_AS python3 -m app.config_check; then
   echo "myMeal: refusing to start with invalid configuration (see above)." >&2
   exit 1
 fi
 
 # Read back the values the shell needs, from the SAME source of truth.
-eval "$(python3 - <<'PY'
+eval "$($RUN_AS python3 - <<'PY'
 from app.settings import load_settings
 s = load_settings()
 print(f"RESOLVED_PORT={s.PORT}")
@@ -54,12 +74,12 @@ PY
 # database (writes the DSN to /data/.database_url, which the app reads). Runs
 # before gunicorn so the engine is built against the right database. Best-effort
 # — it self-selects SQLite if anything is missing, so it never blocks startup.
-python3 -m app.pg_provision \
+$RUN_AS python3 -m app.pg_provision \
   || echo "myMeal: shared-PostgreSQL provisioning skipped."
 
 # Best-effort Home Assistant discovery. Failure is logged, not silenced with
 # `|| true`: discovery is a convenience, but a silent failure is a mystery.
-python3 ha_discovery.py \
+$RUN_AS python3 ha_discovery.py \
   || echo "myMeal: HA discovery registration skipped (not running under Supervisor)."
 
 # ---------------------------------------------------------------------------
@@ -74,12 +94,12 @@ if [ "$RESOLVED_MCP_ENABLED" = "true" ] && [ -f mcp_server.py ]; then
   # an operator-controlled value must not be able to inject shell.
   # `|| true` so a hiccup reading the (optional) token never aborts startup
   # under `set -e` — the MCP server is optional and must not take the app down.
-  MCP_SERVER_TOKEN="$(python3 -c 'from app.settings import load_settings; print(load_settings().MCP_SERVER_TOKEN)' 2>/dev/null || true)"
+  MCP_SERVER_TOKEN="$($RUN_AS python3 -c 'from app.settings import load_settings; print(load_settings().MCP_SERVER_TOKEN)' 2>/dev/null || true)"
   MYMEAL_MCP_API="$RESOLVED_MCP_API" \
     MYMEAL_MCP_PORT="$RESOLVED_MCP_PORT" \
     MYMEAL_MCP_SERVER_TOKEN="$MCP_SERVER_TOKEN" \
     MYMEAL_MCP_EXPOSE_EXTERNAL="$RESOLVED_MCP_EXPOSE_EXTERNAL" \
-    python3 mcp_server.py &
+    $RUN_AS python3 mcp_server.py &
   MCP_PID=$!
   echo "myMeal: MCP server started (pid $MCP_PID) on :${RESOLVED_MCP_PORT}/sse"
 fi
@@ -98,7 +118,7 @@ trap shutdown TERM INT
 #    flags. Worker count stays low on purpose: SQLite serialises writes, so
 #    extra workers add lock contention; threads absorb concurrent readers.
 # ---------------------------------------------------------------------------
-gunicorn \
+$RUN_AS gunicorn \
   --bind "0.0.0.0:${RESOLVED_PORT}" \
   --workers "$RESOLVED_WORKERS" \
   --threads "$RESOLVED_THREADS" \
