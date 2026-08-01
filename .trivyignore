@@ -1,0 +1,15 @@
+# Trivy findings accepted with a documented reason. Keep this list short and
+# justified — an unexplained entry here is how a real finding gets buried.
+
+# DS-0002 — "Image user should not be 'root'".
+# Both images intentionally have no final USER instruction:
+#   * Dockerfile — the container must start as root to chown the Home
+#     Assistant-managed /data volume (whose ownership we don't control), then
+#     docker-entrypoint.sh runs EVERY long-running process (gunicorn, the MCP
+#     server, provisioning, discovery) as the unprivileged `app` user via gosu.
+#     Verified: gunicorn and mcp_server.py run as uid 1000; only the supervising
+#     shell stays root. Same model as the HomeHoard/Edibl add-ons.
+#   * shared_postgres/Dockerfile — derives from postgres:16, whose own
+#     entrypoint drops to the `postgres` user at runtime. Overriding USER here
+#     would break the upstream initdb flow.
+DS-0002
