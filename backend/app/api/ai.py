@@ -246,13 +246,16 @@ def import_recipe_endpoint():
     except UnsafeURLError as exc:
         # Must be checked before ValueError — UnsafeURLError subclasses it.
         return jsonify({"error": str(exc)}), 400
+    except (httpx.HTTPError, httpx.InvalidURL, UnicodeError) as exc:
+        # Also before ValueError: UnicodeError subclasses it, so this arm was
+        # previously unreachable and a malformed-encoding URL was reported as
+        # "no AI provider configured" (503) instead of a fetch failure (502).
+        return jsonify({"error": f"could not fetch the URL: {exc}"}), 502
+    except ProviderError as exc:
+        return jsonify({"error": str(exc)}), 502
     except ValueError:
         # Reached the AI path with no provider configured.
         return jsonify({"error": "no AI provider configured for this import"}), 503
-    except ProviderError as exc:
-        return jsonify({"error": str(exc)}), 502
-    except (httpx.HTTPError, httpx.InvalidURL, UnicodeError) as exc:
-        return jsonify({"error": f"could not fetch the URL: {exc}"}), 502
 
     name = payload.get("name") or "Imported Recipe"
     recipe = Recipe(

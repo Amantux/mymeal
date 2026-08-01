@@ -23,6 +23,7 @@ import urllib.request
 
 import psycopg2
 from flask import Flask, jsonify, request
+from psycopg2 import sql
 
 DATA_DIR = "/data"
 OPTIONS_FILE = os.path.join(DATA_DIR, "options.json")
@@ -168,15 +169,22 @@ def provision():
     stored = apps.get(name)
 
     # Decide the password WITHOUT ever silently rotating a live credential.
-    # name is validated to [a-z][a-z0-9_]* so quoting the identifier is safe.
+    # Identifiers are composed with psycopg2's sql.Identifier (which quotes and
+    # escapes them) rather than an f-string; APP_RE stays as defence in depth.
+    # Values (passwords) remain parameterized via %s — never interpolated.
+    ident = sql.Identifier(name)
     if not role_exists:
         password = secrets.token_urlsafe(24)  # url-safe: no %/@ to encode
-        cur.execute(f'CREATE ROLE "{name}" WITH LOGIN PASSWORD %s', (password,))
+        cur.execute(
+            sql.SQL("CREATE ROLE {} WITH LOGIN PASSWORD %s").format(ident), (password,)
+        )
     elif stored is not None:
         password = stored  # known app → idempotent, return the same DSN
     elif rotate:
         password = secrets.token_urlsafe(24)
-        cur.execute(f'ALTER ROLE "{name}" WITH LOGIN PASSWORD %s', (password,))
+        cur.execute(
+            sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD %s").format(ident), (password,)
+        )
     else:
         # Role exists but we don't hold its password (e.g. apps.json lost).
         # Refuse rather than reset — resetting would lock out the running app.
@@ -193,9 +201,9 @@ def provision():
     # app role can't open another app's DB or enumerate the cluster.
     cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (name,))
     if not cur.fetchone():
-        cur.execute(f'CREATE DATABASE "{name}" OWNER "{name}"')
-    cur.execute(f'REVOKE CONNECT ON DATABASE "{name}" FROM PUBLIC')
-    cur.execute(f'GRANT ALL PRIVILEGES ON DATABASE "{name}" TO "{name}"')
+        cur.execute(sql.SQL("CREATE DATABASE {} OWNER {}").format(ident, ident))
+    cur.execute(sql.SQL("REVOKE CONNECT ON DATABASE {} FROM PUBLIC").format(ident))
+    cur.execute(sql.SQL("GRANT ALL PRIVILEGES ON DATABASE {} TO {}").format(ident, ident))
     cur.execute("REVOKE CONNECT ON DATABASE postgres FROM PUBLIC")
     cur.execute("REVOKE CONNECT ON DATABASE template1 FROM PUBLIC")
     cur.close()

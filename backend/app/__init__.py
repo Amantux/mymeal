@@ -11,6 +11,7 @@ from datetime import timedelta
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.security import safe_join
 
 from .extensions import db
 from .settings import FIELDS_BY_NAME, ensure_secret_key, load_settings
@@ -217,26 +218,26 @@ def _run_migrations(app):
 
 
 def _register_blueprints(app):
-    from .api.users import bp as users_bp
-    from .api.groups import bp as groups_bp
-    from .api.tokens import bp as tokens_bp
-    from .api.misc import bp as misc_bp
-    from .api.lookup import bp as lookup_bp
-    from .api.recipes import bp as recipes_bp
-    from .api.recipe_versions import bp as recipe_versions_bp
-    from .api.foods import bp as foods_bp
-    from .api.categories import bp as categories_bp
-    from .api.tags import bp as tags_bp
-    from .api.mealplans import bp as mealplans_bp
-    from .api.shopping_lists import bp as shopping_lists_bp
-    from .api.chat import bp as chat_bp
-    from .api.ha import bp as ha_bp
     from .api.ai import bp as ai_bp
+    from .api.categories import bp as categories_bp
+    from .api.chat import bp as chat_bp
     from .api.edibl import bp as edibl_bp
+    from .api.foods import bp as foods_bp
+    from .api.groups import bp as groups_bp
+    from .api.ha import bp as ha_bp
+    from .api.jobs import bp as jobs_bp
+    from .api.lookup import bp as lookup_bp
+    from .api.mealplans import bp as mealplans_bp
+    from .api.misc import bp as misc_bp
     from .api.preferences import bp as preferences_bp
     from .api.public import bp as public_bp
-    from .api.jobs import bp as jobs_bp
+    from .api.recipe_versions import bp as recipe_versions_bp
+    from .api.recipes import bp as recipes_bp
+    from .api.shopping_lists import bp as shopping_lists_bp
     from .api.suggestions import bp as suggestions_bp
+    from .api.tags import bp as tags_bp
+    from .api.tokens import bp as tokens_bp
+    from .api.users import bp as users_bp
 
     prefix = "/api/v1"
     for bp in (
@@ -295,15 +296,21 @@ def _frontend_dist():
 
 def _serve_spa(path):
     _FRONTEND_DIST = _frontend_dist()
-    full = os.path.join(_FRONTEND_DIST, path)
-    if path and os.path.isfile(full):
+    # safe_join, not os.path.join: it rejects traversal ("../") and absolute
+    # segments, returning None. os.path.join would happily build a path outside
+    # the dist dir, letting the isfile() check probe for arbitrary files.
+    # Nested asset paths ("assets/index-abc.js") are still served normally.
+    full = safe_join(_FRONTEND_DIST, path) if path else None
+    if full and os.path.isfile(full):
         return send_from_directory(_FRONTEND_DIST, path)
     index = os.path.join(_FRONTEND_DIST, "index.html")
     if os.path.isfile(index):
         return send_from_directory(_FRONTEND_DIST, "index.html")
     return (
-        "<h1>myMeal API</h1><p>Frontend not built. "
-        "API is available under <code>/api/v1</code>.</p>",
+        (
+            "<h1>myMeal API</h1><p>Frontend not built. "
+            "API is available under <code>/api/v1</code>.</p>"
+        ),
         200,
     )
 

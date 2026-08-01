@@ -12,7 +12,7 @@ import json
 
 import httpx
 
-from .base import AIProvider, ChatResult, ProviderError, ToolCall
+from .base import AIProvider, ChatResult, ProviderError, ToolCall, safe_upstream_detail
 
 
 class OllamaProvider(AIProvider):
@@ -45,7 +45,9 @@ class OllamaProvider(AIProvider):
                            headers=self._headers(), timeout=self.timeout)
             r.raise_for_status()
         except httpx.HTTPError as exc:
-            raise ProviderError(f"ollama request failed: {exc}") from exc
+            raise ProviderError(
+                f"ollama request failed: {safe_upstream_detail(exc)}"
+            ) from exc
         return r.json()
 
     def _complete(self, system: str, prompt: str, max_tokens: int) -> str:
@@ -150,7 +152,9 @@ class OllamaProvider(AIProvider):
                     if obj.get("done"):
                         break
         except httpx.HTTPError as exc:
-            raise ProviderError(f"ollama request failed: {exc}") from exc
+            raise ProviderError(
+                f"ollama request failed: {safe_upstream_detail(exc)}"
+            ) from exc
         out = ChatResult(content=content)
         for i, call in enumerate(raw_calls):
             fn = call.get("function", {})

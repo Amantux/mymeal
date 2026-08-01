@@ -203,7 +203,10 @@ def main() -> int:
     drift = []
     for path, content in targets.items():
         if args.check:
-            current = open(path).read() if os.path.exists(path) else None
+            current = None
+            if os.path.exists(path):
+                with open(path) as fh:
+                    current = fh.read()
             if current != content:
                 drift.append(os.path.relpath(path, ROOT))
         else:

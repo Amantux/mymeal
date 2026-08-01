@@ -384,6 +384,9 @@ class Settings:
                 if url:
                     return normalize_db_url(url)
             except OSError:
+                # The provisioned-DSN file is optional: absent/unreadable simply
+                # means "not provisioned yet", so fall through to the SQLite
+                # default rather than failing startup.
                 pass
         return f"sqlite:///{os.path.join(self.data_dir, 'mymeal.db')}"
 

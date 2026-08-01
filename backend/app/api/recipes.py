@@ -331,6 +331,9 @@ def _remove_image_file(filename: str):
     try:
         os.remove(_image_path(filename))
     except OSError:
+        # Best-effort cleanup: the image may already be gone (double delete, or
+        # removed out-of-band). Failing to unlink a stale file must never break
+        # the recipe delete/replace the caller actually asked for.
         pass
 
 

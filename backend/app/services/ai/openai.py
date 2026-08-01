@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 
-from .base import AIProvider, ChatResult, ProviderError, ToolCall
+from .base import AIProvider, ChatResult, ProviderError, ToolCall, safe_upstream_detail
 
 
 class OpenAIProvider(AIProvider):
@@ -44,30 +44,41 @@ class OpenAIProvider(AIProvider):
 
     def _complete(self, system: str, prompt: str, max_tokens: int) -> str:
         client = self._get_client()
-        resp = client.chat.completions.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
-        )
+        # Raw SDK errors must not escape: callers (recipe import) only handle
+        # ProviderError, so an unwrapped one becomes a 500 with an HTML body and
+        # unsanitized upstream text. Wrap + redact, like chat() does.
+        try:
+            resp = client.chat.completions.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+        except Exception as exc:   # normalise every SDK failure
+            raise ProviderError(f"OpenAI request failed: {safe_upstream_detail(exc)}") from exc
         return resp.choices[0].message.content or ""
 
     def _complete_image(self, system, prompt, image_b64, media_type, max_tokens) -> str:
         client = self._get_client()
         data_uri = f"data:{media_type};base64,{image_b64}"
-        resp = client.chat.completions.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": data_uri}},
-                ]},
-            ],
-        )
+        try:
+            resp = client.chat.completions.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": data_uri}},
+                    ]},
+                ],
+            )
+        except Exception as exc:   # normalise every SDK failure
+            raise ProviderError(
+                f"OpenAI request failed: {safe_upstream_detail(exc)}"
+            ) from exc
         return resp.choices[0].message.content or ""
 
     def chat(self, messages, system="", tools=None, max_tokens=2048) -> ChatResult:
@@ -86,7 +97,12 @@ class OpenAIProvider(AIProvider):
                 }
                 for t in tools
             ]
-        resp = client.chat.completions.create(**kwargs)
+        try:
+            resp = client.chat.completions.create(**kwargs)
+        except Exception as exc:   # normalise every SDK failure
+            raise ProviderError(
+                f"openai request failed: {safe_upstream_detail(exc)}"
+            ) from exc
         msg = resp.choices[0].message
         out = ChatResult(content=msg.content or "")
         for call in msg.tool_calls or []:
@@ -132,8 +148,10 @@ class OpenAIProvider(AIProvider):
                         slot["name"] = tc.function.name
                     if tc.function and tc.function.arguments:
                         slot["args"] += tc.function.arguments
-        except Exception as exc:  # noqa: BLE001 - normalize SDK/HTTP errors
-            raise ProviderError(f"openai request failed: {exc}") from exc
+        except Exception as exc:   # normalize SDK/HTTP errors
+            raise ProviderError(
+                f"openai request failed: {safe_upstream_detail(exc)}"
+            ) from exc
         out = ChatResult(content=content)
         for idx in sorted(frags):
             f = frags[idx]

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-from .base import AIProvider, ChatResult, ProviderError, ToolCall
+from .base import AIProvider, ChatResult, ProviderError, ToolCall, safe_upstream_detail
 
 
 class ClaudeProvider(AIProvider):
@@ -39,26 +39,40 @@ class ClaudeProvider(AIProvider):
 
     def _complete(self, system: str, prompt: str, max_tokens: int) -> str:
         client = self._get_client()
-        resp = client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        # Raw SDK errors must not escape: callers (recipe import) only handle
+        # ProviderError, so an unwrapped one becomes a 500 with an HTML body and
+        # unsanitized upstream text.
+        try:
+            resp = client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except Exception as exc:   # normalise every SDK failure
+            raise ProviderError(
+                f"claude request failed: {safe_upstream_detail(exc)}"
+            ) from exc
         return "".join(b.text for b in resp.content if b.type == "text")
 
     def _complete_image(self, system, prompt, image_b64, media_type, max_tokens) -> str:
         client = self._get_client()
-        resp = client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64",
-                                             "media_type": media_type, "data": image_b64}},
-                {"type": "text", "text": prompt},
-            ]}],
-        )
+        try:
+            resp = client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": [
+                    {"type": "image", "source": {"type": "base64",
+                                                 "media_type": media_type,
+                                                 "data": image_b64}},
+                    {"type": "text", "text": prompt},
+                ]}],
+            )
+        except Exception as exc:   # normalise every SDK failure
+            raise ProviderError(
+                f"claude request failed: {safe_upstream_detail(exc)}"
+            ) from exc
         return "".join(b.text for b in resp.content if b.type == "text")
 
     def chat(self, messages, system="", tools=None, max_tokens=2048) -> ChatResult:
@@ -79,7 +93,12 @@ class ClaudeProvider(AIProvider):
                 }
                 for t in tools
             ]
-        resp = client.messages.create(**kwargs)
+        try:
+            resp = client.messages.create(**kwargs)
+        except Exception as exc:   # normalise every SDK failure
+            raise ProviderError(
+                f"claude request failed: {safe_upstream_detail(exc)}"
+            ) from exc
         out = ChatResult()
         for block in resp.content:
             if block.type == "text":
@@ -111,8 +130,10 @@ class ClaudeProvider(AIProvider):
                     content += text
                     yield {"type": "delta", "text": text}
                 final = stream.get_final_message()
-        except Exception as exc:  # noqa: BLE001 - normalize SDK/HTTP errors
-            raise ProviderError(f"claude request failed: {exc}") from exc
+        except Exception as exc:
+            raise ProviderError(
+                f"claude request failed: {safe_upstream_detail(exc)}"
+            ) from exc
         out = ChatResult(content=content)
         for block in final.content:
             if block.type == "tool_use":
