@@ -1,0 +1,40 @@
+version: 2
+updates:
+  # Python backend
+  - package-ecosystem: "pip"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      backend-python:
+        update-types: ["minor", "patch"]   # majors get their own PR for review
+
+  # Vue frontend
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      frontend-npm:
+        update-types: ["minor", "patch"]
+
+  # Container base images (app + the Shared PostgreSQL side-car add-on)
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "docker"
+    directory: "/shared_postgres"
+    schedule:
+      interval: "weekly"
+
+  # GitHub Actions (keeps checkout/setup-* off deprecated runtimes)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]
