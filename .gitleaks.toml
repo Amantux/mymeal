@@ -1,0 +1,19 @@
+# gitleaks configuration.
+#
+# Extends the default rule set — we only ADD allowlist entries, never disable a
+# rule, so a real credential anywhere in production code still fails the scan.
+[extend]
+useDefault = true
+
+# Test fixtures are not credentials. The backend test-suite deliberately
+# contains realistic-looking values:
+#   * `SECRET_KEY = "..."` — a throwaway Flask signing key so tests are
+#     deterministic; it grants nothing outside the test process.
+#   * the redaction tests in test_security_hardening.py assert that key-SHAPED
+#     strings (sk-…, AIza…, Bearer …) get scrubbed from upstream error text, so
+#     they must contain those shapes to be meaningful.
+# Same reasoning as the CodeQL `paths-ignore` for tests: not production attack
+# surface. A real credential still must never be committed here.
+[allowlist]
+description = "Backend test fixtures (throwaway signing keys, redaction-test shapes)"
+paths = ['''backend/tests/.*''']
