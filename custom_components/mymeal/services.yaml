@@ -56,8 +56,9 @@ plan_week:
 search_recipes:
   name: Search recipes
   description: >-
-    Find saved recipes by name or keyword. Returns each match with its id — use
-    that id with the other recipe actions when a name is ambiguous.
+    Find saved recipes by name or keyword, best match first. Matches on tags
+    and descriptions too, not just the name. Returns each match with its id —
+    use that id with the other recipe actions when a name is ambiguous.
   fields:
     query:
       name: Query
@@ -165,7 +166,10 @@ delete_recipe:
   fields:
     name_or_id:
       name: Recipe
-      description: Recipe name, slug, or id. An ambiguous name is refused.
+      description: >-
+        Recipe name, slug, or id. A name that matches several recipes is
+        refused: the response has status needs_clarification and lists the
+        candidates so you can re-run with the intended id.
       required: true
       example: French Onion Soup
       selector:

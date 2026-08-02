@@ -28,6 +28,8 @@ from custom_components.mymeal.coordinator import MyMealDataUpdateCoordinator
 
 BASE = "http://127.0.0.1:7850"
 RECIPES = f"{BASE}/api/v1/recipes"
+# One endpoint answers "which recipe did they mean?" for every caller.
+RESOLVE = f"{RECIPES}/resolve"
 SERVICES_YAML = os.path.join(os.path.dirname(__file__), "..", "services.yaml")
 
 RECIPE = {"id": "r1", "name": "Soup", "servings": 4,
@@ -78,7 +80,7 @@ async def test_update_recipe_omits_fields_the_caller_did_not_supply(
     hass, aioclient_mock
 ):
     """A name-only edit must not carry ingredients/steps into the PUT body."""
-    aioclient_mock.get(f"{RECIPES}/r1", json=RECIPE)
+    aioclient_mock.get(RESOLVE, json={"confidence": "high", "recipe": RECIPE})
     aioclient_mock.put(f"{RECIPES}/r1", json={"id": "r1", "name": "Better Soup"})
     await _setup(hass)
 
@@ -98,7 +100,7 @@ async def test_update_recipe_with_an_explicit_empty_list_still_clears(
     hass, aioclient_mock
 ):
     """Passing [] deliberately IS a clear — only omission must be a no-op."""
-    aioclient_mock.get(f"{RECIPES}/r1", json=RECIPE)
+    aioclient_mock.get(RESOLVE, json={"confidence": "high", "recipe": RECIPE})
     aioclient_mock.put(f"{RECIPES}/r1", json={"id": "r1", "name": "Soup"})
     await _setup(hass)
 
@@ -114,7 +116,7 @@ async def test_update_recipe_with_an_explicit_empty_list_still_clears(
 # --- delete_recipe requires confirmation ---------------------------------
 
 async def test_delete_recipe_without_confirm_deletes_nothing(hass, aioclient_mock):
-    aioclient_mock.get(f"{RECIPES}/r1", json=RECIPE)
+    aioclient_mock.get(RESOLVE, json={"confidence": "high", "recipe": RECIPE})
     aioclient_mock.get(f"{RECIPES}/r1/versions", json={"items": [{"id": "v1"}]})
     await _setup(hass)
 
@@ -131,7 +133,7 @@ async def test_delete_recipe_without_confirm_deletes_nothing(hass, aioclient_moc
 
 
 async def test_delete_recipe_with_confirm_deletes(hass, aioclient_mock):
-    aioclient_mock.get(f"{RECIPES}/r1", json=RECIPE)
+    aioclient_mock.get(RESOLVE, json={"confidence": "high", "recipe": RECIPE})
     aioclient_mock.delete(f"{RECIPES}/r1", json={})
     await _setup(hass)
 
@@ -150,11 +152,17 @@ async def test_delete_recipe_refuses_an_ambiguous_name_even_when_confirmed(
     hass, aioclient_mock
 ):
     """Confirmation is not a licence to guess which recipe was meant."""
-    aioclient_mock.get(f"{RECIPES}/chicken", status=404)
     aioclient_mock.get(
-        RECIPES,
-        json={"items": [{"id": "r1", "name": "Chicken Soup"},
-                        {"id": "r2", "name": "Chicken Pie"}]},
+        RESOLVE,
+        json={
+            "confidence": "low",
+            "candidates": [
+                {"id": "r1", "name": "Chicken Soup", "tags": ["soup"],
+                 "description": "warming", "matchedOn": "name"},
+                {"id": "r2", "name": "Chicken Pie", "tags": ["pie"],
+                 "description": "", "matchedOn": "name"},
+            ],
+        },
     )
     await _setup(hass)
 
@@ -164,9 +172,45 @@ async def test_delete_recipe_refuses_an_ambiguous_name_even_when_confirmed(
         blocking=True, return_response=True,
     )
 
-    assert result["status"] == "ambiguous"
+    assert result["status"] == "needs_clarification"
     assert len(result["candidates"]) == 2
     assert not _bodies(aioclient_mock, "delete")
+
+
+async def test_a_low_confidence_read_returns_ranked_candidates_not_a_guess(
+    hass, aioclient_mock
+):
+    """The clarification must carry enough for a user to choose: tags and text.
+
+    A bare list of names is not actionable when the names are the ambiguous part
+    ("Chicken Soup" vs "Chicken Pie"); the tags are what distinguish them.
+    """
+    aioclient_mock.get(
+        RESOLVE,
+        json={
+            "confidence": "low",
+            "candidates": [
+                {"id": "r1", "name": "Chicken Soup", "tags": ["soup", "light"],
+                 "description": "warming", "matchedOn": "name"},
+                {"id": "r2", "name": "Butter Chicken", "tags": ["curry"],
+                 "description": "rich", "matchedOn": "tag"},
+            ],
+        },
+    )
+    await _setup(hass)
+
+    result = await hass.services.async_call(
+        DOMAIN, "get_recipe", {"name_or_id": "chicken"},
+        blocking=True, return_response=True,
+    )
+
+    assert result["status"] == "needs_clarification"
+    first = result["candidates"][0]
+    assert first["tags"] == ["soup", "light"]
+    assert first["description"] == "warming"
+    assert first["matchedOn"] == "name"
+    # Nothing was read as if it were the answer.
+    assert "ingredients" not in result
 
 
 # --- response shape -------------------------------------------------------
@@ -174,7 +218,7 @@ async def test_delete_recipe_refuses_an_ambiguous_name_even_when_confirmed(
 async def test_list_recipe_versions_returns_the_documented_shape(
     hass, aioclient_mock
 ):
-    aioclient_mock.get(f"{RECIPES}/r1", json=RECIPE)
+    aioclient_mock.get(RESOLVE, json={"confidence": "high", "recipe": RECIPE})
     aioclient_mock.get(
         f"{RECIPES}/r1/versions",
         json={"items": [

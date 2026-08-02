@@ -137,50 +137,41 @@ class MyMealDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def resolve_recipe(self, name_or_id: str) -> dict:
         """Find one recipe from an id, slug, or name.
 
-        Returns ``{"status": "ok", "recipe": {...}}``, or a status of
-        ``not_found`` / ``ambiguous`` (with ``candidates``) / ``error``. Callers
-        must never guess when the status is ``ambiguous`` — acting on a partial
-        name match is how the wrong recipe gets edited or deleted.
+        Delegates to myMeal's ``/recipes/resolve``, which ranks matches by name,
+        tags and description and answers with a confidence. That endpoint is the
+        single implementation of the policy — the MCP server uses it too, so a
+        name resolves the same way by voice, by service call, and in the app.
+
+        Returns ``{"status": "ok", "recipe": {...}}`` when confident, or
+        ``needs_clarification`` (with ranked ``candidates`` carrying tags and a
+        description) / ``not_found`` / ``error``. Callers must never guess on
+        ``needs_clarification`` — acting on a partial name match is how the wrong recipe
+        gets edited or deleted.
         """
         ident = (name_or_id or "").strip()
         if not ident:
             return {"status": "error", "error": "No recipe name or id given."}
-        # This path accepts an id or a slug; a name falls through to the search.
         try:
-            return {"status": "ok", "recipe": await self._get(f"/api/v1/recipes/{ident}")}
+            data = await self._get("/api/v1/recipes/resolve", {"q": ident})
         except ClientResponseError as err:
-            if err.status != 404:
-                return {"status": "error", "error": f"myMeal returned {err.status}."}
+            return {"status": "error", "error": f"myMeal returned {err.status}."}
         except (ClientError, asyncio.TimeoutError):
             return {"status": "error", "error": "Could not reach myMeal."}
 
-        try:
-            items = (await self._get("/api/v1/recipes", {"q": ident})).get("items", [])
-        except (ClientError, asyncio.TimeoutError):
-            return {"status": "error", "error": "Could not reach myMeal."}
-
-        # An exact (case-insensitive) name wins over substring hits, so "Soup"
-        # resolves even when "Soup Base" also matches.
-        exact = [r for r in items if (r.get("name") or "").lower() == ident.lower()]
-        candidates = exact if len(exact) == 1 else items
-        if not candidates:
-            return {"status": "not_found", "error": f"No recipe matching '{ident}'."}
-        if len(candidates) > 1:
+        confidence = data.get("confidence")
+        if confidence == "high":
+            return {"status": "ok", "recipe": data.get("recipe") or {}}
+        if confidence == "low":
+            candidates = data.get("candidates") or []
             return {
-                "status": "ambiguous",
+                "status": "needs_clarification",
                 "error": (
                     f"{len(candidates)} recipes match '{ident}'. "
                     "Pass the id of the one you mean."
                 ),
-                "candidates": [
-                    {"id": r.get("id"), "name": r.get("name")} for r in candidates
-                ],
+                "candidates": candidates,
             }
-        try:
-            full = await self._get(f"/api/v1/recipes/{candidates[0]['id']}")
-        except (ClientError, asyncio.TimeoutError):
-            return {"status": "error", "error": "Could not reach myMeal."}
-        return {"status": "ok", "recipe": full}
+        return {"status": "not_found", "error": f"No recipe matching '{ident}'."}
 
     async def search_recipes(self, query: str) -> dict:
         try:

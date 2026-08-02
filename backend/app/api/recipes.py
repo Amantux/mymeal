@@ -11,6 +11,7 @@ from ..extensions import db
 from ..models import Recipe, RecipeIngredient, RecipeStep, Category, Tag, Unit, Food
 from ..auth import login_required, current_group
 from ..schemas.serializers import recipe_out, recipe_summary
+from ..services import recipe_resolve
 from ..utils import unique_slug
 
 bp = Blueprint("recipes", __name__)
@@ -248,6 +249,63 @@ def create_recipe():
     _apply(recipe, {k: v for k, v in data.items() if k != "name"})
     db.session.commit()
     return jsonify(recipe_out(recipe)), 201
+
+
+# Registered before /recipes/<ident> for readability; Werkzeug prefers the
+# static rule regardless of order, and a test pins that so "resolve" can never
+# be swallowed as a recipe slug.
+@bp.get("/recipes/resolve")
+@login_required
+def resolve_recipe():
+    """Resolve a name/id to ONE recipe, or to the candidates worth asking about.
+
+    The single source of truth for "did the user mean this recipe?", shared by
+    the MCP server and the Home Assistant integration (both separate processes,
+    so they consume it over HTTP rather than importing the helper).
+
+    ``{"confidence": "high", "recipe": {...}, "matchedOn": ...}`` — safe to act.
+    ``{"confidence": "low", "candidates": [...]}``  — ask which; do NOT act.
+    ``{"confidence": "none"}`` — nothing matched.
+    """
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"confidence": "none", "candidates": [],
+                        "error": "No recipe name or id given."}), 400
+    gid = current_group().id
+
+    # An id or slug is an unambiguous handle — never a fuzzy match.
+    direct = db.session.get(Recipe, q)
+    if not direct or direct.group_id != gid:
+        direct = db.session.query(Recipe).filter_by(group_id=gid, slug=q).first()
+    if direct:
+        return jsonify({"confidence": "high", "matchedOn": "id",
+                        "recipe": recipe_out(direct)})
+
+    like = f"%{q}%"
+    rows = (
+        db.session.query(Recipe)
+        .filter_by(group_id=gid)
+        .filter(
+            db.or_(
+                Recipe.name.ilike(like),
+                Recipe.description.ilike(like),
+                Recipe.tags.any(Tag.name.ilike(like)),
+            )
+        )
+        .options(selectinload(Recipe.tags))
+        .all()
+    )
+    decision = recipe_resolve.decide(
+        [{"id": r.id, "name": r.name, "tags": [t.name for t in r.tags],
+          "description": r.description or ""} for r in rows],
+        q,
+    )
+    if decision["confidence"] == "high":
+        match = db.session.get(Recipe, decision["match"]["id"])
+        return jsonify({"confidence": "high",
+                        "matchedOn": decision.get("matchedOn"),
+                        "recipe": recipe_out(match)})
+    return jsonify(decision)
 
 
 @bp.get("/recipes/<ident>")

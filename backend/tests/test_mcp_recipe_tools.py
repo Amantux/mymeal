@@ -132,7 +132,7 @@ def test_delete_refuses_an_ambiguous_name_even_with_confirm(mcp_api):
     _make_recipe(name="Chicken Pie")
 
     out = _fn(mcp_server.delete_recipe)("Chicken", confirm=True)
-    assert "2 recipes match" in out and "Nothing was changed" in out
+    assert "matches several recipes" in out and "Nothing was changed" in out
     # Both survive — an ambiguous delete must never pick one.
     assert _fn(mcp_server.get_recipe)("Chicken Soup")["name"] == "Chicken Soup"
     assert _fn(mcp_server.get_recipe)("Chicken Pie")["name"] == "Chicken Pie"
@@ -205,7 +205,7 @@ def test_update_experiment_preserves_unpassed_snapshot_fields(mcp_api):
     recipe looking correct and the test would prove nothing.
     """
     _make_recipe()
-    rid = mcp_server._resolve_recipe("Onion Soup")["id"]
+    rid = mcp_server._resolve("Onion Soup")[0]["id"]
     vid = _new_experiment()
 
     _fn(mcp_server.update_experiment)("Onion Soup", vid, steps=["Chop", "Simmer", "Serve"])

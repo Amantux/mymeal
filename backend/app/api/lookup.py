@@ -3,10 +3,12 @@
 Backs both the SPA's global search box and the MCP ``search_recipes`` tool.
 """
 from flask import Blueprint, request, jsonify
+from sqlalchemy.orm import selectinload
 
 from ..extensions import db
 from ..models import Recipe, Food, Tag
 from ..auth import login_required, current_group
+from ..services import recipe_resolve
 
 bp = Blueprint("lookup", __name__)
 
@@ -22,7 +24,12 @@ def _search_recipes(gid, q, limit):
                 Recipe.tags.any(Tag.name.ilike(like)),
             )
         )
-    return [
+    # SQL narrows the set; relevance is scored in Python because it depends on
+    # WHERE the match landed (name vs tag vs description), which the LIKE can't
+    # tell us. Ordering by name alone made "chicken" resolve to whatever sorted
+    # first, so callers were effectively guessing.
+    query = query.options(selectinload(Recipe.tags))
+    rows = [
         {
             "type": "recipe",
             "id": r.id,
@@ -30,9 +37,22 @@ def _search_recipes(gid, q, limit):
             "slug": r.slug,
             "image": f"/api/v1/recipes/{r.id}/image" if r.image else None,
             "totalMinutes": r.total_minutes,
+            "tags": [t.name for t in r.tags],
+            "description": r.description or "",
         }
         for r in query.order_by(Recipe.name.asc()).limit(limit).all()
     ]
+    ranked = recipe_resolve.rank(rows, q)
+    out = []
+    for row, score, matched_on in ranked:
+        row["matchedOn"] = matched_on
+        row["score"] = score
+        text = (row.get("description") or "").strip()
+        if len(text) > recipe_resolve.DESCRIPTION_SNIPPET:
+            text = text[: recipe_resolve.DESCRIPTION_SNIPPET].rstrip() + "…"
+        row["description"] = text
+        out.append(row)
+    return out
 
 
 def _search_foods(gid, q, limit):

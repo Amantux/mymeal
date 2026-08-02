@@ -74,58 +74,54 @@ def _api_error(exc: httpx.HTTPStatusError) -> str:
     return message or f"HTTP {exc.response.status_code}"
 
 
-def _search_recipes(name_or_id: str) -> list[dict]:
-    return _get("/search", {"q": name_or_id, "types": "recipe"}).get("results", [])
+def _resolve(name_or_id: str):
+    """``(recipe, candidates)`` — resolve a name/id, never guessing.
 
-
-def _resolve_recipe(name_or_id: str):
-    """Find one recipe by id/slug (direct) or name (first search hit).
-
-    Convenient but a guess: "chicken" resolves to whichever chicken recipe ranks
-    first. Fine for reads and for reversible edits; destructive tools must use
-    `_resolve_recipe_strict` instead.
+    Delegates to ``/recipes/resolve``, which ranks matches by name, tags and
+    description and returns a confidence. A confident hit comes back as
+    ``(recipe, [])``; anything ambiguous comes back as ``(None, candidates)`` so
+    the caller asks which was meant instead of acting on a coin-flip. Both this
+    server and the Home Assistant integration use that one endpoint, so the
+    policy can't drift between them.
     """
     try:
-        return _get(f"/recipes/{name_or_id}")
+        data = _get("/recipes/resolve", {"q": name_or_id})
     except httpx.HTTPStatusError:
-        pass
-    results = _search_recipes(name_or_id)
-    if not results:
-        return None
-    return _get(f"/recipes/{results[0]['id']}")
-
-
-def _resolve_recipe_strict(name_or_id: str):
-    """``(recipe, candidates)`` — resolution that never guesses.
-
-    An id/slug, a name matching exactly one recipe, or a name that matches one
-    of several *exactly* (case-insensitively) resolves to that recipe with no
-    candidates. Anything else resolves to ``(None, candidates)`` so the caller
-    can ask which one was meant rather than destroying the wrong recipe.
-    """
-    try:
-        return _get(f"/recipes/{name_or_id}"), []
-    except httpx.HTTPStatusError:
-        pass
-    results = _search_recipes(name_or_id)
-    if not results:
         return None, []
-    if len(results) == 1:
-        return _get(f"/recipes/{results[0]['id']}"), []
-    wanted = name_or_id.strip().casefold()
-    exact = [r for r in results if str(r.get("name", "")).strip().casefold() == wanted]
-    if len(exact) == 1:
-        return _get(f"/recipes/{exact[0]['id']}"), []
-    return None, results
+    if data.get("confidence") == "high":
+        return data.get("recipe"), []
+    return None, data.get("candidates") or []
 
 
-def _ambiguous(name_or_id: str, candidates: list[dict]) -> str:
+def _describe_candidate(c: dict) -> str:
+    """One candidate as a line a user can actually choose between."""
+    bits = [f"{c.get('name')} (id {c.get('id')})"]
+    tags = [t for t in (c.get("tags") or []) if t]
+    if tags:
+        bits.append(f"tags: {', '.join(tags[:4])}")
+    if c.get("description"):
+        bits.append(str(c["description"]))
+    if c.get("matchedOn") and c["matchedOn"] != "name":
+        bits.append(f"matched on {c['matchedOn']}")
+    return " — ".join(bits)
+
+
+def _clarify(name_or_id: str, candidates: list[dict]) -> str:
     """Ask which recipe was meant. Returned INSTEAD of acting, so nothing is lost."""
-    shown = candidates[:8]
-    listed = "; ".join(f"{c.get('name')} (id {c.get('id')})" for c in shown)
-    more = "" if len(candidates) <= len(shown) else f"; and {len(candidates) - len(shown)} more"
-    return (f"{len(candidates)} recipes match '{name_or_id}': {listed}{more}. "
-            "Nothing was changed — ask the user which one, then pass its id.")
+    listed = "; ".join(_describe_candidate(c) for c in candidates)
+    return (f"'{name_or_id}' matches several recipes: {listed}. "
+            "Nothing was changed — show these to the user, ask which one they "
+            "mean, then call again with that recipe's id.")
+
+
+def _clarify_dict(name_or_id: str, candidates: list[dict]) -> dict:
+    """The same clarification for tools that return structured data."""
+    return {
+        "needsClarification": True,
+        "question": f"Which recipe did you mean by '{name_or_id}'?",
+        "candidates": candidates,
+        "hint": "Call again with the id of the intended recipe.",
+    }
 
 
 def _version_count(recipe_id: str) -> int | None:
@@ -156,8 +152,15 @@ def search_recipes(query: str) -> list[dict]:
 
 @mcp.tool()
 def get_recipe(name_or_id: str) -> dict:
-    """Get a recipe's ingredients and steps (by name or id)."""
-    recipe = _resolve_recipe(name_or_id)
+    """Get a recipe's ingredients and steps (by name or id).
+
+    If the name is ambiguous this returns `needsClarification` with the matching
+    candidates (name, tags, description) instead of a recipe — show them to the
+    user and ask which they meant, then call again with that id.
+    """
+    recipe, candidates = _resolve(name_or_id)
+    if candidates:
+        return _clarify_dict(name_or_id, candidates)
     if not recipe:
         return {"error": f"No recipe matching '{name_or_id}'."}
     return {
@@ -251,7 +254,9 @@ def plan_week(preferences: str = "", days: int = 7) -> dict:
 @mcp.tool()
 def start_cooking(name_or_id: str) -> str:
     """Start reading a recipe's steps aloud. Say 'next step' to continue."""
-    recipe = _resolve_recipe(name_or_id)
+    recipe, candidates = _resolve(name_or_id)
+    if candidates:
+        return _clarify(name_or_id, candidates)
     if not recipe:
         return f"No recipe matching '{name_or_id}'."
     steps = [s["text"] for s in recipe.get("steps", [])]
@@ -264,7 +269,9 @@ def start_cooking(name_or_id: str) -> str:
 @mcp.tool()
 def next_step(name_or_id: str) -> str:
     """Read the next step of a recipe you're cooking."""
-    recipe = _resolve_recipe(name_or_id)
+    # An ambiguous name is harmless here: the session key falls back to what was
+    # said, and an unknown key just means "not cooking that yet".
+    recipe, _candidates = _resolve(name_or_id)
     key = recipe["name"].lower() if recipe else name_or_id.lower()
     session = _COOKING.get(key)
     if not session:
@@ -302,8 +309,13 @@ def update_recipe(name_or_id: str, name: str | None = None,
     them unless you are passing the complete new list. To change a single line,
     call get_recipe first and send the full edited list back. The previous state
     is snapshotted automatically, so restore_recipe_version can undo this.
+
+    An ambiguous name edits nothing and returns the candidates instead — ask
+    which recipe was meant rather than picking one.
     """
-    recipe = _resolve_recipe(name_or_id)
+    recipe, candidates = _resolve(name_or_id)
+    if candidates:
+        return _clarify(name_or_id, candidates)
     if not recipe:
         return f"No recipe matching '{name_or_id}'."
     body: dict = {}
@@ -344,9 +356,9 @@ def delete_recipe(name_or_id: str, confirm: bool = False) -> str:
     If the name matches several recipes this returns the candidates and deletes
     nothing; ask which one and pass its id.
     """
-    recipe, candidates = _resolve_recipe_strict(name_or_id)
+    recipe, candidates = _resolve(name_or_id)
     if candidates:
-        return _ambiguous(name_or_id, candidates)
+        return _clarify(name_or_id, candidates)
     if not recipe:
         return f"No recipe matching '{name_or_id}'."
     if not confirm:
@@ -386,7 +398,9 @@ def list_recipe_versions(name_or_id: str) -> dict:
     Use the returned `id` with update_experiment, add_experiment_feedback,
     promote_experiment, restore_recipe_version or discard_experiment.
     """
-    recipe = _resolve_recipe(name_or_id)
+    recipe, candidates = _resolve(name_or_id)
+    if candidates:
+        return _clarify_dict(name_or_id, candidates)
     if not recipe:
         return {"error": f"No recipe matching '{name_or_id}'."}
     items = _get(f"/recipes/{recipe['id']}/versions").get("items", [])
@@ -412,8 +426,13 @@ def start_recipe_experiment(name_or_id: str, label: str, note: str = "") -> str:
     Tweak it with update_experiment, cook it, record how it went with
     add_experiment_feedback, then promote_experiment to adopt it. The live recipe
     is untouched until you promote.
+
+    An ambiguous recipe name returns the candidates instead of branching — ask
+    which one was meant.
     """
-    recipe = _resolve_recipe(name_or_id)
+    recipe, candidates = _resolve(name_or_id)
+    if candidates:
+        return _clarify(name_or_id, candidates)
     if not recipe:
         return f"No recipe matching '{name_or_id}'."
     v = _post(f"/recipes/{recipe['id']}/versions",
@@ -432,7 +451,9 @@ def update_experiment(name_or_id: str, version_id: str, name: str | None = None,
     is preserved. As with update_recipe, passing `ingredients` or `steps`
     replaces that whole list. Only open experiments are editable.
     """
-    recipe = _resolve_recipe(name_or_id)
+    recipe, candidates = _resolve(name_or_id)
+    if candidates:
+        return _clarify(name_or_id, candidates)
     if not recipe:
         return f"No recipe matching '{name_or_id}'."
     version, err = _version_or_error(recipe["id"], version_id)
@@ -461,7 +482,9 @@ def update_experiment(name_or_id: str, version_id: str, name: str | None = None,
 def add_experiment_feedback(name_or_id: str, version_id: str,
                             rating: int | None = None, feedback: str = "") -> str:
     """Record how a version turned out: a 0-5 rating and/or free-text notes."""
-    recipe = _resolve_recipe(name_or_id)
+    recipe, candidates = _resolve(name_or_id)
+    if candidates:
+        return _clarify(name_or_id, candidates)
     if not recipe:
         return f"No recipe matching '{name_or_id}'."
     body: dict = {}
@@ -487,7 +510,9 @@ def promote_experiment(name_or_id: str, version_id: str) -> str:
     Reversible: the recipe's current state is snapshotted first, so
     restore_recipe_version can put it back.
     """
-    recipe = _resolve_recipe(name_or_id)
+    recipe, candidates = _resolve(name_or_id)
+    if candidates:
+        return _clarify(name_or_id, candidates)
     if not recipe:
         return f"No recipe matching '{name_or_id}'."
     try:
@@ -506,7 +531,9 @@ def restore_recipe_version(name_or_id: str, version_id: str) -> str:
 
     Reversible: the current state is snapshotted before the restore.
     """
-    recipe = _resolve_recipe(name_or_id)
+    recipe, candidates = _resolve(name_or_id)
+    if candidates:
+        return _clarify(name_or_id, candidates)
     if not recipe:
         return f"No recipe matching '{name_or_id}'."
     try:
@@ -528,9 +555,9 @@ def discard_experiment(name_or_id: str, version_id: str,
     show that to the user, and only call again with confirm=true once they
     agree. Never confirm on your own initiative.
     """
-    recipe, candidates = _resolve_recipe_strict(name_or_id)
+    recipe, candidates = _resolve(name_or_id)
     if candidates:
-        return _ambiguous(name_or_id, candidates)
+        return _clarify(name_or_id, candidates)
     if not recipe:
         return f"No recipe matching '{name_or_id}'."
     version, err = _version_or_error(recipe["id"], version_id)
@@ -554,9 +581,17 @@ def discard_experiment(name_or_id: str, version_id: str,
 
 @mcp.tool()
 def plan_meal(name_or_id: str, day: str = "", meal_type: str = "dinner") -> str:
-    """Add a recipe to the meal plan for a day (YYYY-MM-DD, defaults to today)."""
+    """Add a recipe to the meal plan for a day (YYYY-MM-DD, defaults to today).
+
+    An unknown name is planned as a free-text meal; an AMBIGUOUS one plans
+    nothing and returns the candidates, so ask which recipe was meant.
+    """
     when = day or datetime.date.today().isoformat()
-    recipe = _resolve_recipe(name_or_id)
+    recipe, candidates = _resolve(name_or_id)
+    # Ambiguous ≠ unknown: planning the wrong saved recipe is worse than asking,
+    # so clarify rather than silently falling through to a free-text meal.
+    if candidates:
+        return _clarify(name_or_id, candidates)
     body = {"date": when, "mealType": meal_type}
     if recipe:
         body["recipeId"] = recipe["id"]
