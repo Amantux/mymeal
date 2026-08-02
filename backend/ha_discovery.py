@@ -34,6 +34,47 @@ def _addon_hostname(default: str) -> str:
         return default
 
 
+def mcp_config(host: str, settings=None) -> dict:
+    """MCP endpoint details for the discovery payload; ``{}`` when MCP is off.
+
+    Home Assistant's MCP Client otherwise has no way to learn where the SSE
+    endpoint lives, so wiring Assist to myMeal means hand-typing a URL. Publishing
+    it here means the add-on hostname and port are already known.
+
+    Best-effort like the rest of discovery: if settings can't be read we publish
+    the REST details alone rather than failing startup. Nothing is published when
+    MCP is disabled — a dead URL is worse than no URL.
+    """
+    if settings is None:
+        try:
+            from app.settings import load_settings
+
+            settings = load_settings()
+        except Exception as exc:  # noqa: BLE001 - discovery must never block startup
+            print(f"myMeal: MCP details omitted from discovery ({exc}).")
+            return {}
+    values = getattr(settings, "values", {})
+    if not values.get("MCP_ENABLED"):
+        return {}
+    port = int(values.get("MCP_PORT") or 7851)
+    config = {"mcp_port": port, "mcp_url": f"http://{host}:{port}/sse"}
+    # The bearer Home Assistant must present, when one is set. Same precedent as
+    # the REST `token` above: the Supervisor discovery message is the channel the
+    # add-on already uses to hand HA its credential.
+    server_token = str(values.get("MCP_SERVER_TOKEN") or "")
+    if server_token:
+        config["mcp_token"] = server_token
+    return config
+
+
+def build_payload(host: str, token: str, mcp: dict | None = None) -> dict:
+    """The Supervisor discovery message. Existing keys are unchanged — the
+    companion integration reads host/port/token — MCP details are additive."""
+    config = {"host": host, "port": PORT, "token": token}
+    config.update(mcp or {})
+    return {"service": "mymeal", "config": config}
+
+
 def main() -> int:
     if not TOKEN:
         print("SUPERVISOR_TOKEN not set — skipping HA discovery (fine outside HA).")
@@ -55,9 +96,7 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001 - discovery must never block startup
         print(f"myMeal: integration token provisioning skipped ({exc}).")
 
-    payload = json.dumps(
-        {"service": "mymeal", "config": {"host": host, "port": PORT, "token": token}}
-    ).encode()
+    payload = json.dumps(build_payload(host, token, mcp_config(host))).encode()
 
     req = urllib.request.Request(
         f"{SUPERVISOR_API}/discovery",
