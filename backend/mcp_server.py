@@ -870,18 +870,37 @@ def _debug_key_exists() -> bool:
         return exists
 
 
+def _is_message_path(scope) -> bool:
+    """Whether this request targets the JSON-RPC message endpoint.
+
+    Deliberately NOT also checking the HTTP method. FastMCP mounts the endpoint
+    with Starlette's Mount, which matches on path alone, and
+    SseServerTransport.handle_post_message never checks the method either — so
+    PUT/GET/DELETE are processed exactly like POST. Gating on method == "POST"
+    meant every rule below saw an empty tool list and applied nothing.
+    """
+    return "/messages" in scope.get("path", "")
+
+
 def _tool_names(scope, body: bytes) -> list:
-    """Tool names in a JSON-RPC body, or [] if this is not a tools/call POST."""
-    if scope.get("method") != "POST" or "/messages" not in scope.get("path", ""):
+    """Tool names in a JSON-RPC body, or [] if this is not a message request."""
+    if not _is_message_path(scope):
         return []
     try:
         parsed = json.loads(body or b"{}")
     except Exception:  # noqa: BLE001
         return []
     items = parsed if isinstance(parsed, list) else [parsed]
-    return [(it.get("params") or {}).get("name") or ""
-            for it in items
-            if isinstance(it, dict) and it.get("method") == "tools/call"]
+    out = []
+    for it in items:
+        if not isinstance(it, dict) or it.get("method") != "tools/call":
+            continue
+        params = it.get("params")
+        # params may legitimately be a list; .get on it raised, turning an
+        # unauthenticated request into a 500.
+        name = params.get("name") if isinstance(params, dict) else None
+        out.append(name if isinstance(name, str) else "")
+    return out
 
 
 def _audit(names, raw: str, outcome: str) -> None:
@@ -1006,7 +1025,7 @@ def _guard(asgi_app, server_token: str):
         raw = header[len("Bearer "):].strip() if header.startswith("Bearer ") else ""
 
         body = b""
-        if scope.get("method") == "POST" and "/messages" in scope.get("path", ""):
+        if _is_message_path(scope):
             messages, body = await _read_body(receive)
             receive = _replay(messages, receive)
         names = _tool_names(scope, body)

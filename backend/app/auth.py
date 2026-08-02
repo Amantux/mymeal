@@ -317,6 +317,32 @@ def login_required(fn):
     return wrapper
 
 
+def instance_admin_or_403():
+    """Gate whole-INSTANCE operations that span every household.
+
+    ``is_owner`` is only a per-group role — any self-registered user owns their
+    own group — so it is not enough for something that reads across households.
+    Require the owner of the primary (first-created) group: the operator who set
+    the add-on up. A single-household install passes unchanged; a
+    later-registered household cannot reach the whole instance.
+
+    Returns a response tuple when denied, else None. Modelled on Edibl's
+    ``instance_admin_required``; the three apps share this authorization model.
+    """
+    user = load_current_user()
+    if user is None:
+        return jsonify({"error": "unauthorized"}), 401
+    primary = db.session.query(Group).order_by(Group.created_at.asc()).first()
+    if not user.is_owner or primary is None or user.group_id != primary.id:
+        return jsonify({"error": "instance administrator privileges required"}), 403
+    blocked = _read_only_blocked()
+    if blocked is not None:
+        return blocked
+    g.current_user = user
+    g.current_group = user.group
+    return None
+
+
 def owner_required(fn):
     """Like login_required, but 403s a non-owner. For household config that
     members shouldn't change (AI provider, Edibl connection, user management)."""

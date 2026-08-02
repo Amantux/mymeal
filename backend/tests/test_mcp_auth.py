@@ -285,7 +285,7 @@ def test_get_shopping_list_never_auto_creates(monkeypatch):
 # denied at REST, denied on the domain tools, and the debug tools are denied to
 # every other key on every network.
 
-def _run_debug_guard(monkeypatch, tool, key_scope, external=False):
+def _run_debug_guard(monkeypatch, tool, key_scope, external=False, method="POST"):
     import json as _json
     monkeypatch.setattr(mcp_server, "_key_scope", lambda raw: key_scope)
     monkeypatch.setattr(mcp_server, "_key_ok", lambda raw: True)
@@ -314,7 +314,7 @@ def _run_debug_guard(monkeypatch, tool, key_scope, external=False):
             result["code"] = msg["status"]
 
     headers = [(b"authorization", b"Bearer x")] if key_scope else []
-    scope = {"type": "http", "method": "POST", "path": "/messages/", "headers": headers}
+    scope = {"type": "http", "method": method, "path": "/messages/", "headers": headers}
     asyncio.run(guarded(scope, receive, send))
     return result
 
@@ -362,3 +362,29 @@ def test_a_batch_cannot_smuggle_a_domain_tool_past_a_debug_key(monkeypatch):
     ], "debug")
 
     assert r["code"] == 403 and r["passed"] is False
+
+
+# ---- The method-bypass blocker ---------------------------------------------
+#
+# Starlette's Mount matches on PATH ONLY and handle_post_message never checks
+# the method, so PUT/GET/DELETE reach the tool exactly like POST. Gating the
+# guard on method == "POST" meant it applied no rule at all.
+
+@pytest.mark.parametrize("method", ["PUT", "GET", "DELETE"])
+def test_a_debug_tool_cannot_be_reached_with_a_non_post_method(monkeypatch, method):
+    r = _run_debug_guard(monkeypatch, "debug_recent_logs", None, method=method)
+
+    assert r["code"] == 403 and r["passed"] is False
+
+
+def test_a_debug_key_cannot_reach_a_domain_tool_with_a_non_post_method(monkeypatch):
+    r = _run_debug_guard(monkeypatch, "search_recipes", "debug", method="PUT")
+
+    assert r["code"] == 403 and r["passed"] is False
+
+
+def test_a_malformed_params_list_does_not_500(monkeypatch):
+    """`params` may legitimately be a list; .get on it raised."""
+    r = _run_debug_guard(monkeypatch, [{"method": "tools/call", "params": []}], None)
+
+    assert r["code"] in (None, 200, 401, 403)
