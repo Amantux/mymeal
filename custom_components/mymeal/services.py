@@ -15,8 +15,18 @@ from .const import (
     INTENT_ADD_TO_LIST,
     INTENT_WHATS_FOR_DINNER,
     INTENT_WHAT_CAN_I_COOK,
+    SERVICE_ADD_EXPERIMENT_FEEDBACK,
+    SERVICE_ADD_RECIPE,
     SERVICE_ADD_TO_LIST,
+    SERVICE_DELETE_RECIPE,
+    SERVICE_GET_RECIPE,
+    SERVICE_LIST_RECIPE_VERSIONS,
     SERVICE_PLAN_WEEK,
+    SERVICE_PROMOTE_EXPERIMENT,
+    SERVICE_RESTORE_RECIPE_VERSION,
+    SERVICE_SEARCH_RECIPES,
+    SERVICE_START_RECIPE_EXPERIMENT,
+    SERVICE_UPDATE_RECIPE,
     SERVICE_WHAT_CAN_I_COOK,
     SERVICE_WHATS_FOR_DINNER,
 )
@@ -190,6 +200,202 @@ async def async_register(hass: HomeAssistant) -> None:
         supports_response=SupportsResponse.OPTIONAL,
     )
 
+    # --- Recipes: CRUD + versions/experiments ---------------------------
+    # `_recipe_fields` deliberately copies ONLY the keys the caller supplied.
+    # PUT /recipes/<id> replaces ingredients/steps whenever those keys are
+    # present, so injecting defaults here would silently wipe a stored list on
+    # a partial edit. Keep every optional field below default-free.
+    _EDITABLE = ("name", "ingredients", "steps", "servings")
+
+    def _recipe_fields(call: ServiceCall) -> dict:
+        return {k: call.data[k] for k in _EDITABLE if k in call.data}
+
+    _RECIPE_EDIT_SCHEMA = {
+        vol.Optional("name"): cv.string,
+        vol.Optional("ingredients"): vol.All(cv.ensure_list, [cv.string]),
+        vol.Optional("steps"): vol.All(cv.ensure_list, [cv.string]),
+        vol.Optional("servings"): vol.All(int, vol.Range(min=1, max=100)),
+    }
+
+    async def _with_coordinator(fn):
+        coordinator = _first_coordinator(hass)
+        if coordinator is None:
+            return {"status": "error", "error": "myMeal isn't set up yet."}
+        return await fn(coordinator)
+
+    async def _search(call: ServiceCall) -> dict:
+        return await _with_coordinator(lambda c: c.search_recipes(call.data["query"]))
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SEARCH_RECIPES,
+        _search,
+        schema=vol.Schema({vol.Required("query"): cv.string}),
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    async def _get_recipe(call: ServiceCall) -> dict:
+        return await _with_coordinator(lambda c: c.get_recipe(call.data["name_or_id"]))
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_RECIPE,
+        _get_recipe,
+        schema=vol.Schema({vol.Required("name_or_id"): cv.string}),
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    async def _add_recipe(call: ServiceCall) -> dict:
+        fields = _recipe_fields(call)
+        fields["name"] = call.data["name"]
+        return await _with_coordinator(lambda c: c.add_recipe(fields))
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_ADD_RECIPE,
+        _add_recipe,
+        schema=vol.Schema({**_RECIPE_EDIT_SCHEMA, vol.Required("name"): cv.string}),
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    async def _update_recipe(call: ServiceCall) -> dict:
+        fields = _recipe_fields(call)
+        return await _with_coordinator(
+            lambda c: c.update_recipe(call.data["name_or_id"], fields)
+        )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_UPDATE_RECIPE,
+        _update_recipe,
+        schema=vol.Schema(
+            {**_RECIPE_EDIT_SCHEMA, vol.Required("name_or_id"): cv.string}
+        ),
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    async def _delete_recipe(call: ServiceCall) -> dict:
+        # `confirm` is required by the schema, but a False value is refused HERE
+        # rather than by the schema so the caller gets a message naming the
+        # recipe (and how many saved versions go with it) instead of a bare
+        # validation error. Deleting is irreversible: edits are recoverable from
+        # the auto-snapshot history, deletes are not.
+        return await _with_coordinator(
+            lambda c: c.delete_recipe(call.data["name_or_id"], call.data["confirm"])
+        )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_DELETE_RECIPE,
+        _delete_recipe,
+        schema=vol.Schema(
+            {
+                vol.Required("name_or_id"): cv.string,
+                vol.Required("confirm"): cv.boolean,
+            }
+        ),
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    async def _list_versions(call: ServiceCall) -> dict:
+        return await _with_coordinator(
+            lambda c: c.list_recipe_versions(call.data["name_or_id"])
+        )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LIST_RECIPE_VERSIONS,
+        _list_versions,
+        schema=vol.Schema({vol.Required("name_or_id"): cv.string}),
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    async def _start_experiment(call: ServiceCall) -> dict:
+        return await _with_coordinator(
+            lambda c: c.start_recipe_experiment(
+                call.data["name_or_id"],
+                call.data["label"],
+                call.data.get("note", ""),
+            )
+        )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_START_RECIPE_EXPERIMENT,
+        _start_experiment,
+        schema=vol.Schema(
+            {
+                vol.Required("name_or_id"): cv.string,
+                vol.Required("label"): cv.string,
+                vol.Optional("note", default=""): cv.string,
+            }
+        ),
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    async def _feedback(call: ServiceCall) -> dict:
+        fields = {k: call.data[k] for k in ("rating", "feedback") if k in call.data}
+        return await _with_coordinator(
+            lambda c: c.add_experiment_feedback(
+                call.data["name_or_id"], call.data["version_id"], fields
+            )
+        )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_ADD_EXPERIMENT_FEEDBACK,
+        _feedback,
+        schema=vol.Schema(
+            {
+                vol.Required("name_or_id"): cv.string,
+                vol.Required("version_id"): cv.string,
+                vol.Optional("rating"): vol.All(int, vol.Range(min=0, max=5)),
+                vol.Optional("feedback"): cv.string,
+            }
+        ),
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    async def _promote(call: ServiceCall) -> dict:
+        return await _with_coordinator(
+            lambda c: c.promote_experiment(
+                call.data["name_or_id"], call.data["version_id"]
+            )
+        )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_PROMOTE_EXPERIMENT,
+        _promote,
+        schema=vol.Schema(
+            {
+                vol.Required("name_or_id"): cv.string,
+                vol.Required("version_id"): cv.string,
+            }
+        ),
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    async def _restore(call: ServiceCall) -> dict:
+        return await _with_coordinator(
+            lambda c: c.restore_recipe_version(
+                call.data["name_or_id"], call.data["version_id"]
+            )
+        )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RESTORE_RECIPE_VERSION,
+        _restore,
+        schema=vol.Schema(
+            {
+                vol.Required("name_or_id"): cv.string,
+                vol.Required("version_id"): cv.string,
+            }
+        ),
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
 
 def async_unregister(hass: HomeAssistant) -> None:
     for service in (
@@ -197,6 +403,16 @@ def async_unregister(hass: HomeAssistant) -> None:
         SERVICE_WHAT_CAN_I_COOK,
         SERVICE_ADD_TO_LIST,
         SERVICE_PLAN_WEEK,
+        SERVICE_SEARCH_RECIPES,
+        SERVICE_GET_RECIPE,
+        SERVICE_ADD_RECIPE,
+        SERVICE_UPDATE_RECIPE,
+        SERVICE_DELETE_RECIPE,
+        SERVICE_LIST_RECIPE_VERSIONS,
+        SERVICE_START_RECIPE_EXPERIMENT,
+        SERVICE_ADD_EXPERIMENT_FEEDBACK,
+        SERVICE_PROMOTE_EXPERIMENT,
+        SERVICE_RESTORE_RECIPE_VERSION,
     ):
         if hass.services.has_service(DOMAIN, service):
             hass.services.async_remove(DOMAIN, service)

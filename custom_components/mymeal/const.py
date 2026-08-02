@@ -19,3 +19,17 @@ SERVICE_WHATS_FOR_DINNER = "whats_for_dinner"
 SERVICE_WHAT_CAN_I_COOK = "what_can_i_cook"
 SERVICE_ADD_TO_LIST = "add_to_shopping_list"
 SERVICE_PLAN_WEEK = "plan_week"
+
+# Recipe CRUD + versions/experiments. These register automatically with the
+# (auto-discovered) integration, so they work with no extra setup — unlike the
+# MCP server, which needs an MCP client pointed at it by hand.
+SERVICE_SEARCH_RECIPES = "search_recipes"
+SERVICE_GET_RECIPE = "get_recipe"
+SERVICE_ADD_RECIPE = "add_recipe"
+SERVICE_UPDATE_RECIPE = "update_recipe"
+SERVICE_DELETE_RECIPE = "delete_recipe"
+SERVICE_LIST_RECIPE_VERSIONS = "list_recipe_versions"
+SERVICE_START_RECIPE_EXPERIMENT = "start_recipe_experiment"
+SERVICE_ADD_EXPERIMENT_FEEDBACK = "add_experiment_feedback"
+SERVICE_PROMOTE_EXPERIMENT = "promote_experiment"
+SERVICE_RESTORE_RECIPE_VERSION = "restore_recipe_version"

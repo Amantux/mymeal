@@ -52,3 +52,236 @@ plan_week:
       example: vegetarian, quick weeknight meals
       selector:
         text:
+
+search_recipes:
+  name: Search recipes
+  description: >-
+    Find saved recipes by name or keyword. Returns each match with its id — use
+    that id with the other recipe actions when a name is ambiguous.
+  fields:
+    query:
+      name: Query
+      description: Name or keyword to search for.
+      required: true
+      example: soup
+      selector:
+        text:
+
+get_recipe:
+  name: Get recipe
+  description: Return a recipe's ingredients and steps.
+  fields:
+    name_or_id:
+      name: Recipe
+      description: Recipe name, slug, or id.
+      required: true
+      example: French Onion Soup
+      selector:
+        text:
+
+add_recipe:
+  name: Add recipe
+  description: Create a new recipe.
+  fields:
+    name:
+      name: Name
+      description: Recipe name.
+      required: true
+      example: French Onion Soup
+      selector:
+        text:
+    ingredients:
+      name: Ingredients
+      description: One line per ingredient.
+      required: false
+      example: '["2 onions", "1 l beef stock"]'
+      selector:
+        object:
+    steps:
+      name: Steps
+      description: One line per step, in order.
+      required: false
+      example: '["Caramelise the onions", "Add the stock and simmer"]'
+      selector:
+        object:
+    servings:
+      name: Servings
+      description: How many people it serves.
+      required: false
+      example: 4
+      selector:
+        number:
+          min: 1
+          max: 100
+
+update_recipe:
+  name: Update recipe
+  description: >-
+    Change a saved recipe. Only the fields you supply are touched — but note
+    that supplying Ingredients or Steps REPLACES that whole list, so send the
+    full list, not just the lines you changed. Every edit is snapshotted to the
+    recipe's version history first, so it can be restored.
+  fields:
+    name_or_id:
+      name: Recipe
+      description: Recipe name, slug, or id.
+      required: true
+      example: French Onion Soup
+      selector:
+        text:
+    name:
+      name: New name
+      description: Rename the recipe.
+      required: false
+      selector:
+        text:
+    ingredients:
+      name: Ingredients
+      description: Replaces the entire ingredient list. Omit to leave it alone.
+      required: false
+      example: '["3 onions", "1 l beef stock"]'
+      selector:
+        object:
+    steps:
+      name: Steps
+      description: Replaces the entire step list. Omit to leave it alone.
+      required: false
+      selector:
+        object:
+    servings:
+      name: Servings
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 100
+
+delete_recipe:
+  name: Delete recipe
+  description: >-
+    Permanently delete a recipe AND its saved versions/experiments. This cannot
+    be undone (edits are recoverable from version history; deletes are not).
+    Confirm must be set to true — call it once without to see what would go.
+  fields:
+    name_or_id:
+      name: Recipe
+      description: Recipe name, slug, or id. An ambiguous name is refused.
+      required: true
+      example: French Onion Soup
+      selector:
+        text:
+    confirm:
+      name: Confirm
+      description: Must be true to actually delete. False returns a preview instead.
+      required: true
+      example: true
+      selector:
+        boolean:
+
+list_recipe_versions:
+  name: List recipe versions
+  description: >-
+    List a recipe's saved versions — automatic edit-history snapshots and
+    experiment branches — with their ids, labels and ratings.
+  fields:
+    name_or_id:
+      name: Recipe
+      description: Recipe name, slug, or id.
+      required: true
+      selector:
+        text:
+
+start_recipe_experiment:
+  name: Start recipe experiment
+  description: >-
+    Branch an experiment from the recipe as it is now. Edit and cook the
+    experiment without touching the live recipe, then promote it if it works.
+  fields:
+    name_or_id:
+      name: Recipe
+      description: Recipe name, slug, or id.
+      required: true
+      selector:
+        text:
+    label:
+      name: Label
+      description: Short name for the experiment.
+      required: true
+      example: More thyme, less salt
+      selector:
+        text:
+    note:
+      name: Note
+      description: What you're trying and why.
+      required: false
+      selector:
+        text:
+          multiline: true
+
+add_experiment_feedback:
+  name: Add experiment feedback
+  description: Record how an experiment turned out, so you can compare attempts.
+  fields:
+    name_or_id:
+      name: Recipe
+      required: true
+      selector:
+        text:
+    version_id:
+      name: Version
+      description: Version id (from List recipe versions).
+      required: true
+      selector:
+        text:
+    rating:
+      name: Rating
+      description: 0-5.
+      required: false
+      example: 4
+      selector:
+        number:
+          min: 0
+          max: 5
+    feedback:
+      name: Feedback
+      description: How it turned out, and what to change next time.
+      required: false
+      selector:
+        text:
+          multiline: true
+
+promote_experiment:
+  name: Promote experiment
+  description: >-
+    Make an experiment the live recipe. Reversible — the current version is
+    snapshotted first, so you can restore it.
+  fields:
+    name_or_id:
+      name: Recipe
+      required: true
+      selector:
+        text:
+    version_id:
+      name: Version
+      description: Version id (from List recipe versions).
+      required: true
+      selector:
+        text:
+
+restore_recipe_version:
+  name: Restore recipe version
+  description: >-
+    Restore any saved version — an edit-history snapshot or an experiment — onto
+    the live recipe. Reversible: the current state is snapshotted first.
+  fields:
+    name_or_id:
+      name: Recipe
+      required: true
+      selector:
+        text:
+    version_id:
+      name: Version
+      description: Version id (from List recipe versions).
+      required: true
+      selector:
+        text:

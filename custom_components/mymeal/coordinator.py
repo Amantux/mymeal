@@ -5,7 +5,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any
 
-from aiohttp import ClientError, ClientSession, ClientTimeout
+from aiohttp import ClientError, ClientResponseError, ClientSession, ClientTimeout
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -116,3 +116,225 @@ class MyMealDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except (ClientError, asyncio.TimeoutError):
             return {"status": "error"}
         return {"status": "ok", "planned": len(data.get("entries", []))}
+
+    # --- Recipes: CRUD + versions/experiments ---------------------------
+    async def _put(self, path: str, json: dict | None = None):
+        url = build_url(self.host, self.port, path)
+        async with self._session.put(
+            url, json=json or {}, headers=self._headers, timeout=_TIMEOUT
+        ) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
+    async def _delete(self, path: str) -> bool:
+        url = build_url(self.host, self.port, path)
+        async with self._session.delete(
+            url, headers=self._headers, timeout=_TIMEOUT
+        ) as resp:
+            resp.raise_for_status()
+            return True
+
+    async def resolve_recipe(self, name_or_id: str) -> dict:
+        """Find one recipe from an id, slug, or name.
+
+        Returns ``{"status": "ok", "recipe": {...}}``, or a status of
+        ``not_found`` / ``ambiguous`` (with ``candidates``) / ``error``. Callers
+        must never guess when the status is ``ambiguous`` — acting on a partial
+        name match is how the wrong recipe gets edited or deleted.
+        """
+        ident = (name_or_id or "").strip()
+        if not ident:
+            return {"status": "error", "error": "No recipe name or id given."}
+        # This path accepts an id or a slug; a name falls through to the search.
+        try:
+            return {"status": "ok", "recipe": await self._get(f"/api/v1/recipes/{ident}")}
+        except ClientResponseError as err:
+            if err.status != 404:
+                return {"status": "error", "error": f"myMeal returned {err.status}."}
+        except (ClientError, asyncio.TimeoutError):
+            return {"status": "error", "error": "Could not reach myMeal."}
+
+        try:
+            items = (await self._get("/api/v1/recipes", {"q": ident})).get("items", [])
+        except (ClientError, asyncio.TimeoutError):
+            return {"status": "error", "error": "Could not reach myMeal."}
+
+        # An exact (case-insensitive) name wins over substring hits, so "Soup"
+        # resolves even when "Soup Base" also matches.
+        exact = [r for r in items if (r.get("name") or "").lower() == ident.lower()]
+        candidates = exact if len(exact) == 1 else items
+        if not candidates:
+            return {"status": "not_found", "error": f"No recipe matching '{ident}'."}
+        if len(candidates) > 1:
+            return {
+                "status": "ambiguous",
+                "error": (
+                    f"{len(candidates)} recipes match '{ident}'. "
+                    "Pass the id of the one you mean."
+                ),
+                "candidates": [
+                    {"id": r.get("id"), "name": r.get("name")} for r in candidates
+                ],
+            }
+        try:
+            full = await self._get(f"/api/v1/recipes/{candidates[0]['id']}")
+        except (ClientError, asyncio.TimeoutError):
+            return {"status": "error", "error": "Could not reach myMeal."}
+        return {"status": "ok", "recipe": full}
+
+    async def search_recipes(self, query: str) -> dict:
+        try:
+            data = await self._get("/api/v1/recipes", {"q": query})
+        except (ClientError, asyncio.TimeoutError):
+            return {"status": "error", "matches": []}
+        return {
+            "status": "ok",
+            "matches": [
+                {"id": r.get("id"), "name": r.get("name")} for r in data.get("items", [])
+            ],
+        }
+
+    async def get_recipe(self, name_or_id: str) -> dict:
+        found = await self.resolve_recipe(name_or_id)
+        if found["status"] != "ok":
+            return found
+        r = found["recipe"]
+        return {
+            "status": "ok",
+            "id": r.get("id"),
+            "name": r.get("name"),
+            "servings": r.get("servings"),
+            "totalMinutes": r.get("totalMinutes"),
+            "ingredients": [i.get("display") for i in r.get("ingredients", [])],
+            "steps": [s.get("text") for s in r.get("steps", [])],
+        }
+
+    @staticmethod
+    def _recipe_body(fields: dict) -> dict:
+        """Translate service fields to the API's shape.
+
+        Only keys the caller actually supplied are included: PUT /recipes/<id>
+        REPLACES ingredients/steps whenever those keys are present, so passing
+        them unconditionally would wipe the stored lists on a partial edit.
+        """
+        body: dict = {}
+        if "name" in fields:
+            body["name"] = fields["name"]
+        if "servings" in fields:
+            body["servings"] = fields["servings"]
+        if "ingredients" in fields:
+            body["ingredients"] = [{"display": str(x)} for x in fields["ingredients"]]
+        if "steps" in fields:
+            body["steps"] = [{"text": str(x)} for x in fields["steps"]]
+        return body
+
+    async def add_recipe(self, fields: dict) -> dict:
+        try:
+            r = await self._post("/api/v1/recipes", self._recipe_body(fields))
+        except (ClientError, asyncio.TimeoutError):
+            return {"status": "error", "error": "Could not reach myMeal."}
+        return {"status": "ok", "id": r.get("id"), "name": r.get("name")}
+
+    async def update_recipe(self, name_or_id: str, fields: dict) -> dict:
+        found = await self.resolve_recipe(name_or_id)
+        if found["status"] != "ok":
+            return found
+        body = self._recipe_body(fields)
+        if not body:
+            return {"status": "error", "error": "Nothing to update."}
+        try:
+            r = await self._put(f"/api/v1/recipes/{found['recipe']['id']}", body)
+        except (ClientError, asyncio.TimeoutError):
+            return {"status": "error", "error": "Could not reach myMeal."}
+        return {"status": "ok", "id": r.get("id"), "name": r.get("name"),
+                "updated": sorted(body)}
+
+    async def delete_recipe(self, name_or_id: str, confirm: bool) -> dict:
+        """Delete a recipe. Irreversible — it also removes its saved versions."""
+        found = await self.resolve_recipe(name_or_id)
+        if found["status"] != "ok":
+            return found
+        recipe = found["recipe"]
+        if not confirm:
+            versions = await self.list_recipe_versions(recipe["id"])
+            n = len(versions.get("versions", [])) if versions["status"] == "ok" else 0
+            return {
+                "status": "confirm_required",
+                "id": recipe.get("id"),
+                "name": recipe.get("name"),
+                "versions": n,
+                "error": (
+                    f"This would permanently delete '{recipe.get('name')}'"
+                    + (f" and its {n} saved version(s)/experiment(s)" if n else "")
+                    + ". Call again with confirm: true to proceed."
+                ),
+            }
+        try:
+            await self._delete(f"/api/v1/recipes/{recipe['id']}")
+        except (ClientError, asyncio.TimeoutError):
+            return {"status": "error", "error": "Could not reach myMeal."}
+        return {"status": "ok", "deleted": recipe.get("name")}
+
+    async def list_recipe_versions(self, name_or_id: str) -> dict:
+        found = await self.resolve_recipe(name_or_id)
+        if found["status"] != "ok":
+            return found
+        try:
+            data = await self._get(f"/api/v1/recipes/{found['recipe']['id']}/versions")
+        except (ClientError, asyncio.TimeoutError):
+            return {"status": "error", "error": "Could not reach myMeal."}
+        return {
+            "status": "ok",
+            "recipe": found["recipe"].get("name"),
+            "versions": [
+                {
+                    "id": v.get("id"),
+                    "kind": v.get("kind"),
+                    "status": v.get("status"),
+                    "label": v.get("label"),
+                    "rating": v.get("rating"),
+                }
+                for v in data.get("items", [])
+            ],
+        }
+
+    async def start_recipe_experiment(
+        self, name_or_id: str, label: str, note: str = ""
+    ) -> dict:
+        found = await self.resolve_recipe(name_or_id)
+        if found["status"] != "ok":
+            return found
+        try:
+            v = await self._post(
+                f"/api/v1/recipes/{found['recipe']['id']}/versions",
+                {"label": label, "note": note},
+            )
+        except (ClientError, asyncio.TimeoutError):
+            return {"status": "error", "error": "Could not reach myMeal."}
+        return {"status": "ok", "versionId": v.get("id"), "label": v.get("label"),
+                "recipe": found["recipe"].get("name")}
+
+    async def _version_action(
+        self, name_or_id: str, version_id: str, action: str, body: dict | None = None
+    ) -> dict:
+        found = await self.resolve_recipe(name_or_id)
+        if found["status"] != "ok":
+            return found
+        path = f"/api/v1/recipes/{found['recipe']['id']}/versions/{version_id}/{action}"
+        try:
+            data = await self._post(path, body or {})
+        except (ClientError, asyncio.TimeoutError):
+            return {"status": "error", "error": "Could not reach myMeal."}
+        return {"status": "ok", "recipe": data.get("name") or found["recipe"].get("name")}
+
+    async def add_experiment_feedback(
+        self, name_or_id: str, version_id: str, fields: dict
+    ) -> dict:
+        body = {k: fields[k] for k in ("rating", "feedback") if k in fields}
+        return await self._version_action(name_or_id, version_id, "feedback", body)
+
+    async def promote_experiment(self, name_or_id: str, version_id: str) -> dict:
+        return await self._version_action(name_or_id, version_id, "promote")
+
+    async def restore_recipe_version(self, name_or_id: str, version_id: str) -> dict:
+        return await self._version_action(name_or_id, version_id, "restore")
