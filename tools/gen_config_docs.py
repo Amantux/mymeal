@@ -191,10 +191,31 @@ def render_reference() -> str:
     return "\n".join(out)
 
 
+def _check_groups_cover_every_field() -> None:
+    """A field missing from GROUPS would be silently undocumented.
+
+    The renderers iterate GROUPS, not FIELDS, so a newly-declared Field that
+    nobody added to a group simply never appears — and the failure surfaces as a
+    confusing docs-diff mismatch instead of naming the setting. Fail loudly with
+    the name instead. (Ported from HomeHoard/Edibl, which hit exactly this.)
+    """
+    grouped = {n for _, names in GROUPS for n in names}
+    declared = {f.name for f in FIELDS}
+    missing, unknown = declared - grouped, grouped - declared
+    if missing or unknown:
+        raise SystemExit(
+            "gen_config_docs GROUPS is out of sync with FIELDS.\n"
+            f"  missing from GROUPS: {sorted(missing)}\n"
+            f"  in GROUPS but not declared: {sorted(unknown)}"
+        )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
     args = ap.parse_args()
+
+    _check_groups_cover_every_field()
 
     targets = {
         os.path.join(ROOT, ".env.example"): render_env_example(),
