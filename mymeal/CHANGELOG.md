@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.2.10
+
+- Close two proven bypasses in the MCP debug surface.
+
 ## 1.2.9
 
 - Drop the undeclared *_PROC env var caught by the config contract.
