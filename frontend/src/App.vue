@@ -87,7 +87,11 @@ const nav = [
         </header>
 
         <div class="content">
-          <router-view />
+          <!-- Key by path so navigating between two of the same route (e.g.
+               recipe→recipe from search) remounts the view and loads the new
+               record, instead of reusing the component and appearing stuck on
+               the previous one. -->
+          <router-view :key="$route.path" />
         </div>
       </div>
     </div>
