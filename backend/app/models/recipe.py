@@ -24,6 +24,12 @@ class Recipe(IDMixin, TimestampMixin, db.Model):
     total_minutes: Mapped[int] = mapped_column(Integer, default=0)
 
     source_url: Mapped[str] = mapped_column(String(1024), default="")
+
+    # How-to videos. delete-orphan: removing a recipe takes its videos with it.
+    videos = relationship(
+        "RecipeVideo", back_populates="recipe", cascade="all, delete-orphan",
+        order_by="RecipeVideo.position",
+    )
     # Image file name stored under DATA_DIR/images; served via /api/v1/recipes/<id>/image.
     image: Mapped[str] = mapped_column(String(255), default="")
 

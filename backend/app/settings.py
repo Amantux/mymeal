@@ -382,6 +382,13 @@ class Settings:
         return os.path.join(self.data_dir, "images")
 
     @property
+    def videos_dir(self) -> str:
+        """Uploaded how-to videos. A sibling of images/ rather than a mix, so
+        the two can be reasoned about (and sized) separately — video is orders
+        of magnitude larger than a recipe photo."""
+        return os.path.join(self.data_dir, "videos")
+
+    @property
     def sqlalchemy_uri(self) -> str:
         # Explicit URL always wins.
         if self.values["DATABASE_URL"]:

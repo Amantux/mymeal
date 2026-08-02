@@ -60,7 +60,7 @@ def _prepare_storage(settings):
     ``data/`` directory into whatever the current working directory happened
     to be.
     """
-    for path in (settings.data_dir, settings.images_dir):
+    for path in (settings.data_dir, settings.images_dir, settings.videos_dir):
         try:
             os.makedirs(path, exist_ok=True)
         except OSError as exc:
@@ -133,6 +133,7 @@ def create_app(config_object=None):
     # (idle timeouts, restarts). Harmless for SQLite.
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True}
     app.config["images_dir"] = lambda: settings.images_dir
+    app.config["videos_dir"] = lambda: settings.videos_dir
     app.config["MAX_CONTENT_LENGTH"] = settings.MAX_UPLOAD_MB * 1024 * 1024
     app.config["JSON_SORT_KEYS"] = False
     app.config["DEBUG"] = settings.DEBUG

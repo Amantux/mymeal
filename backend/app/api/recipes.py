@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 import secrets
 from urllib.parse import urljoin
 
@@ -7,10 +8,13 @@ import httpx
 from flask import Blueprint, request, jsonify, abort, current_app, send_file
 from sqlalchemy.orm import selectinload
 
+from werkzeug.utils import safe_join, secure_filename
+
 from ..extensions import db
-from ..models import Recipe, RecipeIngredient, RecipeStep, Category, Tag, Unit, Food
+from ..services import videos
+from ..models import RecipeVideo, Recipe, RecipeIngredient, RecipeStep, Category, Tag, Unit, Food
 from ..auth import login_required, current_group
-from ..schemas.serializers import recipe_out, recipe_summary
+from ..schemas.serializers import recipe_video_out, recipe_out, recipe_summary
 from ..services import recipe_resolve
 from ..utils import unique_slug
 
@@ -520,3 +524,118 @@ def unshare_recipe(recipe_id):
     recipe.share_token = None
     db.session.commit()
     return "", 204
+
+
+# --- How-to videos -------------------------------------------------------
+#
+# A video is EITHER a link (YouTube/Vimeo/anything http(s)) or an uploaded file
+# under <DATA_DIR>/videos. Links cost nothing and cover most cases; uploads are
+# for the clip you filmed yourself.
+
+def _video_path(filename: str) -> str:
+    # secure_filename at write time and a stored name we generated, so this can
+    # never escape the directory. safe_join belts-and-braces it anyway.
+    path = safe_join(current_app.config["videos_dir"](), filename)
+    if path is None:
+        abort(404)
+    return path
+
+
+def _get_video(recipe: Recipe, video_id: str) -> RecipeVideo:
+    video = db.session.get(RecipeVideo, video_id)
+    # Checked against the RECIPE we already tenant-scoped, so a video id from
+    # another household 404s rather than being served.
+    if not video or video.recipe_id != recipe.id:
+        abort(404)
+    return video
+
+
+@bp.get("/recipes/<recipe_id>/videos")
+@login_required
+def list_videos(recipe_id):
+    recipe = _get(recipe_id)
+    return jsonify([recipe_video_out(v) for v in recipe.videos])
+
+
+@bp.post("/recipes/<recipe_id>/videos")
+@login_required
+def add_video(recipe_id):
+    """Add a link (JSON: {url, title}) or an upload (multipart: file, title)."""
+    recipe = _get(recipe_id)
+    upload = request.files.get("file")
+    title = (request.form.get("title") if upload else
+             (request.get_json(silent=True) or {}).get("title")) or ""
+
+    video = RecipeVideo(recipe_id=recipe.id, group_id=recipe.group_id,
+                        title=str(title)[:videos.MAX_TITLE_LENGTH].strip(),
+                        position=len(recipe.videos))
+    if upload:
+        mime = videos.video_mime(upload.filename or "")
+        if not mime:
+            return jsonify({"error": "that file is not a video we can play "
+                                     f"({', '.join(sorted(videos.VIDEO_MIME_BY_EXT))})"}), 422
+        ext = os.path.splitext(secure_filename(upload.filename))[1].lower()
+        video.filename = f"{uuid.uuid4().hex}{ext}"
+        if not video.title:
+            video.title = os.path.basename(upload.filename or "")[:videos.MAX_TITLE_LENGTH]
+    else:
+        raw = (request.get_json(silent=True) or {}).get("url", "")
+        try:
+            video.url = videos.normalize_url(raw)
+        except videos.VideoError as exc:
+            return jsonify({"error": str(exc)}), 422
+        if not video.title:
+            video.title = "Video"
+
+    try:
+        videos.validate(video)
+    except videos.VideoError as exc:
+        return jsonify({"error": str(exc)}), 422
+
+    # Write the file only once the row is known-good, so a rejected request
+    # never leaves an orphan on disk.
+    if upload:
+        upload.save(_video_path(video.filename))
+    db.session.add(video)
+    db.session.commit()
+    return jsonify(recipe_video_out(video)), 201
+
+
+@bp.delete("/recipes/<recipe_id>/videos/<video_id>")
+@login_required
+def delete_video(recipe_id, video_id):
+    recipe = _get(recipe_id)
+    video = _get_video(recipe, video_id)
+    if video.filename:
+        try:
+            os.remove(_video_path(video.filename))
+        except OSError:
+            # Best-effort, matching the image path: the row is the source of
+            # truth and a missing file must not block the delete.
+            pass
+    db.session.delete(video)
+    db.session.commit()
+    return "", 204
+
+
+@bp.get("/recipes/<recipe_id>/videos/<video_id>/stream")
+@login_required
+def stream_video(recipe_id, video_id):
+    """Serve an uploaded video for inline playback.
+
+    conditional=True (send_file's default) answers Range requests, which is what
+    lets the player seek. The Content-Type comes from our own extension
+    allowlist, never from the uploaded filename — that is what stops a file
+    called "clip.mp4" full of HTML executing in the app's origin.
+    """
+    recipe = _get(recipe_id)
+    video = _get_video(recipe, video_id)
+    if not video.filename:
+        abort(404)  # a link has nothing to stream
+    mime = videos.video_mime(video.filename)
+    if not mime:
+        abort(404)
+    path = _video_path(video.filename)
+    if not os.path.isfile(path):
+        abort(404)
+    return send_file(path, mimetype=mime, conditional=True)

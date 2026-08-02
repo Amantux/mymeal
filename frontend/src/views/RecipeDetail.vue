@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api, apiUrl } from '../api'
+import { api, apiUrl, mediaUrl } from '../api'
 import { useUI } from '../stores/ui'
 import IngredientRows from '../components/IngredientRows.vue'
 import StepRows from '../components/StepRows.vue'
@@ -439,6 +439,82 @@ async function uploadImage(e) {
 // can't send the bearer token, so images display when running behind Home
 // Assistant ingress (auth disabled). Token-authenticated blob loading lands in
 // a later milestone.
+// --- How-to videos -------------------------------------------------------
+// A video is either a link (YouTube/Vimeo embed inline, anything else opens in
+// a new tab) or a file we uploaded and can play here. The server decides which
+// is which — the UI never builds an embed URL from a raw address.
+const newVideoUrl = ref('')
+const newVideoTitle = ref('')
+const addingVideo = ref(false)
+const videoError = ref('')
+const videoFile = ref(null)
+
+const videos = computed(() => recipe.value?.videos || [])
+
+function videoHost(url) {
+  try { return new URL(url).hostname.replace(/^www\./, '') } catch { return 'the web' }
+}
+
+function videoSrc(v) {
+  return v.streamUrl ? mediaUrl(v.streamUrl) : null
+}
+
+async function addVideoLink() {
+  if (!newVideoUrl.value.trim()) return
+  addingVideo.value = true
+  videoError.value = ''
+  try {
+    await api.post(`/recipes/${recipe.value.id}/videos`,
+      { url: newVideoUrl.value.trim(), title: newVideoTitle.value.trim() })
+    newVideoUrl.value = ''
+    newVideoTitle.value = ''
+    await load()
+    ui.toast('Video added')
+  } catch (e) {
+    // Stays on screen next to the field rather than as a toast that vanishes:
+    // the message says which part of the link is wrong.
+    videoError.value = e.message || 'Could not add that video'
+  } finally {
+    addingVideo.value = false
+  }
+}
+
+async function uploadVideo(ev) {
+  const file = ev.target.files?.[0]
+  if (!file) return
+  addingVideo.value = true
+  videoError.value = ''
+  try {
+    const fd = new FormData()
+    fd.append('file', file)
+    if (newVideoTitle.value.trim()) fd.append('title', newVideoTitle.value.trim())
+    await api.upload(`/recipes/${recipe.value.id}/videos`, fd)
+    newVideoTitle.value = ''
+    await load()
+    ui.toast('Video uploaded')
+  } catch (e) {
+    // Uploads hit the size ceiling far more often than photos do, so this
+    // path must never fail silently.
+    videoError.value = e.message === 'upload too large'
+      ? 'That video is larger than this add-on allows. Link to it instead, or raise max_upload_mb in the add-on configuration.'
+      : (e.message || 'Could not upload that video')
+  } finally {
+    addingVideo.value = false
+    ev.target.value = ''
+  }
+}
+
+async function removeVideo(v) {
+  if (!confirm(`Remove “${v.title || 'this video'}” from this recipe? The recipe itself is not affected.`)) return
+  try {
+    await api.del(`/recipes/${recipe.value.id}/videos/${v.id}`)
+    await load()
+    ui.toast('Video removed')
+  } catch (e) {
+    ui.error(e.message || 'Could not remove that video')
+  }
+}
+
 const imageSrc = computed(() =>
   recipe.value?.image ? apiUrl(`/recipes/${recipe.value.id}/image`) + `?t=${recipe.value.updatedAt}` : null
 )
@@ -491,6 +567,58 @@ const imageSrc = computed(() =>
             </p>
           </div>
         </div>
+      </div>
+
+      <div class="card">
+        <div class="page-head" style="margin-bottom:10px">
+          <h2>How-to videos</h2>
+        </div>
+
+        <div v-if="videos.length" class="video-list">
+          <div v-for="v in videos" :key="v.id" class="video">
+            <!-- Uploaded: played here. preload="metadata" so opening a recipe
+                 with several videos doesn't pull them all down. -->
+            <video v-if="v.streamUrl" :src="videoSrc(v)" controls preload="metadata"></video>
+            <!-- A provider the server is willing to embed. -->
+            <iframe v-else-if="v.embedUrl" :src="v.embedUrl" loading="lazy"
+                    allowfullscreen referrerpolicy="no-referrer"
+                    title="How-to video"></iframe>
+            <!-- Anything else: an honest link rather than an empty player. -->
+            <a v-else :href="v.url" target="_blank" rel="noopener noreferrer"
+               class="video-link">▶ Watch on {{ videoHost(v.url) }} ↗</a>
+
+            <div class="video-foot">
+              <span class="grow">{{ v.title }}</span>
+              <button class="secondary sm" @click="removeVideo(v)">Remove</button>
+            </div>
+          </div>
+        </div>
+
+        <p v-else class="muted" style="margin:0 0 12px">
+          No videos yet. Paste a link to a technique or walkthrough — or upload a
+          clip of your own — so you can see how it's done while you cook.
+        </p>
+
+        <div class="row" style="gap:8px;align-items:flex-end;flex-wrap:wrap">
+          <label class="field" style="margin:0;flex:1;min-width:200px">
+            <span>Video link</span>
+            <input v-model="newVideoUrl" placeholder="https://youtu.be/…"
+                   @keyup.enter="addVideoLink" />
+          </label>
+          <label class="field" style="margin:0;width:180px">
+            <span>Title (optional)</span>
+            <input v-model="newVideoTitle" placeholder="e.g. Folding technique" />
+          </label>
+          <button :disabled="addingVideo" @click="addVideoLink">
+            {{ addingVideo ? 'Adding…' : 'Add link' }}
+          </button>
+          <label class="secondary btnlike">
+            {{ addingVideo ? 'Uploading…' : 'Upload a file' }}
+            <input type="file" accept="video/*" hidden :disabled="addingVideo"
+                   @change="uploadVideo" />
+          </label>
+        </div>
+        <p v-if="videoError" class="err" style="margin:8px 0 0">{{ videoError }}</p>
       </div>
 
       <div class="card">
@@ -730,4 +858,17 @@ select.sm { padding: 2px 6px; }
 .nutri-cell { min-width: 64px; }
 .nutri-val { font-size: 1.4rem; font-weight: 700; }
 .nutri-lbl { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.video-list { display:grid; gap:14px; margin-bottom:14px }
+.video video, .video iframe {
+  width:100%; aspect-ratio:16/9; border:0; border-radius:var(--radius-sm);
+  background:#000; display:block;
+}
+.video-link {
+  display:block; padding:14px; border:1px solid var(--border);
+  border-radius:var(--radius-sm); text-decoration:none;
+}
+.video-foot { display:flex; align-items:center; gap:8px; margin-top:6px; font-size:.9rem }
+.btnlike { cursor:pointer; display:inline-flex; align-items:center; padding:8px 12px;
+  border:1px solid var(--border); border-radius:var(--radius-sm); }
+@media (max-width:560px) { .video-foot { flex-wrap:wrap } }
 </style>

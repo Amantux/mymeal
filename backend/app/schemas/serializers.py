@@ -119,6 +119,7 @@ def recipe_summary(r):
         "slug": r.slug,
         "description": r.description,
         "image": f"/api/v1/recipes/{r.id}/image" if r.image else None,
+        "videos": [recipe_video_out(v) for v in r.videos],
         "servings": r.servings,
         "recipeYield": r.recipe_yield,
         "totalMinutes": r.total_minutes,
@@ -238,6 +239,27 @@ def _effective_nutrition(r):
     if not found:
         return None
     return {k: round(v, 2) for k, v in total.items()}
+
+
+def recipe_video_out(v):
+    """A recipe's how-to video.
+
+    `streamUrl` is set only for an uploaded file the server is willing to play
+    inline; `embedUrl` only for a provider on the embed allowlist. Anything else
+    is a plain external link the UI opens in a new tab. The server decides what
+    may be framed — the UI never builds an embed URL from a raw address.
+    """
+    from ..services.videos import embed_url
+    return {
+        "id": v.id,
+        "title": v.title,
+        "url": v.url or None,
+        "embedUrl": embed_url(v.url) if v.url else None,
+        "streamUrl": (f"/api/v1/recipes/{v.recipe_id}/videos/{v.id}/stream"
+                      if v.filename else None),
+        "position": v.position,
+        "createdAt": iso(v.created_at),
+    }
 
 
 def recipe_out(r):
