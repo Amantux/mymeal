@@ -9,6 +9,7 @@ Run:  python mcp_server.py    (serves SSE on MYMEAL_MCP_HOST:MYMEAL_MCP_PORT/sse
 """
 import datetime
 import hmac
+import json
 import os
 import sys
 
@@ -834,54 +835,215 @@ def _authorized(header_value: str, server_token: str) -> bool:
     return False
 
 
+def _key_scope(raw: str):
+    """Scope of a live ApiToken ('full'|'rest'|'mcp'|'debug'), or None.
+
+    Separate from _access_for because the debug tools gate on scope, not on the
+    read/write class. Fail-closed (None) on any DB error.
+    """
+    if not raw:
+        return None
+    try:
+        app = _get_app()
+        from app.extensions import db
+        from app.models import ApiToken
+        from app.models.api_token import hash_token
+        with app.app_context():
+            rec = db.session.query(ApiToken).filter_by(token_hash=hash_token(raw)).first()
+            scope = (rec.scope or "full") if rec is not None else None
+            db.session.remove()
+            return scope
+    except Exception as exc:  # noqa: BLE001 — fail closed
+        print(f"mymeal-mcp: scope check failed: {exc}", file=sys.stderr)
+        return None
+
+
+def _debug_key_exists() -> bool:
+    """True if a 'debug'-scoped key exists. Raises on a DB error (fail closed)."""
+    app = _get_app()
+    from app.extensions import db
+    from app.models import ApiToken
+    with app.app_context():
+        exists = (db.session.query(ApiToken.id)
+                  .filter(ApiToken.scope == "debug").first() is not None)
+        db.session.remove()
+        return exists
+
+
+def _tool_names(scope, body: bytes) -> list:
+    """Tool names in a JSON-RPC body, or [] if this is not a tools/call POST."""
+    if scope.get("method") != "POST" or "/messages" not in scope.get("path", ""):
+        return []
+    try:
+        parsed = json.loads(body or b"{}")
+    except Exception:  # noqa: BLE001
+        return []
+    items = parsed if isinstance(parsed, list) else [parsed]
+    return [(it.get("params") or {}).get("name") or ""
+            for it in items
+            if isinstance(it, dict) and it.get("method") == "tools/call"]
+
+
+def _audit(names, raw: str, outcome: str) -> None:
+    """One line per tool call: which tool, which key, allowed or denied.
+
+    There was no record at all of what ran over MCP — the surface most likely to
+    need an audit trail. Arguments are deliberately NOT logged.
+    """
+    try:
+        from app.services.metrics import record
+        # NOT `key=`: the log redactor treats `key=<value>` as a credential.
+        hint = f"{raw[:7]}~" if raw else "none"
+        for name in names or ["-"]:
+            record("mcp_tool", name=name or "-", client=hint, outcome=outcome)
+    except Exception as exc:  # noqa: BLE001 - auditing must never break a request
+        print(f"mymeal-mcp: audit logging failed: {exc}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Debug tools. Registered only when MCP_DEBUG_TOOLS is on, and callable only by
+# a `debug`-scoped key — see _guard. They read this instance's own logs and
+# metrics so an AI client can investigate a problem without an operator having
+# to copy log text around by hand.
+# ---------------------------------------------------------------------------
+DEBUG_TOOLS = frozenset({
+    "debug_recent_logs", "debug_error_summary", "debug_metrics",
+    "debug_diagnostics",
+})
+
+
+def _register_debug_tools() -> None:
+    from app.services import debug_logs, metrics
+    from app.settings import load_settings
+
+    # myMeal's MCP process has no module-level settings object (unlike its
+    # siblings), so resolve once here at registration time.
+    _settings = load_settings()
+    data_dir = _settings.data_dir
+
+    @mcp.tool()
+    def debug_recent_logs(level: str = "INFO", contains: str = "",
+                          request_id: str = "", since: str = "",
+                          limit: int = 100) -> dict:
+        """Recent log lines from this myMeal instance, newest last.
+
+        level: minimum severity (DEBUG|INFO|WARNING|ERROR). contains: plain
+        substring filter, not a regex. request_id: show one request's lines,
+        using the id from an error response or the X-Request-Id header. since:
+        an ISO-8601 UTC timestamp; only later lines are returned. Credentials
+        are redacted; timestamps are UTC.
+        """
+        return debug_logs.read_recent(data_dir, level=level, contains=contains,
+                                      request_id=request_id, since=since, limit=limit)
+
+    @mcp.tool()
+    def debug_error_summary(limit: int = 20) -> dict:
+        """Recent warnings and errors grouped by message shape, most frequent
+        first — "what is going wrong repeatedly", rather than a raw line dump.
+        Each group carries the last request id, to look that request up."""
+        return debug_logs.error_summary(data_dir, limit=limit)
+
+    @mcp.tool()
+    def debug_metrics(kind: str = "") -> dict:
+        """Recent timing samples (background jobs, MCP tool calls) from THIS
+        process. The MCP server and each web worker keep separate rings, so
+        treat these as a sample; the log lines (kind=metric) are the complete
+        record and are visible via debug_recent_logs."""
+        kinds = [kind] if kind else ["job", "mcp_tool"]
+        return {"summaries": [metrics.summary(k) for k in kinds],
+                "recent": metrics.recent(kind or None, limit=50)}
+
+    @mcp.tool()
+    def debug_diagnostics() -> dict:
+        """Coarse runtime facts: database backend, configured providers, which
+        settings are non-default and where each came from. Secrets are
+        redacted — this is the same information the config check prints."""
+        settings = _settings
+        uri = settings.sqlalchemy_uri
+        redacted = settings.redacted()
+        return {
+            "app": "myMeal",
+            "dbBackend": "sqlite" if uri.startswith("sqlite") else "postgresql",
+            "aiProvider": settings.AI_PROVIDER or "none",
+            "authDisabled": bool(settings.DISABLE_AUTH),
+            "nonDefault": {name: redacted.get(name)
+                           for name, src in sorted(settings.sources.items())
+                           if src != "default"},
+            "sources": {k: v for k, v in sorted(settings.sources.items()) if v != "default"},
+        }
+
+
+def _expose_external() -> bool:
+    """Whether the MCP port is deliberately reachable from outside Home Assistant."""
+    return _bool_env("MYMEAL_MCP_EXPOSE_EXTERNAL")
+
+
 def _guard(asgi_app, server_token: str):
-    """ASGI gate requiring auth on every HTTP request — used when the MCP server is
-    exposed outside Home Assistant. Accepts the static server token or a scoped key."""
-    async def wrapper(scope, receive, send):
-        if scope["type"] == "http":
-            # latin-1 decode never raises on arbitrary bytes (unlike utf-8), so a
-            # malformed Authorization header 401s cleanly instead of 500ing.
-            header = dict(scope.get("headers") or []).get(
-                b"authorization", b"").decode("latin-1")
-            if not _authorized(header, server_token):
-                await send({"type": "http.response.start", "status": 401,
-                            "headers": [(b"content-type", b"text/plain")]})
-                await send({"type": "http.response.body", "body": b"unauthorized"})
-                return
-            # Read-only keys: block mutating tool calls (the SSE message POST). The
-            # tool runs in a separate task, so we screen the JSON-RPC body here.
-            if (scope.get("method") == "POST"
-                    and "/messages" in scope.get("path", "")
-                    and _access_for(header, server_token) == "read"):
-                messages, body = await _read_body(receive)
-                if _is_tools_call_body(body):
-                    await send({"type": "http.response.start", "status": 403,
-                                "headers": [(b"content-type", b"text/plain")]})
-                    await send({"type": "http.response.body",
-                                "body": b"this API key is read-only"})
-                    return
-                receive = _replay(messages, receive)
-        await asgi_app(scope, receive, send)
+    """The single ASGI gate, ALWAYS installed.
 
-    return wrapper
+    Previously a wrapper was chosen once at boot and, with external exposure off
+    and no static token, none was installed at all — so there was nothing to
+    enforce anything with. It is now always present; what it *requires* depends
+    on the tool:
 
-
-def _require_token(asgi_app, token: str):
-    """ASGI wrapper for the internal/HA-voice path: reject requests without the
-    static `Authorization: Bearer <token>` (used when a token is set but the
-    endpoint is NOT exposed externally)."""
-    expected = f"Bearer {token}".encode()
+    * **debug tools** — always require a `debug`-scoped key, on every network.
+      Logs contain sign-in emails and tracebacks that can carry a database
+      password, a different sensitivity class from recipe data.
+    * **domain tools** — unchanged: open on the Home Assistant network, and when
+      exposed externally every request needs a valid key, with read-only keys
+      held to the READ_TOOLS allowlist.
+    """
+    external = _expose_external()
 
     async def wrapper(scope, receive, send):
-        if scope["type"] == "http":
-            headers = dict(scope.get("headers") or [])
-            # Compare on bytes: a non-ASCII Authorization header would make the
-            # str form of compare_digest raise (500) instead of cleanly 401ing.
-            if not hmac.compare_digest(headers.get(b"authorization", b""), expected):
-                await send({"type": "http.response.start", "status": 401,
-                            "headers": [(b"content-type", b"text/plain")]})
-                await send({"type": "http.response.body", "body": b"unauthorized"})
-                return
+        if scope["type"] != "http":
+            return await asgi_app(scope, receive, send)
+
+        # latin-1 decode never raises on arbitrary bytes (unlike utf-8), so a
+        # malformed Authorization header 401s cleanly instead of 500ing.
+        header = dict(scope.get("headers") or []).get(
+            b"authorization", b"").decode("latin-1")
+        raw = header[len("Bearer "):].strip() if header.startswith("Bearer ") else ""
+
+        body = b""
+        if scope.get("method") == "POST" and "/messages" in scope.get("path", ""):
+            messages, body = await _read_body(receive)
+            receive = _replay(messages, receive)
+        names = _tool_names(scope, body)
+        wants_debug = any(n in DEBUG_TOOLS for n in names)
+        wants_domain = any(n and n not in DEBUG_TOOLS for n in names)
+
+        async def deny(status, message):
+            await send({"type": "http.response.start", "status": status,
+                        "headers": [(b"content-type", b"text/plain")]})
+            await send({"type": "http.response.body", "body": message})
+
+        if wants_debug:
+            if _key_scope(raw) != "debug":
+                _audit(names, raw, "denied")
+                return await deny(
+                    403, b"the debug tools require an API key with the 'debug' scope")
+            if wants_domain:
+                # A batch mixing both would otherwise let a debug key reach a
+                # domain tool by pairing it with a debug one.
+                _audit(names, raw, "denied")
+                return await deny(403, b"a debug key may not call the domain tools")
+        else:
+            if names and _key_scope(raw) == "debug":
+                _audit(names, raw, "denied")
+                return await deny(403, b"a debug key may only call the debug tools")
+            if external:
+                if not _authorized(header, server_token):
+                    return await deny(401, b"unauthorized")
+                if (_access_for(header, server_token) == "read"
+                        and _is_tools_call_body(body)):
+                    _audit(names, raw, "denied")
+                    return await deny(403, b"this API key is read-only")
+            elif server_token and not _authorized(header, server_token):
+                return await deny(401, b"unauthorized")
+
+        if names:
+            _audit(names, raw, "allowed")
         await asgi_app(scope, receive, send)
 
     return wrapper
@@ -900,7 +1062,25 @@ if __name__ == "__main__":
     server_token = os.environ.get("MYMEAL_MCP_SERVER_TOKEN", "")
     expose_external = _bool_env("MYMEAL_MCP_EXPOSE_EXTERNAL")
 
-    app = mcp.sse_app()
+    if _bool_env("MYMEAL_MCP_DEBUG_TOOLS"):
+        # Fail-closed, mirroring the external-exposure check: serving log-reading
+        # tools that nobody can authenticate to would be worse than not serving
+        # them.
+        try:
+            has_debug_key = _debug_key_exists()
+        except Exception as exc:  # noqa: BLE001
+            print(f"ERROR: mymeal-mcp: could not verify a debug key exists: {exc}. "
+                  "Not registering the debug tools.", file=sys.stderr)
+            has_debug_key = False
+        if has_debug_key:
+            _register_debug_tools()
+            print("mymeal-mcp: debug tools ON — they require an API key with the "
+                  "'debug' scope, on every network.", file=sys.stderr)
+        else:
+            print("WARNING: mcp_debug_tools is on but no 'debug'-scoped API key "
+                  "exists. Mint one in Settings -> Access & keys (scope 'Debug'), "
+                  "then restart. Not serving the debug tools.", file=sys.stderr)
+
     if expose_external:
         # Reachable from outside HA → auth is MANDATORY. Refuse to serve at all
         # unless there is a way to authenticate (a scoped key or the static token),
@@ -913,18 +1093,20 @@ if __name__ == "__main__":
             sys.exit(1)
         if not has_key and not server_token:
             print("mymeal-mcp: mcp_expose_external is ON but no MCP/Full API key "
-                  "exists. Mint one in Settings → Access & keys (scope MCP), then "
+                  "exists. Mint one in Settings -> Access & keys (scope MCP), then "
                   "restart. Refusing to serve an unauthenticated public endpoint.",
                   file=sys.stderr)
             sys.exit(1)
-        app = _guard(app, server_token)
         print("mymeal-mcp: external exposure ON — every request must present a "
               "Full/MCP API key.", file=sys.stderr)
-    elif server_token:
-        app = _require_token(app, server_token)
-    else:
-        print("WARNING: MYMEAL_MCP_SERVER_TOKEN unset — MCP endpoint is "
-              "UNAUTHENTICATED (fine only on a trusted internal network).",
-              file=sys.stderr)
+    elif not server_token:
+        print("NOTE: the MCP endpoint is open to the Home Assistant network so "
+              "Assist works without setup. Publishing the port outside HA needs "
+              "mcp_expose_external and a minted MCP key.", file=sys.stderr)
+
+    # ALWAYS wrapped. What the guard requires depends on the tool: debug tools
+    # always need a debug key; domain tools keep the open-internally behaviour.
+    app = _guard(mcp.sse_app(), server_token)
+
     import uvicorn
     uvicorn.run(app, host=host, port=port)

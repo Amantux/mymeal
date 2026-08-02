@@ -33,7 +33,7 @@ GROUPS = [
                       "AI_CONFIDENCE_THRESHOLD"]),
     ("MCP (Home Assistant Assist)", ["MCP_ENABLED", "MCP_HOST", "MCP_PORT",
                                      "MCP_API", "MCP_API_TOKEN", "MCP_SERVER_TOKEN",
-                                     "MCP_EXPOSE_EXTERNAL", "MCP_REQUIRED"]),
+                                     "MCP_EXPOSE_EXTERNAL", "MCP_DEBUG_TOOLS", "MCP_REQUIRED"]),
     ("Edibl integration (companion inventory app)", ["EDIBL_URL", "EDIBL_API_TOKEN"]),
     ("Serving", ["WORKERS", "THREADS", "WORKER_ENABLED", "TIMEOUT", "GRACEFUL_TIMEOUT",
                  "MAX_UPLOAD_MB", "HTTP_TIMEOUT_SECONDS", "MAX_IMPORT_BYTES"]),

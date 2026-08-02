@@ -310,6 +310,14 @@ FIELDS: tuple[Field, ...] = (
           "refuses to start until such a key exists — so it is never open. You "
           "must also map port 7851 in the add-on's Network tab.",
           ha_option="mcp_expose_external"),
+    Field("MCP_DEBUG_TOOLS", parse_bool, False,
+          "Expose read-only debugging tools over MCP (recent logs, error "
+          "summary, metrics, diagnostics) so an AI client can investigate a "
+          "problem. Off by default. When on, those tools require an API key "
+          "with the 'debug' scope — ALWAYS, including on the Home Assistant "
+          "network, because logs contain sign-in emails and tracebacks that can "
+          "carry a database password. No debug key exists = not served at all.",
+          ha_option="mcp_debug_tools"),
     Field("MCP_REQUIRED", parse_bool, False,
           "Treat a dead MCP process as making the whole app UNREADY."),
 

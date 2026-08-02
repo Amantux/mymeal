@@ -274,7 +274,11 @@ def _user_from_api_token(raw: str):
         return None
     # Scope gate: an MCP-only key must not authenticate the REST API (it is issued
     # for the MCP server alone). full/rest (and legacy NULL → "full") pass.
-    if (record.scope or "full") == "mcp":
+    # `mcp` keys are for the MCP transport alone and `debug` keys for the MCP
+    # debug tools alone — neither authenticates the REST API. This is the one
+    # place the scope is checked for REST, so a new scope is denied here or
+    # nowhere.
+    if (record.scope or "full") in ("mcp", "debug"):
         return None
     # Access class: a read-only key may authenticate but only for safe methods —
     # the decorators below 403 a mutating request. Legacy NULL → "write".

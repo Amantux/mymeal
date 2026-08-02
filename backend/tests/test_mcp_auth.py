@@ -8,6 +8,8 @@
 """
 import asyncio
 
+import pytest
+
 import mcp_server
 from app import auth
 
@@ -99,7 +101,12 @@ def _run_guard_post(monkeypatch, body, access="read"):
         result["passed"] = True
         result["got_body"] = msg.get("body", b"")
 
-    guarded = mcp_server._guard(inner, server_token="")
+    _prev = mcp_server._expose_external
+    mcp_server._expose_external = lambda: True   # these cases are the exposed path
+    try:
+        guarded = mcp_server._guard(inner, server_token="")
+    finally:
+        mcp_server._expose_external = _prev
     pending = [{"type": "http.request", "body": _json.dumps(body).encode(), "more_body": False}]
 
     async def receive():
@@ -190,7 +197,12 @@ def _run_guard(server_token, header_bytes):
     async def inner(scope, receive, send):
         result["passed"] = True
 
-    guarded = mcp_server._guard(inner, server_token=server_token)
+    _prev = mcp_server._expose_external
+    mcp_server._expose_external = lambda: True   # these cases are the exposed path
+    try:
+        guarded = mcp_server._guard(inner, server_token=server_token)
+    finally:
+        mcp_server._expose_external = _prev
 
     async def receive():
         return {"type": "http.request"}
@@ -264,3 +276,89 @@ def test_get_shopping_list_never_auto_creates(monkeypatch):
     out = fn()
     assert out["items"] == []
     assert posted == []   # no create call
+
+
+# ---- The debug scope --------------------------------------------------------
+#
+# A debug key reads this instance's own logs, which carry sign-in emails and
+# tracebacks that can include a database password. It is a separate key class:
+# denied at REST, denied on the domain tools, and the debug tools are denied to
+# every other key on every network.
+
+def _run_debug_guard(monkeypatch, tool, key_scope, external=False):
+    import json as _json
+    monkeypatch.setattr(mcp_server, "_key_scope", lambda raw: key_scope)
+    monkeypatch.setattr(mcp_server, "_key_ok", lambda raw: True)
+    monkeypatch.setattr(mcp_server, "_audit", lambda *a, **k: None)
+    result = {"code": None, "passed": False}
+
+    async def inner(scope, receive, send):
+        result["passed"] = True
+
+    _prev = mcp_server._expose_external
+    mcp_server._expose_external = lambda: external
+    try:
+        guarded = mcp_server._guard(inner, server_token="")
+    finally:
+        mcp_server._expose_external = _prev
+
+    body = _json.dumps(tool if isinstance(tool, list) else
+                       {"method": "tools/call", "params": {"name": tool}}).encode()
+    pending = [{"type": "http.request", "body": body, "more_body": False}]
+
+    async def receive():
+        return pending.pop(0) if pending else {"type": "http.disconnect"}
+
+    async def send(msg):
+        if msg["type"] == "http.response.start":
+            result["code"] = msg["status"]
+
+    headers = [(b"authorization", b"Bearer x")] if key_scope else []
+    scope = {"type": "http", "method": "POST", "path": "/messages/", "headers": headers}
+    asyncio.run(guarded(scope, receive, send))
+    return result
+
+
+def test_debug_key_may_call_a_debug_tool(monkeypatch):
+    r = _run_debug_guard(monkeypatch, "debug_recent_logs", "debug")
+
+    assert r["passed"] is True
+
+
+def test_debug_key_may_not_call_a_domain_tool(monkeypatch):
+    r = _run_debug_guard(monkeypatch, "search_recipes", "debug")
+
+    assert r["code"] == 403 and r["passed"] is False
+
+
+@pytest.mark.parametrize("scope", ["full", "mcp"])
+def test_a_normal_key_may_not_call_a_debug_tool(monkeypatch, scope):
+    """Least privilege in both directions — otherwise any Assist key could read
+    the logs and 'debug only' would be a lie."""
+    r = _run_debug_guard(monkeypatch, "debug_recent_logs", scope)
+
+    assert r["code"] == 403 and r["passed"] is False
+
+
+def test_an_unauthenticated_caller_may_not_call_a_debug_tool(monkeypatch):
+    """The case that motivated always installing the guard: with external
+    exposure off, myMeal previously installed NO guard at all."""
+    r = _run_debug_guard(monkeypatch, "debug_recent_logs", None)
+
+    assert r["code"] == 403 and r["passed"] is False
+
+
+def test_domain_tools_stay_open_internally(monkeypatch):
+    """Voice control must keep working without setup on the HA network."""
+    r = _run_debug_guard(monkeypatch, "search_recipes", None)
+
+    assert r["passed"] is True
+
+
+def test_a_batch_cannot_smuggle_a_domain_tool_past_a_debug_key(monkeypatch):
+    r = _run_debug_guard(monkeypatch, [
+        {"method": "tools/call", "params": {"name": "debug_recent_logs"}},
+        {"method": "tools/call", "params": {"name": "create_recipe"}},
+    ], "debug")
+
+    assert r["code"] == 403 and r["passed"] is False

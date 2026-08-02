@@ -490,7 +490,7 @@ async function setAdmin(m, makeAdmin) {
 // --- API keys (machine-client tokens: HACS integration, MCP, Edibl link) ---
 const keys = ref([])
 const newKeyName = ref('')
-const newKeyScope = ref('full')      // full (REST+MCP) | rest | mcp
+const newKeyScope = ref('full')      // full (REST+MCP) | rest | mcp | debug
 const newKeyAccess = ref('write')    // write (read+mutate) | read (read-only)
 const mintedKey = ref(null)          // raw token, shown once
 const keysBusy = ref(false)
@@ -504,7 +504,8 @@ async function mintKey() {
   try {
     const r = await api.post('/tokens', {
       name: newKeyName.value || 'Connected app', scope: newKeyScope.value,
-      access: newKeyAccess.value })
+      // A debug key only ever reads.
+      access: newKeyScope.value === 'debug' ? 'read' : newKeyAccess.value })
     mintedKey.value = r.token
     newKeyName.value = ''
     newKeyScope.value = 'full'
@@ -886,14 +887,22 @@ async function findOllama() {
         <option value="full">Full (REST + MCP)</option>
         <option value="rest">REST only</option>
         <option value="mcp">MCP only</option>
+        <option value="debug">Debug only (reads logs)</option>
       </select>
-      <select v-model="newKeyAccess" aria-label="Key access">
+      <select v-model="newKeyAccess" aria-label="Key access" :disabled="newKeyScope === 'debug'">
         <option value="write">Read &amp; write</option>
         <option value="read">Read only</option>
       </select>
       <button type="button" class="secondary" :disabled="keysBusy" @click="mintKey">Create key</button>
     </div>
-    <p class="muted" style="font-size:0.78rem;max-width:520px;margin:-4px 0 0">
+    <p v-if="newKeyScope === 'debug'" class="muted" style="font-size:0.78rem;max-width:520px;margin:-4px 0 0">
+      A <strong>Debug</strong> key reads this add-on’s own logs, recent errors and
+      timings — and nothing else. It can’t reach the REST API or the recipe tools.
+      Logs can include sign-in email addresses and error details, so treat it like a
+      password and delete it when you’re done. Turn on <code>mcp_debug_tools</code>
+      in the add-on configuration for it to do anything.
+    </p>
+    <p v-else class="muted" style="font-size:0.78rem;max-width:520px;margin:-4px 0 0">
       Use an <strong>MCP</strong>-scoped key to expose the MCP server outside Home
       Assistant — it works only against the MCP endpoint, not the REST API.
     </p>

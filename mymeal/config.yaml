@@ -59,6 +59,7 @@ options:
   database_url: ""
   use_shared_postgres: false
   postgres_provision_token: ""
+  mcp_debug_tools: false
 schema:
   disable_auth: bool
   allow_registration: bool
@@ -69,6 +70,11 @@ schema:
   # Expose the MCP server outside Home Assistant. On = every request needs a
   # Full/MCP API key and the server won't start without one. Also map port 7851.
   mcp_expose_external: bool
+  # Let an AI client read this add-on's own logs over MCP to help debug a
+  # problem. Requires an API key with the 'debug' scope even inside Home
+  # Assistant: logs contain sign-in emails and errors that can include
+  # database credentials. Turn it off again when you are done.
+  mcp_debug_tools: bool
   ai_provider: "list(|claude|ollama|ollama_cloud|openai)?"
   # AI provider config can be set here OR in the app UI (the app remembers UI
   # changes and they override these). Keys use HA's masked password type.

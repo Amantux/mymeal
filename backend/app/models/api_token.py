@@ -23,7 +23,16 @@ TOKEN_PREFIX = "mm_"
 #   full — REST API + MCP (default; the legacy all-access key)
 #   rest — REST API only (rejected at the MCP server)
 #   mcp  — MCP server only (rejected at the REST API)
-TOKEN_SCOPES = ("full", "rest", "mcp")
+# scope = WHERE a key works, access = WHAT it may do (two orthogonal dimensions).
+#   full  — REST + MCP domain tools
+#   rest  — REST only
+#   mcp   — MCP domain tools only
+#   debug — the MCP debug tools ONLY: reads this instance's own logs, metrics and
+#           diagnostics, and nothing else. Rejected at REST and on the domain
+#           tools. Logs carry sign-in emails and tracebacks that can contain a
+#           database password, so this is a separate class rather than an extra
+#           power granted to a full key.
+TOKEN_SCOPES = ("full", "rest", "mcp", "debug")
 
 # What a key may DO wherever its scope lets it work (orthogonal to scope):
 #   write — read + mutate (default; every pre-existing key)
