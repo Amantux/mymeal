@@ -888,6 +888,13 @@ def _require_token(asgi_app, token: str):
 
 
 if __name__ == "__main__":
+    # Configure logging explicitly here: this process builds its Flask app
+    # LAZILY (only when a key lookup needs the DB), so waiting for create_app
+    # meant the sidecar produced no log file at all.
+    from app.logging_setup import configure as _configure_logging
+    from app.settings import load_settings as _load_settings
+    _configure_logging(_load_settings(), process="mcp")
+
     host = os.environ.get("MYMEAL_MCP_HOST", "0.0.0.0")
     port = int(os.environ.get("MYMEAL_MCP_PORT", "7851"))
     server_token = os.environ.get("MYMEAL_MCP_SERVER_TOKEN", "")

@@ -121,6 +121,7 @@ docker compose run --rm app python3 -m app.config_check
 |---|---|---|---|---|---|
 | `MYMEAL_FRONTEND_DIST` | string | `_(empty)_` | no | yes | Path to the built SPA. Blank = the location baked into the image. |
 | `MYMEAL_LOG_LEVEL` | enum/int | `INFO` | no | yes | Application log level. |
+| `MYMEAL_SLOW_REQUEST_MS` | enum/int | `1000` | no | yes | Log a line for any request slower than this many milliseconds. 0 logs every request, which fills the log on a busy instance — the gunicorn access log already covers the ordinary case. |
 | `MYMEAL_DEBUG` | boolean | `false` | no | yes | Flask debug mode. NEVER enable in production — it exposes an interactive debugger that executes arbitrary code. |
 
 ## Security notes

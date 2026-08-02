@@ -335,6 +335,10 @@ FIELDS: tuple[Field, ...] = (
           "Path to the built SPA. Blank = the location baked into the image."),
     Field("LOG_LEVEL", one_of("DEBUG", "INFO", "WARNING", "ERROR"), "INFO",
           "Application log level."),
+    Field("SLOW_REQUEST_MS", int_between(0, 600000), 1000,
+          "Log a line for any request slower than this many milliseconds. 0 "
+          "logs every request, which fills the log on a busy instance — the "
+          "gunicorn access log already covers the ordinary case."),
     Field("DEBUG", parse_bool, False,
           "Flask debug mode. NEVER enable in production — it exposes an "
           "interactive debugger that executes arbitrary code."),

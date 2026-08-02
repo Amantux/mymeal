@@ -37,7 +37,7 @@ GROUPS = [
     ("Edibl integration (companion inventory app)", ["EDIBL_URL", "EDIBL_API_TOKEN"]),
     ("Serving", ["WORKERS", "THREADS", "WORKER_ENABLED", "TIMEOUT", "GRACEFUL_TIMEOUT",
                  "MAX_UPLOAD_MB", "HTTP_TIMEOUT_SECONDS", "MAX_IMPORT_BYTES"]),
-    ("Misc", ["FRONTEND_DIST", "LOG_LEVEL", "DEBUG"]),
+    ("Misc", ["FRONTEND_DIST", "LOG_LEVEL", "SLOW_REQUEST_MS", "DEBUG"]),
 ]
 
 

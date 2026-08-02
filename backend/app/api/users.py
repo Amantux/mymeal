@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 
 from flask import Blueprint, request, jsonify, current_app, abort
@@ -14,6 +15,10 @@ from ..auth import (
     create_token,
 )
 from ..schemas.serializers import user_out
+
+from ..logsafe import mask_email, scrub
+
+_LOGGER = logging.getLogger("mymeal.auth")
 
 bp = Blueprint("users", __name__)
 
@@ -94,7 +99,15 @@ def login():
     password = data.get("password") or request.form.get("password") or ""
     user = db.session.query(User).filter_by(email=email).first()
     if not user or not verify_password(password, user.password_hash):
+        # myMeal logged no auth events at all, unlike its siblings — so a
+        # brute-force attempt left no trace anywhere. The address is masked and
+        # the client IP scrubbed: both are attacker-controlled and land in a
+        # file the debug tooling can read.
+        _LOGGER.warning("login failed for %s from %s", mask_email(email),
+                        scrub(request.remote_addr))
         return jsonify({"error": "invalid credentials"}), 401
+    _LOGGER.info("login ok for %s from %s", mask_email(user.email),
+                 scrub(request.remote_addr))
     token = create_token(user)
     return jsonify({"token": f"Bearer {token}", "expiresAt": None})
 
