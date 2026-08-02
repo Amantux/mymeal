@@ -88,7 +88,7 @@ def _log_startup(settings):
     # Alembic's fileConfig gets there first during migrations. configure()
     # installs our own handlers explicitly — including a file sink the app can
     # read back, since stdout is captured by the container, not by us.
-    configure_logging(settings, process=os.environ.get("MYMEAL_PROC", "app"))
+    configure_logging(settings, process="app")
     db_kind = "sqlite" if settings.sqlalchemy_uri.startswith("sqlite") else \
         settings.sqlalchemy_uri.split("://", 1)[0]
     logger.info(

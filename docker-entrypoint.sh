@@ -99,7 +99,7 @@ if [ "$RESOLVED_MCP_ENABLED" = "true" ] && [ -f mcp_server.py ]; then
     MYMEAL_MCP_PORT="$RESOLVED_MCP_PORT" \
     MYMEAL_MCP_SERVER_TOKEN="$MCP_SERVER_TOKEN" \
     MYMEAL_MCP_EXPOSE_EXTERNAL="$RESOLVED_MCP_EXPOSE_EXTERNAL" \
-    MYMEAL_PROC=mcp $RUN_AS python3 mcp_server.py &
+    $RUN_AS python3 mcp_server.py &
   MCP_PID=$!
   echo "myMeal: MCP server started (pid $MCP_PID) on :${RESOLVED_MCP_PORT}/sse"
 fi
