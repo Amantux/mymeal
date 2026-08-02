@@ -53,22 +53,87 @@ def _post(path: str, json: dict | None = None):
     return r.json()
 
 
+def _put(path: str, json: dict | None = None):
+    r = _HTTP.put(path, json=json or {})
+    r.raise_for_status()
+    return r.json()
+
+
 def _delete(path: str) -> bool:
     r = _HTTP.delete(path)
     r.raise_for_status()
     return True
 
 
+def _api_error(exc: httpx.HTTPStatusError) -> str:
+    """The API's own error message, or a short status line — never a raw body dump."""
+    try:
+        message = str((exc.response.json() or {}).get("error") or "").strip()
+    except ValueError:
+        message = ""
+    return message or f"HTTP {exc.response.status_code}"
+
+
+def _search_recipes(name_or_id: str) -> list[dict]:
+    return _get("/search", {"q": name_or_id, "types": "recipe"}).get("results", [])
+
+
 def _resolve_recipe(name_or_id: str):
-    """Find one recipe by id/slug (direct) or name (first search hit)."""
+    """Find one recipe by id/slug (direct) or name (first search hit).
+
+    Convenient but a guess: "chicken" resolves to whichever chicken recipe ranks
+    first. Fine for reads and for reversible edits; destructive tools must use
+    `_resolve_recipe_strict` instead.
+    """
     try:
         return _get(f"/recipes/{name_or_id}")
     except httpx.HTTPStatusError:
         pass
-    results = _get("/search", {"q": name_or_id, "types": "recipe"}).get("results", [])
+    results = _search_recipes(name_or_id)
     if not results:
         return None
     return _get(f"/recipes/{results[0]['id']}")
+
+
+def _resolve_recipe_strict(name_or_id: str):
+    """``(recipe, candidates)`` — resolution that never guesses.
+
+    An id/slug, a name matching exactly one recipe, or a name that matches one
+    of several *exactly* (case-insensitively) resolves to that recipe with no
+    candidates. Anything else resolves to ``(None, candidates)`` so the caller
+    can ask which one was meant rather than destroying the wrong recipe.
+    """
+    try:
+        return _get(f"/recipes/{name_or_id}"), []
+    except httpx.HTTPStatusError:
+        pass
+    results = _search_recipes(name_or_id)
+    if not results:
+        return None, []
+    if len(results) == 1:
+        return _get(f"/recipes/{results[0]['id']}"), []
+    wanted = name_or_id.strip().casefold()
+    exact = [r for r in results if str(r.get("name", "")).strip().casefold() == wanted]
+    if len(exact) == 1:
+        return _get(f"/recipes/{exact[0]['id']}"), []
+    return None, results
+
+
+def _ambiguous(name_or_id: str, candidates: list[dict]) -> str:
+    """Ask which recipe was meant. Returned INSTEAD of acting, so nothing is lost."""
+    shown = candidates[:8]
+    listed = "; ".join(f"{c.get('name')} (id {c.get('id')})" for c in shown)
+    more = "" if len(candidates) <= len(shown) else f"; and {len(candidates) - len(shown)} more"
+    return (f"{len(candidates)} recipes match '{name_or_id}': {listed}{more}. "
+            "Nothing was changed — ask the user which one, then pass its id.")
+
+
+def _version_count(recipe_id: str) -> int | None:
+    """How many saved versions a delete would take with it; None if unreadable."""
+    try:
+        return len(_get(f"/recipes/{recipe_id}/versions").get("items", []))
+    except httpx.HTTPStatusError:
+        return None
 
 
 def _default_list():
@@ -228,6 +293,266 @@ def add_recipe(name: str, ingredients: list | None = None,
 
 
 @mcp.tool()
+def update_recipe(name_or_id: str, name: str | None = None,
+                  ingredients: list | None = None, steps: list | None = None,
+                  servings: int | None = None) -> str:
+    """Edit an existing recipe in place. Only the fields you pass are changed.
+
+    WARNING: `ingredients` and `steps` REPLACE the whole list when supplied — omit
+    them unless you are passing the complete new list. To change a single line,
+    call get_recipe first and send the full edited list back. The previous state
+    is snapshotted automatically, so restore_recipe_version can undo this.
+    """
+    recipe = _resolve_recipe(name_or_id)
+    if not recipe:
+        return f"No recipe matching '{name_or_id}'."
+    body: dict = {}
+    if name:
+        body["name"] = name
+    if ingredients is not None:
+        body["ingredients"] = [{"display": str(x)} for x in ingredients]
+    if steps is not None:
+        body["steps"] = [{"text": str(x)} for x in steps]
+    if servings is not None:
+        body["servings"] = servings
+    if not body:
+        return ("Nothing to update — pass a new name, ingredients, steps, "
+                "or servings.")
+    try:
+        r = _put(f"/recipes/{recipe['id']}", body)
+    except httpx.HTTPStatusError as exc:
+        return f"Could not update {recipe['name']}: {_api_error(exc)}"
+    changed = ", ".join(sorted(body))
+    return f"Updated '{r.get('name', recipe['name'])}' ({changed})."
+
+
+@mcp.tool()
+def delete_recipe(name_or_id: str, confirm: bool = False) -> str:
+    """Permanently delete a recipe — its ingredients, steps and EVERY saved
+    version and experiment go with it. There is no undo.
+
+    This takes two calls, and that is not optional:
+
+    1. Call it WITHOUT `confirm`. Nothing is deleted; you get a preview of
+       exactly what would be lost.
+    2. Show that preview to the user in your reply and wait for their answer.
+    3. Only if they agree, call again with confirm=true.
+
+    Never pass confirm=true on the first call, and never decide to confirm on
+    the user's behalf — a wrong delete cannot be recovered.
+
+    If the name matches several recipes this returns the candidates and deletes
+    nothing; ask which one and pass its id.
+    """
+    recipe, candidates = _resolve_recipe_strict(name_or_id)
+    if candidates:
+        return _ambiguous(name_or_id, candidates)
+    if not recipe:
+        return f"No recipe matching '{name_or_id}'."
+    if not confirm:
+        n_versions = _version_count(recipe["id"])
+        saved = ("an unknown number of saved versions" if n_versions is None
+                 else f"{n_versions} saved version(s)/experiment(s)")
+        return (f"About to permanently delete '{recipe['name']}' — "
+                f"{len(recipe.get('ingredients', []))} ingredient(s), "
+                f"{len(recipe.get('steps', []))} step(s) and {saved}. "
+                "This cannot be undone. Show this to the user; if they agree, "
+                "call delete_recipe again with confirm=true.")
+    try:
+        _delete(f"/recipes/{recipe['id']}")
+    except httpx.HTTPStatusError as exc:
+        return f"Could not delete {recipe['name']}: {_api_error(exc)}"
+    return f"Deleted recipe '{recipe['name']}'."
+
+
+# --- versions & experiments ------------------------------------------------- #
+# Every edit auto-snapshots the previous state (browsable history). An
+# "experiment" is a deliberate branch you can tweak and cook without touching the
+# live recipe, then promote or discard.
+def _version_or_error(recipe_id: str, version_id: str):
+    """(version_dict, None) or (None, message). Includes the stored snapshot."""
+    try:
+        return _get(f"/recipes/{recipe_id}/versions/{version_id}"), None
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return None, f"No version '{version_id}' on that recipe."
+        return None, f"Could not read that version: {_api_error(exc)}"
+
+
+@mcp.tool()
+def list_recipe_versions(name_or_id: str) -> dict:
+    """List a recipe's saved versions — automatic edit history plus experiments.
+
+    Use the returned `id` with update_experiment, add_experiment_feedback,
+    promote_experiment, restore_recipe_version or discard_experiment.
+    """
+    recipe = _resolve_recipe(name_or_id)
+    if not recipe:
+        return {"error": f"No recipe matching '{name_or_id}'."}
+    items = _get(f"/recipes/{recipe['id']}/versions").get("items", [])
+    return {
+        "recipe": recipe["name"],
+        "versions": [
+            {
+                "id": v["id"],
+                "kind": v.get("kind"),          # "auto" (history) or "experiment"
+                "status": v.get("status"),      # open | promoted | discarded
+                "label": v.get("label"),
+                "rating": v.get("rating"),
+            }
+            for v in items
+        ],
+    }
+
+
+@mcp.tool()
+def start_recipe_experiment(name_or_id: str, label: str, note: str = "") -> str:
+    """Branch an experiment from a recipe: an editable copy of it as it is now.
+
+    Tweak it with update_experiment, cook it, record how it went with
+    add_experiment_feedback, then promote_experiment to adopt it. The live recipe
+    is untouched until you promote.
+    """
+    recipe = _resolve_recipe(name_or_id)
+    if not recipe:
+        return f"No recipe matching '{name_or_id}'."
+    v = _post(f"/recipes/{recipe['id']}/versions",
+              {"label": label, "note": note})
+    return (f"Started experiment '{v.get('label') or label}' on "
+            f"{recipe['name']} (version id {v['id']}).")
+
+
+@mcp.tool()
+def update_experiment(name_or_id: str, version_id: str, name: str | None = None,
+                      ingredients: list | None = None, steps: list | None = None,
+                      servings: int | None = None) -> str:
+    """Edit an experiment's contents. The LIVE recipe is not changed.
+
+    Only the fields you pass are altered — the rest of the experiment's snapshot
+    is preserved. As with update_recipe, passing `ingredients` or `steps`
+    replaces that whole list. Only open experiments are editable.
+    """
+    recipe = _resolve_recipe(name_or_id)
+    if not recipe:
+        return f"No recipe matching '{name_or_id}'."
+    version, err = _version_or_error(recipe["id"], version_id)
+    if err:
+        return err
+    # Merge into the EXISTING snapshot: the endpoint stores what it is sent, so
+    # sending only the changed keys would drop everything else.
+    snap = dict(version.get("snapshot") or {})
+    if name:
+        snap["name"] = name
+    if ingredients is not None:
+        snap["ingredients"] = [{"display": str(x)} for x in ingredients]
+    if steps is not None:
+        snap["steps"] = [{"text": str(x)} for x in steps]
+    if servings is not None:
+        snap["servings"] = servings
+    try:
+        _put(f"/recipes/{recipe['id']}/versions/{version_id}", snap)
+    except httpx.HTTPStatusError as exc:
+        return f"Could not edit that experiment: {_api_error(exc)}"
+    return (f"Updated experiment '{version.get('label') or version_id}' "
+            f"— {recipe['name']} itself is unchanged.")
+
+
+@mcp.tool()
+def add_experiment_feedback(name_or_id: str, version_id: str,
+                            rating: int | None = None, feedback: str = "") -> str:
+    """Record how a version turned out: a 0-5 rating and/or free-text notes."""
+    recipe = _resolve_recipe(name_or_id)
+    if not recipe:
+        return f"No recipe matching '{name_or_id}'."
+    body: dict = {}
+    if rating is not None:
+        body["rating"] = rating
+    if feedback:
+        body["feedback"] = feedback
+    if not body:
+        return "Tell me a rating (0-5) or some feedback to record."
+    try:
+        _post(f"/recipes/{recipe['id']}/versions/{version_id}/feedback", body)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return f"No version '{version_id}' on {recipe['name']}."
+        return f"Could not record that feedback: {_api_error(exc)}"
+    return f"Recorded feedback on that version of {recipe['name']}."
+
+
+@mcp.tool()
+def promote_experiment(name_or_id: str, version_id: str) -> str:
+    """Adopt an experiment as the live recipe.
+
+    Reversible: the recipe's current state is snapshotted first, so
+    restore_recipe_version can put it back.
+    """
+    recipe = _resolve_recipe(name_or_id)
+    if not recipe:
+        return f"No recipe matching '{name_or_id}'."
+    try:
+        r = _post(f"/recipes/{recipe['id']}/versions/{version_id}/promote")
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return f"No version '{version_id}' on {recipe['name']}."
+        return f"Could not promote that version: {_api_error(exc)}"
+    return (f"Promoted that version — '{r.get('name', recipe['name'])}' is now "
+            "the live recipe. The previous version is still in its history.")
+
+
+@mcp.tool()
+def restore_recipe_version(name_or_id: str, version_id: str) -> str:
+    """Roll a recipe back to any saved version (edit history or experiment).
+
+    Reversible: the current state is snapshotted before the restore.
+    """
+    recipe = _resolve_recipe(name_or_id)
+    if not recipe:
+        return f"No recipe matching '{name_or_id}'."
+    try:
+        r = _post(f"/recipes/{recipe['id']}/versions/{version_id}/restore")
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return f"No version '{version_id}' on {recipe['name']}."
+        return f"Could not restore that version: {_api_error(exc)}"
+    return f"Restored '{r.get('name', recipe['name'])}' to that version."
+
+
+@mcp.tool()
+def discard_experiment(name_or_id: str, version_id: str,
+                       confirm: bool = False) -> str:
+    """Permanently delete one saved version or experiment, with its notes and
+    rating. The live recipe is unaffected, but the version cannot be recovered.
+
+    Two calls, same as delete_recipe: call it WITHOUT `confirm` to get a preview,
+    show that to the user, and only call again with confirm=true once they
+    agree. Never confirm on your own initiative.
+    """
+    recipe, candidates = _resolve_recipe_strict(name_or_id)
+    if candidates:
+        return _ambiguous(name_or_id, candidates)
+    if not recipe:
+        return f"No recipe matching '{name_or_id}'."
+    version, err = _version_or_error(recipe["id"], version_id)
+    if err:
+        return err
+    label = version.get("label") or version.get("kind") or version_id
+    if not confirm:
+        return (f"About to permanently delete the '{label}' version of "
+                f"{recipe['name']}, along with its notes and rating. "
+                f"{recipe['name']} itself is unaffected, but this version cannot "
+                "be recovered. Show this to the user; if they agree, call "
+                "discard_experiment again with confirm=true.")
+    try:
+        _delete(f"/recipes/{recipe['id']}/versions/{version_id}")
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return f"No version '{version_id}' on {recipe['name']}."
+        return f"Could not discard that version: {_api_error(exc)}"
+    return f"Discarded the '{label}' version of {recipe['name']}."
+
+
+@mcp.tool()
 def plan_meal(name_or_id: str, day: str = "", meal_type: str = "dinner") -> str:
     """Add a recipe to the meal plan for a day (YYYY-MM-DD, defaults to today)."""
     when = day or datetime.date.today().isoformat()
@@ -379,6 +704,7 @@ def _mcp_capable_key_exists() -> bool:
 READ_TOOLS = frozenset({
     "search_recipes", "get_recipe", "whats_for_dinner", "what_can_i_cook",
     "get_shopping_list", "list_inventory", "start_cooking", "next_step",
+    "list_recipe_versions",
 })
 
 

@@ -61,6 +61,37 @@ off. ⚠️ The MCP tools can modify your recipes and meal plans, so treat the k
 like a password and prefer putting it behind your own HTTPS reverse proxy when
 crossing untrusted networks.
 
+### What an MCP client can do
+
+**Recipes** — search, read, create, edit and delete them:
+`search_recipes`, `get_recipe`, `add_recipe`, `update_recipe`, `delete_recipe`.
+`update_recipe` changes only the fields you pass, but supplying `ingredients` or
+`steps` replaces that whole list.
+
+Deleting takes **two steps**: the assistant first gets a preview of what would be
+lost (ingredient and step counts, plus how many saved versions go with it) and
+has to come back to you before anything is removed. If the name you said matches
+more than one recipe — "delete the chicken one" — it lists the matches and
+deletes nothing until you pick one.
+
+**Versions & experiments** — every edit is snapshotted automatically, and you can
+branch an experiment to try a variation without touching the live recipe:
+`list_recipe_versions`, `start_recipe_experiment`, `update_experiment`,
+`add_experiment_feedback`, `promote_experiment`, `restore_recipe_version`,
+`discard_experiment`. Promote and restore are reversible — the previous state is
+snapshotted first, so you can always roll back. `discard_experiment` deletes a
+version for good, so like `delete_recipe` it previews and waits for your yes.
+
+**Planning, shopping and cooking** — `whats_for_dinner`, `what_can_i_cook`,
+`plan_week`, `plan_meal`, `remove_planned_meal`, `get_shopping_list`,
+`add_to_shopping_list`, `remove_from_shopping_list`, `list_inventory`,
+`start_cooking`, `next_step`.
+
+A **Read only** key may only call the query tools (`search_recipes`,
+`get_recipe`, `list_recipe_versions`, `whats_for_dinner`, `what_can_i_cook`,
+`get_shopping_list`, `list_inventory`, `start_cooking`, `next_step`); every other
+tool is refused.
+
 ### Turning on the AI features
 
 myMeal works fully without AI — you just lose recipe-import-from-URL,
@@ -154,6 +185,12 @@ own network, so use the add-on's hostname:
 ```
 http://<mymeal-addon-hostname>:7851/sse
 ```
+
+You shouldn't have to work that hostname out. While the add-on is running it
+publishes the exact SSE URL (and the MCP port, plus `mcp_server_token` when you've
+set one) to Home Assistant over Supervisor discovery, alongside the details the
+companion integration already uses — so the address is available rather than
+guessed. Nothing is published when `enable_mcp` is off.
 
 Prefer a fixed address, or connecting from another machine? Open the add-on's
 **Network** tab, give port `7851` a host port, and use
