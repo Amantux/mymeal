@@ -14,6 +14,25 @@ export function apiUrl(path) {
   return apiBase() + path
 }
 
+// Turn a server-returned media path into one the browser can actually fetch.
+//
+// Serializers return root-absolute paths like "/api/v1/recipes/<id>/image".
+// That is correct at "/" and WRONG behind Home Assistant ingress, where the app
+// is served from "/api/hassio_ingress/<token>/" — the browser would request the
+// path at the HA root, which is not this add-on, and the image 404s. This is
+// why recipe thumbnails were blank in the list and dashboard while the detail
+// page (which builds its URL with apiUrl) worked.
+//
+// Accepts either shape so callers cannot get it wrong: a value that already
+// carries the /api/v1 prefix is rebased, anything else is treated as a path
+// relative to the API root.
+export function mediaUrl(path) {
+  if (!path) return null
+  if (/^https?:\/\//i.test(path)) return path
+  const rel = path.startsWith('/api/v1/') ? path.slice('/api/v1'.length) : path
+  return apiUrl(rel.startsWith('/') ? rel : '/' + rel)
+}
+
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY)
 }

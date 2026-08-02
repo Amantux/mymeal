@@ -5,7 +5,7 @@
 // rather than looking broken.
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { api } from '../api'
+import { api, mediaUrl } from '../api'
 import { useUI } from '../stores/ui'
 import EmptyState from '../components/EmptyState.vue'
 import ErrorState from '../components/ErrorState.vue'
@@ -249,7 +249,7 @@ function askAssistant() {
           @keydown.space.prevent="router.push(`/recipes/${r.id}`)"
         >
           <div class="thumb">
-            <img v-if="r.image" :src="r.image" alt="" />
+            <img v-if="r.image" :src="mediaUrl(r.image)" alt="" />
             <span v-else>🍽️</span>
           </div>
           <div class="body">

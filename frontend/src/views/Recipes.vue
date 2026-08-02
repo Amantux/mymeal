@@ -1,7 +1,7 @@
 <script setup>
 import { ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { api } from '../api'
+import { api, mediaUrl } from '../api'
 import EmptyState from '../components/EmptyState.vue'
 import ErrorState from '../components/ErrorState.vue'
 import { useLoader } from '../composables/useLoader'
@@ -81,7 +81,7 @@ watch(category, reload)
       @keydown.space.prevent="router.push(`/recipes/${r.id}`)"
     >
       <div class="thumb">
-        <img v-if="r.image" :src="r.image" alt="" />
+        <img v-if="r.image" :src="mediaUrl(r.image)" alt="" />
         <span v-else>🍽️</span>
       </div>
       <div class="body">
