@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.2.7
+
+- Key router-view by path so :id → :id navigation remounts.
+
 ## 1.2.6
 
 - Confidence-tiered recipe resolution ranked by tags and description.
