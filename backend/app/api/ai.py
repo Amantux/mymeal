@@ -7,9 +7,10 @@ import json
 from datetime import date, timedelta
 
 import httpx
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app, stream_with_context
 
 from ..extensions import db
+from ..services import conversions, ingredient_ai
 from ..models import Recipe, MealPlanEntry
 from ..auth import login_required, owner_required, current_group
 from ..schemas.serializers import recipe_out, mealplan_entry_out
@@ -205,6 +206,116 @@ def list_ai_models():
     return jsonify({"provider": eff.AI_PROVIDER, "models": list_models(eff)})
 
 
+def _import_events(data, group_id):
+    """Run an import, yielding ``(event, payload)`` as each stage completes.
+
+    One implementation behind two endpoints: ``/ai/import`` drains this and
+    returns the terminal event as JSON, ``/ai/import/stream`` writes each event
+    out as it happens. Anything else would be two import paths that drift.
+
+    The terminal event is always ``done`` or ``error`` — an error is *yielded*,
+    not raised, because in the streaming case the response headers have already
+    been sent and raising would leave the client hanging on a truncated body.
+    """
+    url = str(data.get("url") or "").strip()
+    text = str(data.get("text") or "").strip()
+    query = str(data.get("query") or "").strip()
+    if not url and not text and not query:
+        yield "error", {"error": "provide a url, text, or a recipe name to import",
+                        "status": 422}
+        return
+
+    # Import by name: web-search the recipe, then import the best hit's URL.
+    if query and not url and not text:
+        from ..services import websearch
+        if not websearch.enabled():
+            yield "error", {"error": "Web search isn't configured — add an Ollama "
+                                     "search key in Settings to import by name.",
+                            "status": 503}
+            return
+        yield "stage", {"stage": "searching", "detail": query}
+        results = websearch.web_search(f"{query} recipe")
+        url = next((str(r.get("url") or "") for r in results if r.get("url")), "")
+        if not url:
+            yield "error", {"error": f"No recipe found online for “{query}”.",
+                            "status": 404}
+            return
+
+    # A provider is only needed for the AI fallback; resolve leniently so a
+    # JSON-LD URL import still works without one.
+    provider = None
+    try:
+        provider = get_provider()
+    except ProviderError:
+        provider = None
+
+    yield "stage", {"stage": "fetching", "detail": url or "pasted text"}
+    try:
+        payload = import_recipe(url=url, text=text, provider=provider)
+    except UnsafeURLError as exc:
+        # Must be checked before ValueError — UnsafeURLError subclasses it.
+        yield "error", {"error": str(exc), "status": 400}
+        return
+    except (httpx.HTTPError, httpx.InvalidURL, UnicodeError) as exc:
+        # Also before ValueError: UnicodeError subclasses it, so this arm was
+        # previously unreachable and a malformed-encoding URL was reported as
+        # "no AI provider configured" (503) instead of a fetch failure (502).
+        yield "error", {"error": f"could not fetch the URL: {exc}", "status": 502}
+        return
+    except ProviderError as exc:
+        yield "error", {"error": str(exc), "status": 502}
+        return
+    except ValueError:
+        # Reached the AI path with no provider configured.
+        yield "error", {"error": "no AI provider configured for this import",
+                        "status": 503}
+        return
+
+    yield "stage", {"stage": "parsing"}
+    displays = [str(row.get("display") or "")
+                for row in (payload.get("ingredients") or [])]
+
+    # The structuring pass, over only the lines the deterministic parser could
+    # not read. Both of these are strictly additive and fail open: with no
+    # provider and no search key they do nothing and the import is byte-for-byte
+    # what it was before.
+    unreadable = [d for d in displays if d and ingredient_ai.needs_structuring(d)]
+    proposals = {}
+    if unreadable and provider is not None:
+        yield "stage", {"stage": "structuring", "count": len(unreadable)}
+        proposals = ingredient_ai.structure(displays, provider=provider)
+
+    name = payload.get("name") or "Imported Recipe"
+    recipe = Recipe(
+        name=name,
+        slug=unique_slug(Recipe, group_id, name),
+        group_id=group_id,
+    )
+    db.session.add(recipe)
+    _apply(recipe, {k: v for k, v in payload.items() if k != "name"})
+    db.session.commit()
+
+    # After the save, never before: a conversion lookup is a network call and
+    # must not be able to lose the user's recipe if it hangs or fails.
+    try:
+        yield "stage", {"stage": "converting"}
+        if conversions.learn_for_lines(displays, group_id):
+            db.session.commit()
+    except Exception:  # noqa: BLE001 - the recipe is already safely saved
+        db.session.rollback()
+
+    # Download the source image after the recipe has an id (filename = <id>.ext).
+    # Best-effort: never fail the import over a missing/oversized image.
+    if payload.get("imageUrl"):
+        download_image_to_recipe(recipe, payload["imageUrl"])
+        db.session.commit()
+
+    yield "done", {**recipe_out(recipe),
+                   # Proposals are transient and per-import — they live in the
+                   # response for the confirmation step, not in a table.
+                   "ingredientProposals": list(proposals.values())}
+
+
 @bp.post("/ai/import")
 @login_required
 def import_recipe_endpoint():
@@ -215,63 +326,42 @@ def import_recipe_endpoint():
     provider configured.
     """
     data = request.get_json(force=True) or {}
-    # Coerce defensively — a non-string url/text must not 500.
-    url = str(data.get("url") or "").strip()
-    text = str(data.get("text") or "").strip()
-    query = str(data.get("query") or "").strip()
-    if not url and not text and not query:
-        return jsonify({"error": "provide a url, text, or a recipe name to import"}), 422
+    for event, payload in _import_events(data, current_group().id):
+        if event == "error":
+            return jsonify({"error": payload["error"]}), payload["status"]
+        if event == "done":
+            return jsonify(payload), 201
+    # Unreachable: the generator always ends with done or error.
+    return jsonify({"error": "import produced no result"}), 500
 
-    # Import by name: web-search the recipe, then import the best hit's URL.
-    if query and not url and not text:
-        from ..services import websearch
-        if not websearch.enabled():
-            return jsonify({"error": "Web search isn't configured — add an Ollama "
-                                     "search key in Settings to import by name."}), 503
-        results = websearch.web_search(f"{query} recipe")
-        url = next((str(r.get("url") or "") for r in results if r.get("url")), "")
-        if not url:
-            return jsonify({"error": f"No recipe found online for “{query}”."}), 404
 
-    # A provider is only needed for the AI fallback; resolve leniently so a
-    # JSON-LD URL import still works without one.
-    provider = None
-    try:
-        provider = get_provider()
-    except ProviderError:
-        provider = None
+@bp.post("/ai/import/stream")
+@login_required
+def import_recipe_stream_endpoint():
+    """The same import, reporting each stage as it completes (NDJSON).
 
-    try:
-        payload = import_recipe(url=url, text=text, provider=provider)
-    except UnsafeURLError as exc:
-        # Must be checked before ValueError — UnsafeURLError subclasses it.
-        return jsonify({"error": str(exc)}), 400
-    except (httpx.HTTPError, httpx.InvalidURL, UnicodeError) as exc:
-        # Also before ValueError: UnicodeError subclasses it, so this arm was
-        # previously unreachable and a malformed-encoding URL was reported as
-        # "no AI provider configured" (503) instead of a fetch failure (502).
-        return jsonify({"error": f"could not fetch the URL: {exc}"}), 502
-    except ProviderError as exc:
-        return jsonify({"error": str(exc)}), 502
-    except ValueError:
-        # Reached the AI path with no provider configured.
-        return jsonify({"error": "no AI provider configured for this import"}), 503
+    NDJSON rather than SSE for the same reason as chat: EventSource cannot POST
+    or carry an auth header. ``X-Accel-Buffering: no`` is load-bearing — behind
+    HA ingress the proxy otherwise buffers the whole response and the progress
+    the user is meant to see arrives all at once, at the end.
+    """
+    data = request.get_json(force=True) or {}
+    group_id = current_group().id
 
-    name = payload.get("name") or "Imported Recipe"
-    recipe = Recipe(
-        name=name,
-        slug=unique_slug(Recipe, current_group().id, name),
-        group_id=current_group().id,
+    @stream_with_context
+    def generate():
+        try:
+            for event, payload in _import_events(data, group_id):
+                yield json.dumps({"type": event, **payload}) + "\n"
+        except Exception as exc:  # noqa: BLE001 - headers are already sent
+            current_app.logger.exception("import stream failed")
+            yield json.dumps({"type": "error", "error": str(exc), "status": 500}) + "\n"
+
+    return current_app.response_class(
+        generate(),
+        mimetype="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
     )
-    db.session.add(recipe)
-    _apply(recipe, {k: v for k, v in payload.items() if k != "name"})
-    db.session.commit()
-    # Download the source image after the recipe has an id (filename = <id>.ext).
-    # Best-effort: never fail the import over a missing/oversized image.
-    if payload.get("imageUrl"):
-        download_image_to_recipe(recipe, payload["imageUrl"])
-        db.session.commit()
-    return jsonify(recipe_out(recipe)), 201
 
 
 @bp.post("/ai/generate")
