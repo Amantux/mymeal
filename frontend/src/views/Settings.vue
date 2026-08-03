@@ -137,6 +137,36 @@ async function saveJobAi() {
 }
 onMounted(loadJobAi)
 
+// --- Learned unit conversions -------------------------------------------------
+// Every gram figure the app looked up on the web, with where it came from. A
+// conversion nobody can inspect is a conversion nobody should trust.
+const conversions = ref([])
+const conversionsBusy = ref('')
+
+async function loadConversions() {
+  try { conversions.value = await api.get('/conversions') } catch (e) { /* optional */ }
+}
+onMounted(loadConversions)
+
+async function confirmConversion(row) {
+  conversionsBusy.value = row.id
+  try {
+    Object.assign(row, await api.put(`/conversions/${row.id}`, { status: 'confirmed' }))
+    ui.toast(`Using ${row.gramsPerUnit} g per ${row.unit} of ${row.foodTerm}`)
+  } catch (e) { ui.error(e.message) } finally { conversionsBusy.value = '' }
+}
+
+async function forgetConversion(row) {
+  if (!confirm(`Forget "1 ${row.unit} of ${row.foodTerm} = ${row.gramsPerUnit} g"? `
+    + 'Weights using it stop showing, and the next import that needs it looks it up again.')) return
+  conversionsBusy.value = row.id
+  try {
+    await api.del(`/conversions/${row.id}`)
+    conversions.value = conversions.value.filter((c) => c.id !== row.id)
+  } catch (e) { ui.error(e.message) } finally { conversionsBusy.value = '' }
+}
+
+
 // --- Sync AI settings across the companion apps (Edibl / HomeHoard / myMeal) ---
 // They deploy together, so this exports the AI config as a portable string you paste
 // into each app's Settings. The API key is NEVER part of the string — it is set per
@@ -710,6 +740,37 @@ async function findOllama() {
   </div>
 
   <div class="card" v-if="!loading">
+    <h2>Learned weights</h2>
+    <p class="muted">
+      Some units have no fixed weight — a stick, a can, a clove. When a recipe
+      needs one the app doesn't know, it looks the answer up once and remembers
+      it here. Weights the app ships with always win over these.
+    </p>
+    <p v-if="!conversions.length" class="muted" style="font-size:.85rem">
+      Nothing learned yet. This fills in on its own as you import recipes.
+    </p>
+    <ul v-else class="conv">
+      <li v-for="c in conversions" :key="c.id">
+        <div class="what">
+          <strong>1 {{ c.unit }} of {{ c.foodTerm }}</strong>
+          <span class="tnum weight">{{ c.gramsPerUnit }} g</span>
+          <span v-if="c.status === 'pending'" class="badge">not used yet</span>
+        </div>
+        <div class="prov">
+          <a v-if="c.sourceUrl" :href="c.sourceUrl" target="_blank" rel="noopener noreferrer">found on the web ↗</a>
+          <span v-else>{{ c.source === 'user' ? 'you set this' : 'found on the web' }}</span>
+        </div>
+        <div class="acts">
+          <button v-if="c.status === 'pending'" type="button" class="secondary"
+            :disabled="conversionsBusy === c.id" @click="confirmConversion(c)">Use it</button>
+          <button type="button" class="secondary" :disabled="conversionsBusy === c.id"
+            @click="forgetConversion(c)">Forget</button>
+        </div>
+      </li>
+    </ul>
+  </div>
+
+  <div class="card" v-if="!loading">
     <h2>Nutrition</h2>
     <p class="muted">Estimate per-serving nutrition for every recipe that doesn't have it yet,
       using your configured AI provider. Runs in the background — you can leave this page.</p>
@@ -962,4 +1023,23 @@ async function findOllama() {
 .danger { color: var(--danger); }
 .key-empty { display: flex; align-items: center; gap: 8px; padding: 14px 12px; font-size: 0.85rem; background: var(--surface-2); border-radius: var(--radius-sm); }
 .key-empty .ke-ico { font-size: 1.1rem; opacity: 0.7; }
+
+/* Learned weights: a row per remembered value. A list rather than a table so it
+   stacks on a phone — a table here pushed the Forget button off-screen, which is
+   the one control the row exists for. */
+.conv { list-style: none; margin: 12px 0 0; padding: 0; font-size: 0.9rem; }
+.conv li { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center;
+  padding: 10px 0; border-top: 1px solid var(--border); }
+.conv .what { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.conv .weight { color: var(--muted); }
+.conv .prov { flex: 1; font-size: 0.8rem; color: var(--muted); }
+.conv .prov a { color: var(--muted); }
+.conv .acts { display: flex; gap: 6px; margin-left: auto; }
+.conv button { padding: 4px 10px; font-size: 0.78rem; }
+@media (max-width: 560px) {
+  /* Full stack rather than a squeezed three-column row: at this width the
+     provenance was wrapping to four words a line beside the weight. */
+  .conv li { flex-direction: column; align-items: stretch; gap: 8px; }
+  .conv .acts { margin-left: 0; justify-content: flex-end; }
+}
 </style>
