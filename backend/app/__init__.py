@@ -232,6 +232,7 @@ def _register_blueprints(app):
     from .api.ai import bp as ai_bp
     from .api.categories import bp as categories_bp
     from .api.chat import bp as chat_bp
+    from .api.conversions import bp as conversions_bp
     from .api.edibl import bp as edibl_bp
     from .api.foods import bp as foods_bp
     from .api.groups import bp as groups_bp
@@ -272,6 +273,7 @@ def _register_blueprints(app):
         public_bp,
         jobs_bp,
         suggestions_bp,
+        conversions_bp,
     ):
         app.register_blueprint(bp, url_prefix=prefix)
 

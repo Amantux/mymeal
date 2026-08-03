@@ -243,3 +243,92 @@ def test_a_search_failure_does_not_fail_the_import(ctx, monkeypatch):
     monkeypatch.setattr(conversions, "websearch", Broken())
 
     assert conversions.learn_for_lines(["1 stick butter"], None) == 0
+
+
+# --- the API ------------------------------------------------------------------
+
+def make(client, **kw):
+    """Create a conversion row inside the logged-in client's own group."""
+    from app.models import User
+    gid = db.session.query(User).first().group_id
+    row = UnitConversion(unit="stick", food_term="butter", grams_per_unit=113.0,
+                         source="web", source_url="https://example.com/a",
+                         confidence=0.5, status="pending", group_id=gid, **kw)
+    db.session.add(row)
+    db.session.commit()
+    return row
+
+
+def test_the_list_shows_where_each_number_came_from(auth_client, app):
+    with app.app_context():
+        make(auth_client)
+
+    [row] = auth_client.get("/api/v1/conversions").get_json()
+
+    assert row["source"] == "web"
+    assert row["sourceUrl"] == "https://example.com/a"
+    assert row["status"] == "pending"
+
+
+def test_accepting_a_pending_conversion_makes_it_usable(auth_client, app):
+    with app.app_context():
+        row = make(auth_client)
+        rid = row.id
+
+    auth_client.put(f"/api/v1/conversions/{rid}", json={"status": "confirmed"})
+
+    with app.app_context():
+        assert db.session.get(UnitConversion, rid).status == "confirmed"
+
+
+def test_correcting_a_weight_stops_it_claiming_the_web_as_its_source(auth_client, app):
+    with app.app_context():
+        rid = make(auth_client).id
+
+    body = auth_client.put(f"/api/v1/conversions/{rid}",
+                           json={"gramsPerUnit": 115}).get_json()
+
+    assert body["gramsPerUnit"] == 115
+    assert body["source"] == "user", "a human's number must not be attributed to a page"
+    assert body["sourceUrl"] == ""
+
+
+@pytest.mark.parametrize("bad", [0, -5, 99999, "heavy"])
+def test_an_implausible_correction_is_refused(auth_client, app, bad):
+    with app.app_context():
+        rid = make(auth_client).id
+
+    assert auth_client.put(f"/api/v1/conversions/{rid}",
+                           json={"gramsPerUnit": bad}).status_code == 422
+
+
+def test_forgetting_a_conversion_removes_it(auth_client, app):
+    with app.app_context():
+        rid = make(auth_client).id
+
+    assert auth_client.delete(f"/api/v1/conversions/{rid}").status_code == 204
+    assert auth_client.get("/api/v1/conversions").get_json() == []
+
+
+def test_another_households_conversion_is_not_reachable_by_id(auth_client, app):
+    """Filtering by primary key alone is how one household edits another's data."""
+    with app.app_context():
+        from app.models.group import Group
+        other = Group(name="Next door")
+        db.session.add(other)
+        db.session.flush()
+        row = UnitConversion(unit="stick", food_term="butter", grams_per_unit=113.0,
+                             source="web", confidence=1.0, status="confirmed",
+                             group_id=other.id)
+        db.session.add(row)
+        db.session.commit()
+        rid = row.id
+
+    assert auth_client.get("/api/v1/conversions").get_json() == []
+    assert auth_client.put(f"/api/v1/conversions/{rid}",
+                           json={"status": "confirmed"}).status_code == 404
+    assert auth_client.delete(f"/api/v1/conversions/{rid}").status_code == 404
+
+
+def test_the_conversions_list_requires_a_login(client):
+    assert client.get("/api/v1/conversions").status_code == 401
