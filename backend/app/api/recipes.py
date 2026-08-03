@@ -110,10 +110,21 @@ def _set_ingredients(recipe: Recipe, rows):
             qty = parsed["qty"] or 0
             if parsed["unit"]:
                 unit_id = _find_or_create_unit(gid, parsed["unit"])
+        # "1/2" and "1 1/2" are what a person types into an amount box in a
+        # recipe app, and a bare float() turned that into a 500 that lost the
+        # whole edit. Parse it the same way an ingredient line is parsed, and
+        # fall back to 0 rather than failing the request — display is the source
+        # of truth, so an unparseable amount costs scaling, not the ingredient.
+        if isinstance(qty, str):
+            qty = units.parse_line(qty.strip())["qty"]
+        try:
+            qty = float(qty or 0)
+        except (TypeError, ValueError):
+            qty = 0.0
         recipe.ingredients.append(
             RecipeIngredient(
                 display=display,
-                quantity=float(qty or 0),
+                quantity=qty,
                 note=row.get("note", ""),
                 section=row.get("section", ""),
                 position=row.get("position", i),
@@ -338,11 +349,18 @@ def _apply_view(out: dict, recipe: Recipe, args):
     if factor == 1.0 and not to_weight:
         return
     out["scaledServings"] = target if target > 0 else recipe.servings
+    # Built once per request, not per line: it memoises its lookups, so a recipe
+    # using butter four times costs one query. Only confirmed conversions are
+    # visible through it, and the built-in tables are still consulted first.
+    learned = None
+    if to_weight:
+        from ..services import conversions
+        learned = conversions.resolver(recipe.group_id)
     for ing in out.get("ingredients", []):
         line = units.scale_line(ing.get("display", ""), factor)
         if to_weight:
             # Keep the original measure, append the weight in parentheses.
-            line = units.annotate_weight(line)
+            line = units.annotate_weight(line, learned=learned)
         ing["display"] = line
 
 

@@ -112,7 +112,11 @@ def structure(displays: list[str], provider=None) -> dict[str, dict]:
     answered usefully. An empty dict is a perfectly good outcome and is what
     every caller gets when no provider is configured.
     """
-    candidates = [d for d in displays if d and needs_structuring(d)][:MAX_LINES]
+    # Clamped on the way IN as well as out: a scraped "line" can be the whole
+    # page up to the fetch cap, and forty of those is a prompt no small model
+    # will survive. Every other AI endpoint here clamps its input the same way.
+    candidates = [d[:MAX_LINE_CHARS] for d in displays
+                  if d and needs_structuring(d)][:MAX_LINES]
     if not candidates:
         return {}
 

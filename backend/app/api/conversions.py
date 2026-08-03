@@ -73,6 +73,9 @@ def update_conversion(conversion_id):
             row.source = "user"
             row.source_url = ""
             row.confidence = 1.0
+            # Correcting a number IS accepting it. Leaving it pending meant the
+            # user typed the right answer and the app carried on ignoring it.
+            row.status = "confirmed"
 
     if data.get("status") in ("confirmed", "pending"):
         row.status = data["status"]

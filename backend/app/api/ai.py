@@ -353,9 +353,14 @@ def import_recipe_stream_endpoint():
         try:
             for event, payload in _import_events(data, group_id):
                 yield json.dumps({"type": event, **payload}) + "\n"
-        except Exception as exc:  # noqa: BLE001 - headers are already sent
+        except Exception:  # noqa: BLE001 - headers are already sent; must not raise
+            # A curated message, never str(exc): an unexpected exception here can
+            # carry a DSN or a provider's response body, and this text goes
+            # straight to the browser.
             current_app.logger.exception("import stream failed")
-            yield json.dumps({"type": "error", "error": str(exc), "status": 500}) + "\n"
+            yield json.dumps({"type": "error", "status": 500,
+                              "error": "The import failed unexpectedly. The full "
+                                       "reason is in the add-on log."}) + "\n"
 
     return current_app.response_class(
         generate(),

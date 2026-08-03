@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
+from urllib.parse import urlparse
 
 from ..extensions import db
 from ..models.unit_conversion import UnitConversion
@@ -41,10 +42,32 @@ MAX_LOOKUPS_PER_IMPORT = 5
 MIN_GRAMS = 0.1
 MAX_GRAMS = 5000.0
 
+# The model columns. Clamped at the write site because an over-long value is a
+# DataError on PostgreSQL (SQLite silently accepts it, which is exactly why this
+# was invisible in the tests) and a failed flush poisons the whole session.
+MAX_UNIT_CHARS = 40
+MAX_TERM_CHARS = 120
+
 # "113 g", "113g", "113 grams", "approximately 400 g". Deliberately grams only:
 # accepting ounces here would mean trusting our own unit inference about a
 # sentence we did not write, on top of trusting the sentence.
 _GRAMS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:g\b|grams?\b)", re.IGNORECASE)
+
+
+def _safe_source_url(raw) -> str:
+    """Keep a search result's URL only if it is http(s).
+
+    This value comes from an external search API and is rendered as an href, so
+    a ``javascript:`` or ``data:`` address would become a click target. Validated
+    where it is STORED as well as where it is used — an allowlist, so anything
+    invented later is rejected by not being on it.
+    """
+    value = str(raw or "").strip()[:1024]
+    try:
+        scheme = urlparse(value).scheme.lower()
+    except ValueError:
+        return ""
+    return value if scheme in ("http", "https") else ""
 
 
 # Adjectives that describe preparation or grade, never identity. Stripping them
@@ -72,7 +95,7 @@ def food_term(text: str) -> str:
     # The final word is the food itself; everything before it is describing it.
     # "large free-range eggs" and "eggs" are not worth two rows — they weigh the
     # same, which is the only thing this key is used to look up.
-    return words[-1] if words else ""
+    return (words[-1] if words else "")[:MAX_TERM_CHARS]
 
 
 def _threshold() -> float:
@@ -107,20 +130,35 @@ def resolver(group_id: str | None):
     return lookup
 
 
+# Phrases that mean the number belongs to a nutrition panel or a pack label, not
+# to the question we asked. "Serving size 100 g. A stick of butter is 113 g"
+# otherwise answers 100 — the first number in the snippet is frequently not its
+# answer, which is how a plausible-looking wrong weight gets learned.
+_NOT_THE_ANSWER = (
+    "serving size", "per serving", "servings per", "nutrition", "calories",
+    "net weight", "daily value", "per 100",
+)
+
+
 def parse_grams(text: str) -> float | None:
     """The gram figure a search snippet is asserting, or None.
 
-    Takes the *first* plausible figure rather than the largest or an average: a
-    snippet's opening number is its answer, and later ones are usually a
-    different pack size or a nutrition table.
+    Figures introduced by nutrition-panel language are skipped; of what remains
+    the first is taken, since a snippet leads with its answer.
     """
-    for match in _GRAMS_RE.finditer(text or ""):
+    haystack = text or ""
+    for match in _GRAMS_RE.finditer(haystack):
         try:
             value = float(match.group(1))
         except ValueError:
             continue
-        if MIN_GRAMS <= value <= MAX_GRAMS:
-            return value
+        if not MIN_GRAMS <= value <= MAX_GRAMS:
+            continue
+        # Look back a short way for what introduced this number.
+        lead = haystack[max(0, match.start() - 40):match.start()].lower()
+        if any(phrase in lead for phrase in _NOT_THE_ANSWER):
+            continue
+        return value
     return None
 
 
@@ -160,19 +198,25 @@ def learn(unit: str, food: str, group_id: str | None, *, settings=None) -> UnitC
     for result in results[:3]:
         grams = parse_grams(f"{result.get('title', '')} {result.get('content', '')}")
         if grams is not None:
-            answers.append((grams, str(result.get("url") or "")[:1024]))
+            answers.append((grams, _safe_source_url(result.get("url"))))
     if not answers:
         return None
 
     best, url = answers[0]
     # Within 10% counts as agreement — sources round differently (113 vs 115 g
     # for a stick of butter) and treating that as disagreement would reject the
-    # answers that are actually right.
-    agreeing = sum(1 for grams, _ in answers if abs(grams - best) <= best * 0.1)
-    confidence = {1: 0.5, 2: 0.85, 3: 0.95}.get(agreeing, 0.5)
+    # answers that are actually right. Counted by DISTINCT HOST: two syndications
+    # of one article, or two pages from one site, are one source agreeing with
+    # itself, and letting that auto-confirm was the weakest link in this gate.
+    hosts = {urlparse(u).netloc.lower() for grams, u in answers
+             if abs(grams - best) <= best * 0.1 and u}
+    # Deliberately below the 0.8 default threshold at two hosts: corroboration
+    # earns review, not automatic trust. Three independent hosts saying the same
+    # number is the bar for using it without a human.
+    confidence = {0: 0.4, 1: 0.5, 2: 0.7}.get(len(hosts), 0.95)
 
     row = UnitConversion(
-        unit=canonical, food_term=term, grams_per_unit=best,
+        unit=canonical[:MAX_UNIT_CHARS], food_term=term, grams_per_unit=best,
         source="web", source_url=url, confidence=confidence,
         status="confirmed" if confidence >= _threshold() else "pending",
         group_id=group_id,
@@ -212,9 +256,22 @@ def learn_for_lines(displays: list[str], group_id: str | None, *, settings=None)
     learned = 0
     for unit, term in wanted[:MAX_LOOKUPS_PER_IMPORT]:
         try:
-            if learn(unit, term, group_id, settings=settings):
+            # Skip pairs already known, rather than calling learn() and
+            # discarding the cache hit: that counted a hit as a creation, so a
+            # re-import of a recipe the app already understood fired a pointless
+            # commit and reported work it had not done.
+            known = db.session.query(UnitConversion.id).filter_by(
+                group_id=group_id, unit=unit, food_term=term).first()
+            if known:
+                continue
+            if learn(unit, term, group_id, settings=settings) is not None:
                 learned += 1
         except Exception as exc:  # noqa: BLE001 - never fail an import for this
+            # A failed flush leaves the connection in an aborted transaction on
+            # PostgreSQL; without this the caller's next statement dies with
+            # InFailedSqlTransaction and the user is told the import failed
+            # after their recipe was already saved.
+            db.session.rollback()
             _LOGGER.warning("conversion lookup failed for %s/%s: %s",
                             unit, term, exc)
     return learned

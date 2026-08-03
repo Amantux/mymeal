@@ -14,16 +14,26 @@ const text = ref('')
 const photoFile = ref(null)
 const busy = ref(false)
 
-// What the server says it is doing, in the order it said it. An import can sit
-// on a local model for a while; silence reads as "stuck".
+// The whole plan is drawn up front, not appended stage by stage. Showing one
+// line at a time is indistinguishable from a spinner, teaches nothing about how
+// long this takes, and reflows the card on every event.
 const STAGE_LABELS = {
-  searching: 'Searching the web',
-  fetching: 'Fetching the page',
-  parsing: 'Reading the recipe',
-  structuring: 'Working out the tricky ingredient lines',
-  converting: 'Looking up weights it doesn’t know',
+  searching: 'Search the web for the recipe',
+  fetching: 'Fetch the page',
+  parsing: 'Read the recipe',
+  structuring: 'Work out the tricky ingredient lines',
+  converting: 'Look up weights it doesn’t know',
 }
 const stages = ref([])
+
+function planStages() {
+  const keys = mode.value === 'search'
+    ? ['searching', 'fetching', 'parsing', 'structuring', 'converting']
+    : ['fetching', 'parsing', 'structuring', 'converting']
+  // 'skipped' is a real outcome, not a failure: a tidy recipe never needs the
+  // model, and saying so is more honest than quietly dropping the row.
+  stages.value = keys.map((key) => ({ key, label: STAGE_LABELS[key], state: 'pending' }))
+}
 
 // The review step. Non-empty only when the model proposed structure for lines
 // the parser couldn't read — a clean import goes straight to the recipe.
@@ -43,13 +53,36 @@ function onPhoto(e) {
 }
 
 function stageStarted(key, detail) {
-  stages.value.forEach((s) => { s.active = false })
-  stages.value.push({
-    key,
-    label: STAGE_LABELS[key] || key,
-    detail: detail || '',
-    active: true,
+  let reached = false
+  stages.value.forEach((s) => {
+    if (s.key === key) {
+      reached = true
+      s.state = 'active'
+      // Just the host: a full URL wraps mid-token on a phone and reads as
+      // corrupted text, and the scheme carries nothing.
+      s.detail = detail && detail.startsWith('http')
+        ? detail.replace(/^https?:\/\//, '').split('/')[0]
+        : detail || ''
+    } else if (!reached) {
+      s.state = 'done'
+    }
   })
+}
+
+function stagesFinished() {
+  // Anything the server never reported was genuinely not needed.
+  stages.value.forEach((s) => {
+    s.state = s.state === 'pending' ? 'skipped' : 'done'
+  })
+}
+
+// A two-significant-figure percentage from a small language model is not a
+// measurement, and showing one invites the user to trust a threshold nobody
+// chose. Three plain bands instead.
+function sureness(confidence) {
+  if (confidence >= 0.85) return { label: 'confident', tone: '' }
+  if (confidence >= 0.6) return { label: 'fairly sure', tone: '' }
+  return { label: 'unsure — check this', tone: 'warn' }
 }
 
 function beginReview(recipe) {
@@ -65,7 +98,7 @@ function beginReview(recipe) {
 async function run() {
   if (!canRun.value) return
   busy.value = true
-  stages.value = []
+  planStages()
   imported.value = null
   try {
     if (mode.value === 'photo') {
@@ -92,7 +125,7 @@ async function run() {
     if (failure) throw new Error(failure)
     if (!recipe) throw new Error('The import finished without producing a recipe.')
 
-    stages.value.forEach((s) => { s.active = false })
+    stagesFinished()
     if ((recipe.ingredientProposals || []).length) {
       beginReview(recipe)
     } else {
@@ -131,6 +164,11 @@ async function applyReview() {
         note: p ? p.note : ing.note,
         section: ing.section,
         position: i,
+        // A component (another recipe used as an ingredient) has no food, and
+        // omitting this would silently unlink it. An import can't produce one
+        // today, but this payload is a full replacement — it has to carry
+        // everything a row can be.
+        refRecipeId: ing.refRecipe?.id || null,
       }
     })
     await api.put(`/recipes/${imported.value.id}`, { ingredients: rows })
@@ -151,12 +189,14 @@ async function applyReview() {
        something; most imports never see this. -->
   <div v-if="imported" class="card">
     <h2 style="margin-top:0">A few lines needed interpreting</h2>
-    <p class="muted">
-      “{{ imported.name }}” is saved. These {{ proposals.length }} ingredient
+    <p class="muted intro">
+      “{{ imported.name }}” is saved. {{ proposals.length }} ingredient
       line{{ proposals.length === 1 ? '' : 's' }} weren’t written in a form the app
-      could measure, so it worked out what {{ proposals.length === 1 ? 'it' : 'they' }}
-      probably mean. Your original wording is kept either way — this only affects
-      scaling and shopping lists.
+      could measure, so a language model suggested what
+      {{ proposals.length === 1 ? 'it means' : 'they mean' }} — please check
+      {{ proposals.length === 1 ? 'it' : 'them' }}. Your original wording is kept
+      either way; this only affects scaling and shopping lists.
+      <strong>Unticked lines stay exactly as written.</strong>
     </p>
 
     <div class="proposals">
@@ -170,7 +210,11 @@ async function applyReview() {
           <div class="fields">
             <label class="field mini">
               <span>Amount</span>
-              <input class="tnum" v-model.number="p.quantity" :disabled="!p.keep" />
+              <!-- type=number so a phone gets the numeric keypad and the browser
+                   rejects letters. The server also parses "1/2" and falls back
+                   to no-amount, so a stray value costs scaling, not the row. -->
+              <input class="tnum" type="number" min="0" step="any"
+                v-model.number="p.quantity" :disabled="!p.keep" />
             </label>
             <label class="field mini">
               <span>Unit</span>
@@ -182,13 +226,13 @@ async function applyReview() {
             </label>
           </div>
         </div>
-        <span class="badge" :class="{ ok: p.confidence >= 0.8 }">
-          {{ Math.round((p.confidence || 0) * 100) }}% sure
+        <span class="badge" :class="sureness(p.confidence || 0).tone">
+          {{ sureness(p.confidence || 0).label }}
         </span>
       </div>
     </div>
 
-    <div class="row" style="justify-content:flex-end;margin-top:16px">
+    <div class="row actions">
       <button class="secondary" :disabled="saving" @click="skipReview">Leave them as written</button>
       <button :disabled="saving" @click="applyReview">
         {{ saving ? 'Saving…' : 'Use these' }}
@@ -196,15 +240,14 @@ async function applyReview() {
     </div>
   </div>
 
-  <!-- Step 1b: what the import is doing right now. -->
+  <!-- Step 1b: the whole plan, drawn once, with the current step marked. -->
   <div v-else-if="busy && stages.length" class="card">
-    <h2 style="margin-top:0">Importing…</h2>
-    <ol class="stages">
-      <li v-for="s in stages" :key="s.key" :class="{ active: s.active }">
-        <span class="marker" aria-hidden="true">{{ s.active ? '◌' : '✓' }}</span>
-        <span>
+    <ol class="stages" aria-live="polite">
+      <li v-for="s in stages" :key="s.key" :class="s.state">
+        <span class="marker" aria-hidden="true">{{ s.state === 'active' ? '◌' : (s.state === 'done' ? '✓' : '·') }}</span>
+        <span class="label">
           {{ s.label }}
-          <span v-if="s.detail" class="muted detail">{{ s.detail }}</span>
+          <span v-if="s.detail" class="detail">{{ s.detail }}</span>
         </span>
       </li>
     </ol>
@@ -276,34 +319,61 @@ async function applyReview() {
    action stays the only terracotta element. */
 .tabs button.active { background: var(--surface-2); color: var(--text); border-color: var(--border); font-weight: 700; }
 
-/* --- progress --- */
-.stages { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
-.stages li { display: flex; gap: 12px; align-items: baseline; color: var(--muted); }
-.stages li.active { color: var(--text); font-weight: 600; }
-.marker { color: var(--success); }
+/* --- progress ---
+   Every stage is on screen from the first frame, so the card never changes
+   height and the user can see what is still to come. A 1px spine ties the
+   markers together and its filled portion is the actual progress bar. */
+.stages { list-style: none; margin: 0; padding: 0 0 0 4px; position: relative; }
+.stages::before {
+  content: ''; position: absolute; left: 10px; top: 12px; bottom: 12px;
+  width: 1px; background: var(--border);
+}
+.stages li {
+  display: flex; gap: 14px; align-items: baseline;
+  padding: 7px 0; color: var(--muted); position: relative;
+}
+.stages li.done { color: var(--text); }
+.stages li.active { color: var(--text); font-weight: 650; }
+.stages li.skipped .label { text-decoration: line-through; opacity: 0.7; }
+.marker {
+  width: 13px; text-align: center; flex: none;
+  background: var(--surface); position: relative; z-index: 1;
+}
+.stages li.done .marker { color: var(--success); }
 .stages li.active .marker { color: var(--accent); display: inline-block; animation: spin 1.4s linear infinite; }
-.detail { font-weight: 400; margin-left: 8px; word-break: break-all; }
+.detail { font-weight: 400; color: var(--muted); margin-left: 8px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
   .stages li.active .marker { animation: none; }
 }
 
 /* --- review --- */
-.proposals { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+/* Capped: at 1440 an unbounded row put the original line and its confidence
+   badge a thousand pixels apart — exactly the two things the user has to
+   associate to make the decision. */
+.proposals { display: flex; flex-direction: column; gap: 12px; margin: 24px 0; max-width: 760px; }
 .proposal {
   display: flex; gap: 12px; align-items: flex-start;
   padding: 12px; border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--surface-2);
 }
 .proposal.off { opacity: 0.55; }
+/* Intro, rows and buttons share one measure, so the eye tracks a single column
+   instead of the paragraph running to 1100px above 760px-wide rows. */
+.intro { max-width: 760px; }
+.actions { max-width: 760px; justify-content: flex-end; }
 .keep { padding-top: 20px; }
 .lines { flex: 1; min-width: 0; }
 .original { font-size: 0.85rem; color: var(--muted); margin-bottom: 8px; }
 .fields { display: flex; gap: 10px; flex-wrap: wrap; }
 .field.mini { margin: 0; }
 .field.mini input { width: 92px; }
-.field.mini.grow { flex: 1; min-width: 140px; }
+.field.mini.grow { flex: 1; min-width: 140px; max-width: 320px; }
 .field.mini.grow input { width: 100%; }
+/* A checked box is not an action, so it doesn't get the accent — that stays on
+   "Use these", the one primary action on this view. */
+.keep input { accent-color: var(--muted); }
+.badge.warn { color: var(--warning); }
 .sr-only {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;

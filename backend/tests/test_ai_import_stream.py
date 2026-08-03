@@ -191,3 +191,21 @@ def test_a_stream_error_is_an_event_not_a_raise(auth_client, monkeypatch):
 
 def test_the_stream_still_requires_a_login(client):
     assert client.post("/api/v1/ai/import/stream", json={}).status_code == 401
+
+
+def test_an_unexpected_stream_failure_does_not_echo_the_exception(
+    auth_client, jsonld, monkeypatch
+):
+    """An exception here can carry a DSN or a provider's response body, and this
+    text goes straight to the browser."""
+    def boom(*a, **k):
+        raise RuntimeError("postgresql://mymeal:hunter2@db:5432/mymeal is down")
+
+    monkeypatch.setattr(ai_api, "_import_events", boom)
+
+    r = auth_client.post("/api/v1/ai/import/stream", json={"url": "https://x.com/s"})
+
+    [event] = events(r)
+    assert event["type"] == "error"
+    assert "hunter2" not in event["error"]
+    assert "postgresql" not in event["error"]

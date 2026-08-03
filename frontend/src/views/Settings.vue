@@ -744,28 +744,27 @@ async function findOllama() {
     <p class="muted">
       Some units have no fixed weight — a stick, a can, a clove. When a recipe
       needs one the app doesn't know, it looks the answer up once and remembers
-      it here. Weights the app ships with always win over these.
+      it here. If the app already knows a unit, it uses its own weight instead
+      of anything on this list.
     </p>
     <p v-if="!conversions.length" class="muted" style="font-size:.85rem">
       Nothing learned yet. This fills in on its own as you import recipes.
     </p>
     <ul v-else class="conv">
-      <li v-for="c in conversions" :key="c.id">
-        <div class="what">
-          <strong>1 {{ c.unit }} of {{ c.foodTerm }}</strong>
-          <span class="tnum weight">{{ c.gramsPerUnit }} g</span>
-          <span v-if="c.status === 'pending'" class="badge">not used yet</span>
-        </div>
-        <div class="prov">
+      <li v-for="c in conversions" :key="c.id" :class="{ pending: c.status === 'pending' }">
+        <span class="what">1 {{ c.unit }} of {{ c.foodTerm }}</span>
+        <span class="tnum weight">{{ c.gramsPerUnit }} g</span>
+        <span class="prov">
           <a v-if="c.sourceUrl" :href="c.sourceUrl" target="_blank" rel="noopener noreferrer">found on the web ↗</a>
-          <span v-else>{{ c.source === 'user' ? 'you set this' : 'found on the web' }}</span>
-        </div>
-        <div class="acts">
+          <span v-else class="muted">{{ c.source === 'user' ? 'you set this' : 'found on the web' }}</span>
+          <span v-if="c.status === 'pending'" class="badge">not used yet</span>
+        </span>
+        <span class="acts">
           <button v-if="c.status === 'pending'" type="button" class="secondary"
             :disabled="conversionsBusy === c.id" @click="confirmConversion(c)">Use it</button>
           <button type="button" class="secondary" :disabled="conversionsBusy === c.id"
             @click="forgetConversion(c)">Forget</button>
-        </div>
+        </span>
       </li>
     </ul>
   </div>
@@ -1027,19 +1026,29 @@ async function findOllama() {
 /* Learned weights: a row per remembered value. A list rather than a table so it
    stacks on a phone — a table here pushed the Forget button off-screen, which is
    the one control the row exists for. */
-.conv { list-style: none; margin: 12px 0 0; padding: 0; font-size: 0.9rem; }
-.conv li { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center;
-  padding: 10px 0; border-top: 1px solid var(--border); }
-.conv .what { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.conv .weight { color: var(--muted); }
-.conv .prov { flex: 1; font-size: 0.8rem; color: var(--muted); }
-.conv .prov a { color: var(--muted); }
-.conv .acts { display: flex; gap: 6px; margin-left: auto; }
+/* A grid, not a flex row: the whole job on this card is scanning the weight
+   column for a value that looks wrong ("400 g for a can, sure — 12 g for a
+   handful of parsley?"). Flex put the numbers at four different x positions. */
+.conv { list-style: none; margin: 12px 0 0; padding: 0; font-size: 0.9rem;
+  display: grid; grid-template-columns: minmax(160px, 1fr) 72px auto auto;
+  max-width: 720px; }
+.conv li { display: contents; }
+.conv li > * { padding: 10px 0; border-top: 1px solid var(--border); align-self: center; }
+.conv .what { padding-right: 12px; }
+.conv .weight { text-align: right; }
+.conv .prov { font-size: 0.8rem; padding-left: 16px; white-space: nowrap; }
+.conv .acts { display: flex; gap: 6px; justify-content: flex-end; padding-left: 12px; }
+/* The row with a decision attached gets the accent tick; nothing else does. */
+.conv li.pending .what { box-shadow: inset 2px 0 0 var(--accent); padding-left: 10px; }
 .conv button { padding: 4px 10px; font-size: 0.78rem; }
-@media (max-width: 560px) {
-  /* Full stack rather than a squeezed three-column row: at this width the
-     provenance was wrapping to four words a line beside the weight. */
-  .conv li { flex-direction: column; align-items: stretch; gap: 8px; }
-  .conv .acts { margin-left: 0; justify-content: flex-end; }
+@media (max-width: 620px) {
+  /* Two lines, not four: name + right-aligned weight, then provenance and
+     actions sharing a baseline. Keeps the weight column readable on a phone. */
+  .conv { grid-template-columns: 1fr auto; }
+  .conv li > * { border-top: none; padding: 2px 0; }
+  .conv .what { border-top: 1px solid var(--border); padding-top: 10px; }
+  .conv .weight { border-top: 1px solid var(--border); padding-top: 10px; }
+  .conv .prov { padding: 0 0 10px; white-space: normal; }
+  .conv .acts { padding: 0 0 10px; }
 }
 </style>

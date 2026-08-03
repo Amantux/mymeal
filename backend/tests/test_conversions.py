@@ -170,8 +170,9 @@ def test_a_lookup_happens_once_and_the_second_call_hits_the_cache(ctx, patched):
     assert db.session.query(UnitConversion).count() == 1
 
 
-def test_agreement_across_sources_raises_confidence_to_confirmed(ctx, patched):
-    patched(Search([hit(113), hit(115, "https://example.com/b")]))
+def test_three_independent_hosts_agreeing_is_enough_to_use_without_asking(ctx, patched):
+    patched(Search([hit(113), hit(115, "https://kingarthurbaking.com/b"),
+                    hit(113, "https://bbcgoodfood.com/c")]))
 
     row = conversions.learn("stick", "butter", None)
 
@@ -180,7 +181,64 @@ def test_agreement_across_sources_raises_confidence_to_confirmed(ctx, patched):
     assert row.source_url == "https://example.com/a", "provenance must be recorded"
 
 
-def test_a_lone_unsupported_answer_is_stored_for_review_not_used(ctx, patched):
+def test_three_pages_from_two_sites_are_two_sources_not_three(ctx, patched):
+    """Syndications of a single article are not corroboration, and letting them
+    auto-confirm was the weakest link in this gate. Three distinct URLs, two
+    distinct hosts — counted per URL this would confirm."""
+    patched(Search([hit(113), hit(113, "https://example.com/also-this"),
+                    hit(113, "https://bbcgoodfood.com/c")]))
+
+    assert conversions.learn("stick", "butter", None).status == "pending"
+
+
+def test_two_distinct_hosts_earn_review_not_automatic_trust(ctx, patched):
+    patched(Search([hit(113), hit(113, "https://kingarthurbaking.com/b")]))
+
+    assert conversions.learn("stick", "butter", None).status == "pending"
+
+
+def test_a_source_url_that_is_not_a_web_address_is_not_stored(ctx, patched):
+    """It is rendered as an href; a javascript: address would be a click target."""
+    patched(Search([{"title": "Butter", "content": "A stick is 113 g",
+                     "url": "javascript:alert(document.cookie)"}]))
+
+    row = conversions.learn("stick", "butter", None)
+
+    assert row.grams_per_unit == 113.0
+    assert row.source_url == ""
+
+
+def test_an_absurdly_long_food_name_is_clamped_to_the_column(ctx, patched):
+    """Over-length here is a DataError on PostgreSQL, and a failed flush poisons
+    the session for everything that follows."""
+    patched(Search([hit(113)]))
+
+    row = conversions.learn("stick", "b" * 400, None)
+
+    assert len(row.food_term) <= conversions.MAX_TERM_CHARS
+
+
+def test_a_failed_lookup_leaves_the_session_usable(ctx, monkeypatch):
+    """Otherwise the caller's next statement dies with InFailedSqlTransaction
+    and the user is told the import failed after their recipe was saved."""
+    rolled = []
+
+    class Broken:
+        def enabled(self, settings=None):
+            return True
+
+        def web_search(self, *a, **k):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(conversions, "websearch", Broken())
+    monkeypatch.setattr(db.session, "rollback", lambda: rolled.append(1))
+
+    conversions.learn_for_lines(["1 stick butter"], None)
+
+    assert rolled, "a failure inside the lookup must roll back before returning"
+
+
+def test_a_lone_answer_is_stored_for_review_not_used(ctx, patched):
     patched(Search([hit(113)]))
 
     row = conversions.learn("stick", "butter", None)
@@ -332,3 +390,73 @@ def test_another_households_conversion_is_not_reachable_by_id(auth_client, app):
 
 def test_the_conversions_list_requires_a_login(client):
     assert client.get("/api/v1/conversions").status_code == 401
+
+
+# --- the render path ----------------------------------------------------------
+# The point of the whole feature: a learned weight has to reach the recipe view.
+# Every other test here calls resolver() directly, which is exactly how the
+# missing wiring survived a full green suite.
+
+def test_a_confirmed_conversion_reaches_the_rendered_recipe(auth_client, app):
+    r = auth_client.post("/api/v1/recipes", json={
+        "name": "Shortbread",
+        "servings": 4,
+        "ingredients": [{"display": "2 sticks butter"}],
+    })
+    rid = r.get_json()["id"]
+
+    with app.app_context():
+        from app.models import User
+        gid = db.session.query(User).first().group_id
+        db.session.add(UnitConversion(
+            unit="stick", food_term="butter", grams_per_unit=113.0,
+            source="web", confidence=0.95, status="confirmed", group_id=gid))
+        db.session.commit()
+
+    body = auth_client.get(f"/api/v1/recipes/{rid}?units=weight").get_json()
+
+    assert "226 g" in body["ingredients"][0]["display"]
+
+
+def test_a_pending_conversion_does_not_reach_the_rendered_recipe(auth_client, app):
+    r = auth_client.post("/api/v1/recipes", json={
+        "name": "Shortbread",
+        "servings": 4,
+        "ingredients": [{"display": "2 sticks butter"}],
+    })
+    rid = r.get_json()["id"]
+
+    with app.app_context():
+        from app.models import User
+        gid = db.session.query(User).first().group_id
+        db.session.add(UnitConversion(
+            unit="stick", food_term="butter", grams_per_unit=113.0,
+            source="web", confidence=0.5, status="pending", group_id=gid))
+        db.session.commit()
+
+    body = auth_client.get(f"/api/v1/recipes/{rid}?units=weight").get_json()
+
+    assert "g)" not in body["ingredients"][0]["display"]
+
+
+@pytest.mark.parametrize("typed,expected", [("1/2", 0.5), ("1 1/2", 1.5), ("2", 2.0)])
+def test_an_amount_typed_as_a_fraction_is_understood(auth_client, typed, expected):
+    """"1/2" is what a person types into an amount box in a recipe app; it used
+    to 500 and lose the whole edit."""
+    rid = auth_client.post("/api/v1/recipes", json={"name": "X"}).get_json()["id"]
+
+    r = auth_client.put(f"/api/v1/recipes/{rid}", json={
+        "ingredients": [{"display": "flour", "quantity": typed}]})
+
+    assert r.status_code == 200
+    assert r.get_json()["ingredients"][0]["quantity"] == expected
+
+
+def test_an_unreadable_amount_costs_scaling_not_the_ingredient(auth_client):
+    rid = auth_client.post("/api/v1/recipes", json={"name": "X"}).get_json()["id"]
+
+    r = auth_client.put(f"/api/v1/recipes/{rid}", json={
+        "ingredients": [{"display": "a pinch of salt", "quantity": "loads"}]})
+
+    assert r.status_code == 200
+    assert r.get_json()["ingredients"][0]["display"] == "a pinch of salt"
