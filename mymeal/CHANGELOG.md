@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.2.14
+
+- A food resolver that splits the variety off the ingredient.
+
 ## 1.2.13
 
 - Wire the learned weights into the recipe view, and close three real holes.
