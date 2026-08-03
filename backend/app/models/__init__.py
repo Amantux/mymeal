@@ -13,6 +13,7 @@ from .food import Food, Unit  # noqa: F401
 from .category import Category, recipe_categories  # noqa: F401
 from .tag import Tag, recipe_tags  # noqa: F401
 from .recipe_video import RecipeVideo  # noqa: F401
+from .unit_conversion import UnitConversion  # noqa: F401
 from .recipe import Recipe, RecipeIngredient, RecipeStep, RecipeVersion  # noqa: F401
 from .mealplan import MealPlanEntry  # noqa: F401
 from .shopping import ShoppingList, ShoppingListItem  # noqa: F401

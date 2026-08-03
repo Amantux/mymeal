@@ -231,9 +231,19 @@ def _density_for(text: str) -> float | None:
     return None
 
 
-def to_grams(text: str) -> float | None:
+def to_grams(text: str, learned=None) -> float | None:
     """Best-effort grams for an ingredient line: direct for weight units, and
-    for volume units when the food's density is known. None otherwise."""
+    for volume units when the food's density is known. None otherwise.
+
+    ``learned`` is an optional ``(unit, food) -> grams_per_unit | None`` callable
+    supplying remembered conversions for units this module has no physics for —
+    a stick of butter, a can of tomatoes. It is a parameter rather than an import
+    so this module stays pure and database-free, and so a caller on a hot read
+    path can simply not pass one.
+
+    It is consulted **last**. A shipped weight or density always wins: a value
+    looked up on the internet must never be able to override a known one.
+    """
     p = parse_line(text)
     if p["qty"] is None or not p["unit"]:
         return None
@@ -243,6 +253,15 @@ def to_grams(text: str) -> float | None:
         density = _density_for(p["rest"])
         if density:
             return p["qty"] * _VOLUME_ML[p["unit"]] * density
+        # A volume unit with an unknown density can still fall through to a
+        # learned value ("1 cup of pitted dates"), so no early return here.
+    if learned:
+        try:
+            grams = learned(p["unit"], p["rest"])
+        except Exception:  # noqa: BLE001 - a lookup must never break a render
+            return None
+        if grams and grams > 0:
+            return p["qty"] * grams
     return None
 
 
@@ -250,22 +269,22 @@ def _format_grams(grams: float) -> str:
     return f"{round(grams)} g" if grams >= 1 else f"{round(grams, 1)} g"
 
 
-def to_weight_line(text: str) -> str:
+def to_weight_line(text: str, learned=None) -> str:
     """Rewrite an ingredient line to a weight measurement when possible
     ("1 cup flour" → "125 g flour"); otherwise return it unchanged."""
-    grams = to_grams(text)
+    grams = to_grams(text, learned=learned)
     if grams is None:
         return text
     rest = parse_line(text)["rest"]
     return f"{_format_grams(grams)} {rest}".strip()
 
 
-def annotate_weight(text: str) -> str:
+def annotate_weight(text: str, learned=None) -> str:
     """Append the weight in parentheses, KEEPING the original measure, when a
     conversion is possible ("1 cup flour" → "1 cup flour (125 g)"). Returns the
     line unchanged when there's no known density/weight. Non-destructive: this is
     what the recipe view's weight toggle shows."""
-    grams = to_grams(text)
+    grams = to_grams(text, learned=learned)
     if grams is None:
         return text
     return f"{text.strip()} ({_format_grams(grams)})"
