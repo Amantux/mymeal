@@ -11,7 +11,12 @@ from app.services import units
     ("½ tsp salt", 0.5, "tsp", "salt"),
     ("200 g sugar", 200.0, "g", "sugar"),
     ("1 lb ground beef", 1.0, "lb", "ground beef"),
-    ("2-3 cloves garlic", 2.0, None, "cloves garlic"),   # range → low end; clove not a unit
+    # Range still takes the low end. "clove" IS now a unit — it used to be left
+    # in the food name, so "2 cloves garlic" scaled as a bare number with the
+    # measure stuck to the ingredient. It converts to no weight (see
+    # test_count_units_never_claim_a_weight_or_volume), which is the honest
+    # answer for a clove.
+    ("2-3 cloves garlic", 2.0, "clove", "garlic"),
     ("salt to taste", None, None, "salt to taste"),
     ("3 eggs", 3.0, None, "eggs"),
 ])
@@ -58,3 +63,63 @@ def test_annotate_weight_appends_parenthetical_keeping_original():
 def test_annotate_weight_unchanged_when_not_convertible():
     assert units.annotate_weight("3 eggs") == "3 eggs"
     assert units.annotate_weight("2 cups diced onion") == "2 cups diced onion"
+
+
+# --- Scraped-recipe ingredient lines ---------------------------------------
+#
+# Every case below is a shape that real recipe sites emit and that the parser
+# previously left without a unit — or, for the approximator case, without a
+# quantity at all. An unparsed line still DISPLAYS fine, which is why this went
+# unnoticed; the cost is that it scales wrong, converts wrong, and consolidates
+# badly on a shopping list.
+
+@pytest.mark.parametrize("line,qty,unit,rest", [
+    # -- previously broken --
+    ("2 c. sugar", 2.0, "cup", "sugar"),                       # trailing period
+    ("2 tbsp. olive oil", 2.0, "tbsp", "olive oil"),
+    ("About 2 cups milk", 2.0, "cup", "milk"),                 # leading approximator
+    ("Approximately 1 tsp salt", 1.0, "tsp", "salt"),
+    ("a scant 1/2 cup cream", 0.5, "cup", "cream"),
+    ("1 pinch of nutmeg", 1.0, "pinch", "of nutmeg"),          # informal unit
+    ("2 cloves garlic, minced", 2.0, "clove", "garlic, minced"),
+    ("1 (14.5 oz) can diced tomatoes", 1.0, "can", "(14.5 oz) diced tomatoes"),
+    # -- already worked; pinned so the changes above don't regress them --
+    ("1 1/2 cups all-purpose flour", 1.5, "cup", "all-purpose flour"),
+    ("½ cup butter, softened", 0.5, "cup", "butter, softened"),
+    ("250g plain flour", 250.0, "g", "plain flour"),
+    ("2 lbs chicken thighs", 2.0, "lb", "chicken thighs"),
+    ("1 to 2 teaspoons salt", 1.0, "tsp", "salt"),             # range: low end
+    ("3 large eggs", 3.0, None, "large eggs"),                 # no unit is correct
+    ("Salt and pepper to taste", None, None, "Salt and pepper to taste"),
+])
+def test_parse_line_handles_real_scraped_shapes(line, qty, unit, rest):
+    got = units.parse_line(line)
+
+    assert got["qty"] == qty
+    assert got["unit"] == unit
+    assert got["rest"] == rest
+
+
+@pytest.mark.parametrize("unit", [
+    "pinch", "dash", "handful", "clove", "slice", "can", "package", "stick",
+    "sprig", "bunch", "head",
+])
+def test_count_units_never_claim_a_weight_or_volume(unit):
+    """They are units for scaling only. Giving "1 clove" a gram value would
+    make every weight readout quietly wrong, which is worse than declining."""
+    assert units.canonical_unit(unit) == unit     # recognised as a unit...
+    assert units.dimension(unit) is None          # ...but converts to nothing
+
+
+def test_a_count_unit_scales_without_converting():
+    assert units.to_grams("2 cloves garlic") is None
+    assert units.scale_line("2 cloves garlic", 2).startswith("4 ")
+
+
+def test_parsing_never_rewrites_the_humans_line():
+    """display stays the source of truth; the parse is derived from it. A
+    stripped approximator must not disappear from what the cook reads."""
+    line = "About 2 cups milk"
+
+    assert units.parse_line(line)["rest"] == "milk"
+    assert units.scale_line(line, 1) is not None   # never raises on the original

@@ -113,11 +113,16 @@ def version_out(v, include_snapshot=False):
 
 
 def recipe_summary(r):
+    # Local import, matching the other service imports in this module.
+    from ..services.cooking import format_temperature
+
     return {
         "id": r.id,
         "name": r.name,
         "slug": r.slug,
         "description": r.description,
+        "cookTemperatureC": r.cook_temperature_c,
+        "cookTemperature": format_temperature(r.cook_temperature_c),
         "image": f"/api/v1/recipes/{r.id}/image" if r.image else None,
         "videos": [recipe_video_out(v) for v in r.videos],
         "servings": r.servings,

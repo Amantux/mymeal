@@ -23,6 +23,14 @@ class Recipe(IDMixin, TimestampMixin, db.Model):
     cook_minutes: Mapped[int] = mapped_column(Integer, default=0)
     total_minutes: Mapped[int] = mapped_column(Integer, default=0)
 
+    # Oven temperature in Celsius, unrounded (350°F is 176.67°C — storing 177
+    # and converting back would show 351°F and stop matching the recipe).
+    # Nullable: "no temperature" is a real answer for a salad, and distinct
+    # from 0.
+    cook_temperature_c: Mapped[float | None] = mapped_column(
+        Float, nullable=True, default=None
+    )
+
     source_url: Mapped[str] = mapped_column(String(1024), default="")
 
     # How-to videos. delete-orphan: removing a recipe takes its videos with it.

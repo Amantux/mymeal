@@ -162,6 +162,12 @@ def normalize_jsonld(node: dict, base_url: str = "") -> dict:
         if _text(i)
     ]
     steps = [{"text": t} for t in _flatten_instructions(node.get("recipeInstructions"))]
+    # schema.org has no temperature field, so read it out of the instructions
+    # (and cookingMethod, where some sites put "Bake at 180C").
+    from ...services.cooking import parse_temperature
+    temperature = parse_temperature(
+        " ".join([_text(node.get("cookingMethod"))] + [s["text"] for s in steps]))
+
     prep = _iso_duration_to_minutes(node.get("prepTime"))
     cook = _iso_duration_to_minutes(node.get("cookTime"))
     total = _iso_duration_to_minutes(node.get("totalTime")) or (prep + cook)
@@ -173,6 +179,7 @@ def normalize_jsonld(node: dict, base_url: str = "") -> dict:
         "prepMinutes": prep,
         "cookMinutes": cook,
         "totalMinutes": total,
+        "cookTemperatureC": temperature,
         "ingredients": ingredients,
         "steps": steps,
         "tags": _extract_tags(node),

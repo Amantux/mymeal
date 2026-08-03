@@ -28,6 +28,10 @@ def _snapshot_recipe(recipe: Recipe) -> dict:
         "prepMinutes": recipe.prep_minutes,
         "cookMinutes": recipe.cook_minutes,
         "totalMinutes": recipe.total_minutes,
+        # MUST be here: _apply accepts cookTemperatureC, and any field the
+        # update endpoint accepts but the snapshot omits is silently wiped when
+        # a version is restored.
+        "cookTemperatureC": recipe.cook_temperature_c,
         "sourceUrl": recipe.source_url,
         "rating": recipe.rating,
         "isFavorite": recipe.is_favorite,

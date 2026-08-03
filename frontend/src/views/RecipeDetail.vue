@@ -166,6 +166,7 @@ async function startEdit() {
     prepMinutes: r.prepMinutes,
     cookMinutes: r.cookMinutes,
     totalMinutes: r.totalMinutes,
+    cookTemperatureC: r.cookTemperatureC,
     sourceUrl: r.sourceUrl,
     notes: r.notes,
   }
@@ -242,7 +243,8 @@ function loadBuffersFrom(snap) {
   form.value = {
     name: snap.name, description: snap.description, recipeYield: snap.recipeYield,
     servings: snap.servings, prepMinutes: snap.prepMinutes, cookMinutes: snap.cookMinutes,
-    totalMinutes: snap.totalMinutes, sourceUrl: snap.sourceUrl, notes: snap.notes,
+    totalMinutes: snap.totalMinutes, cookTemperatureC: snap.cookTemperatureC,
+    sourceUrl: snap.sourceUrl, notes: snap.notes,
   }
   nutritionForm.value = { ...(snap.nutrition || {}) }
   selectedCategoryIds.value = snap.categoryIds || []
@@ -399,7 +401,8 @@ function exportJson() {
   const out = {
     name: r.name, description: r.description, servings: r.servings,
     recipeYield: r.recipeYield, prepMinutes: r.prepMinutes, cookMinutes: r.cookMinutes,
-    totalMinutes: r.totalMinutes, sourceUrl: r.sourceUrl, notes: r.notes,
+    totalMinutes: r.totalMinutes, cookTemperatureC: r.cookTemperatureC,
+    sourceUrl: r.sourceUrl, notes: r.notes,
     nutrition: r.nutrition || null,
     tags: (r.tags || []).map((t) => t.name),
     categories: (r.categories || []).map((c) => c.name),
@@ -559,6 +562,7 @@ const imageSrc = computed(() =>
             <div class="row wrap" style="gap:8px;margin-top:8px">
               <span v-if="recipe.servings" class="badge">🍽️ {{ recipe.servings }} servings</span>
               <span v-if="recipe.totalMinutes" class="badge tnum">⏱️ {{ recipe.totalMinutes }} min</span>
+              <span v-if="recipe.cookTemperature" class="badge tnum">🌡️ {{ recipe.cookTemperature }}</span>
               <span v-for="c in recipe.categories" :key="c.id" class="chip">{{ c.name }}</span>
               <span v-for="tag in recipe.tags" :key="tag.id" class="badge">{{ tag.name }}</span>
             </div>
@@ -784,6 +788,9 @@ const imageSrc = computed(() =>
           <label class="field"><span>Prep (min)</span><input v-model.number="form.prepMinutes" type="number" min="0" /></label>
           <label class="field"><span>Cook (min)</span><input v-model.number="form.cookMinutes" type="number" min="0" /></label>
           <label class="field"><span>Total (min)</span><input v-model.number="form.totalMinutes" type="number" min="0" /></label>
+          <label class="field"><span>Oven (°C)</span>
+            <input v-model.number="form.cookTemperatureC" type="number" min="0" max="300"
+                   placeholder="e.g. 180" /></label>
         </div>
         <label class="field"><span>Source URL</span><input v-model="form.sourceUrl" /></label>
         <label class="field"><span>Image</span><input type="file" accept="image/*" @change="uploadImage" /></label>

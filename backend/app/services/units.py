@@ -28,6 +28,17 @@ _WEIGHT_G = {
     "lb": 453.592, "pound": 453.592,
 }
 
+# Count-ish units that appear constantly in scraped recipes. They are
+# deliberately absent from _VOLUME_ML and _WEIGHT_G: there is no honest
+# millilitre or gram value for "1 clove", and inventing one would make
+# to_grams() quietly wrong. dimension() therefore returns None for these, so
+# scaling multiplies the count and weight conversion declines — which is the
+# correct behaviour, not a limitation.
+_COUNT_UNITS = {
+    "pinch", "dash", "handful", "clove", "slice", "can", "tin", "package",
+    "stick", "sprig", "bunch", "head", "jar", "bottle", "packet",
+}
+
 # Map spellings/plurals/abbreviations to a canonical key above.
 _ALIASES = {
     "milliliters": "ml", "millilitres": "ml", "millilitre": "ml",
@@ -43,6 +54,12 @@ _ALIASES = {
     "kilograms": "kg", "kilo": "kg", "kilos": "kg", "kgs": "kg",
     "ounces": "oz", "ozs": "oz",
     "pounds": "lb", "lbs": "lb", "#": "lb",
+    # plurals of the count units
+    "pinches": "pinch", "dashes": "dash", "handfuls": "handful",
+    "cloves": "clove", "slices": "slice", "cans": "can", "tins": "tin",
+    "packages": "package", "pkg": "package", "pkgs": "package",
+    "sticks": "stick", "sprigs": "sprig", "bunches": "bunch", "heads": "head",
+    "jars": "jar", "bottles": "bottle", "packets": "packet",
 }
 
 # Approximate densities (grams per millilitre) for common pantry foods, matched
@@ -64,8 +81,22 @@ _UNICODE_FRACTIONS = {
 
 # Longest unit spellings first so "fl oz" matches before "oz".
 _UNIT_KEYS = sorted(
-    set(_VOLUME_ML) | set(_WEIGHT_G) | set(_ALIASES), key=len, reverse=True
+    set(_VOLUME_ML) | set(_WEIGHT_G) | set(_ALIASES) | _COUNT_UNITS,
+    key=len, reverse=True,
 )
+
+# Words a recipe puts in front of a quantity. Stripped before matching so
+# "About 2 cups milk" parses; the original line is never rewritten, only the
+# structured quantity/unit are derived from it.
+_APPROXIMATORS = (
+    "approximately", "approx.", "approx", "about", "around", "roughly",
+    "a scant", "scant", "heaping", "heaped", "generous", "a generous",
+)
+
+# "1 (14.5 oz) can diced tomatoes" — the bracketed pack size sits between the
+# count and the unit and blocked the unit match. Skipped when looking for the
+# unit; left in the food text, where a cook expects to read it.
+_LEADING_PAREN_RE = re.compile(r"^\s*\([^)]*\)\s*")
 
 
 def canonical_unit(raw: str) -> str | None:
@@ -73,7 +104,12 @@ def canonical_unit(raw: str) -> str | None:
     if not u:
         return None
     u = _ALIASES.get(u, u)
-    return u if u in _VOLUME_ML or u in _WEIGHT_G else None
+    # Count units are canonical too, even though they convert to nothing —
+    # returning None for them would leave "2 cloves garlic" with no unit at all,
+    # so the word stayed stuck in the food name and the quantity scaled without
+    # its measure. dimension() still returns None for them, which is what keeps
+    # weight conversion honest.
+    return u if u in _VOLUME_ML or u in _WEIGHT_G or u in _COUNT_UNITS else None
 
 
 def dimension(unit: str | None) -> str | None:
@@ -116,23 +152,45 @@ _QTY_RE = re.compile(
 )
 
 
+def _strip_approximator(s: str) -> str:
+    low = s.lower()
+    for word in _APPROXIMATORS:
+        if low.startswith(word + " "):
+            return s[len(word):].lstrip()
+    return s
+
+
+def _match_unit(rest: str):
+    """(canonical_unit, remaining_text) for a unit at the start of `rest`.
+
+    Handles a leading bracketed pack size and a trailing period on an
+    abbreviation ("2 c. sugar"), both of which are everywhere in scraped
+    recipes and both of which previously stopped the unit being recognised.
+    """
+    skipped = _LEADING_PAREN_RE.match(rest)
+    if skipped:
+        # Keep the bracket text in the food, but look past it for the unit.
+        after = rest[skipped.end():]
+        unit, remainder = _match_unit(after)
+        if unit:
+            return unit, (rest[:skipped.end()] + remainder).strip()
+    low = rest.lower()
+    for key in _UNIT_KEYS:
+        for token in (key, key + "."):
+            if low == token or low.startswith(token + " "):
+                return canonical_unit(key), rest[len(token):].strip()
+    return None, rest
+
+
 def parse_line(text: str) -> dict:
     """Parse a free-text ingredient line into {qty, unit(canonical), rest}.
     Any part may be None/'' when it isn't present. Never raises."""
-    s = (text or "").strip()
+    s = _strip_approximator((text or "").strip())
     m = _QTY_RE.match(s)
     if not m or not m.group("qty"):
         return {"qty": None, "unit": None, "rest": s}
     qty = _parse_number(m.group("qty"))
-    rest = m.group("rest").strip()
-    unit = None
-    low = rest.lower()
-    for key in _UNIT_KEYS:
-        # unit token must be a whole word at the start of the remainder
-        if low == key or low.startswith(key + " "):
-            unit = canonical_unit(key)
-            rest = rest[len(key):].strip()
-            break
+    unit, rest = _match_unit(m.group("rest").strip())
     return {"qty": qty, "unit": unit, "rest": rest}
 
 

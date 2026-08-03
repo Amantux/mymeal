@@ -179,6 +179,7 @@ def _apply(recipe: Recipe, data: dict):
         "prepMinutes": "prep_minutes",
         "cookMinutes": "cook_minutes",
         "totalMinutes": "total_minutes",
+        "cookTemperatureC": "cook_temperature_c",
         "sourceUrl": "source_url",
         "rating": "rating",
         "isFavorite": "is_favorite",
