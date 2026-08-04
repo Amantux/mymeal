@@ -1,4 +1,4 @@
-FROM postgres:16
+FROM postgres:18
 
 # A small provisioning sidecar (Flask + psycopg2) mints a per-app database+role
 # on request and publishes Supervisor discovery. Installed from Debian packages
