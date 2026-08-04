@@ -199,14 +199,19 @@ def probe_config(base, gid, provider=None, base_url=None, api_key=None):
     """Build a throwaway effective config for a model probe against the values
     currently in the form (not necessarily saved). Falls back to the saved/env
     effective config for anything not supplied."""
-    eff = effective_settings(base, gid)
-    p = (provider or eff.AI_PROVIDER or "").strip()
+    # Resolve for the provider the FORM is asking about, not the saved one.
+    # This previously resolved with the saved provider and then patched, which
+    # broke both ways: with a local Ollama saved, probing "ollama_cloud" kept
+    # http://localhost:11434 (so the cloud model picker queried a local server
+    # and came back empty, with no error); and with the cloud saved, probing
+    # "ollama" kept ollama.com AND carried the cloud API key with it — exactly
+    # the cross-provider bleed effective_settings exists to prevent.
+    p = (provider or effective_settings(base, gid).AI_PROVIDER or "").strip()
+    eff = effective_settings(base, gid, provider=p)
     eff.AI_PROVIDER = p
     if p in ("ollama", "ollama_cloud"):
         if base_url:
             eff.OLLAMA_HOST = base_url.strip()
-        elif p == "ollama_cloud" and not getattr(eff, "OLLAMA_HOST", ""):
-            eff.OLLAMA_HOST = OLLAMA_CLOUD_HOST
         # Ollama Cloud needs the key to list models; use the form value if given.
         if api_key:
             eff.OLLAMA_API_KEY = api_key
@@ -218,9 +223,48 @@ def probe_config(base, gid, provider=None, base_url=None, api_key=None):
     return eff
 
 
+def _model_list_hint(exc, provider: str, base_url: str) -> str:
+    """An actionable one-liner for why the model list is empty.
+
+    Mirrors the curated messages the Ollama provider gives for chat: the raw
+    httpx string leads with the URL, which is almost never the cause and sends
+    people looking in the wrong place.
+    """
+    import httpx
+
+    from .base import safe_upstream_detail
+
+    where = "Ollama Cloud" if "ollama.com" in (base_url or "") else base_url
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        if code in (401, 403):
+            return f"{where} rejected the API key — check the key for this provider."
+        if code == 404:
+            return f"{where} has no model list at this address — check the base URL."
+        return f"{where} refused the model list ({code})."
+    if isinstance(exc, httpx.ConnectError):
+        return f"Could not reach {where} — is it running, and is the base URL right?"
+    if isinstance(exc, httpx.TimeoutException):
+        return f"{where} did not respond in time."
+    return f"Could not list models from {where}: {safe_upstream_detail(exc)}"
+
+
 def list_models(eff, timeout: float = 12.0) -> list[str]:
+    """Just the model names. Kept as the list-returning form because the SSRF
+    tests assert ``list_models(eff) == []`` for a refused URL — that contract is
+    load-bearing and should not be reshaped to suit the UI."""
+    return list_models_result(eff, timeout)["models"]
+
+
+def list_models_result(eff, timeout: float = 12.0) -> dict:
     """Query the active provider for its model list, for the UI picker.
-    Best-effort; returns [] on any error (never raises into a request)."""
+
+    Returns ``{"models": [...], "error": str|None}``. Never raises into a
+    request — but unlike the old bare-list form it says WHY it is empty, which
+    Edibl has done from the start (``services/assistant.list_models``). "No
+    models" and "your key is wrong" are different problems and looked identical
+    in the picker.
+    """
     import httpx
 
     from .url_guard import llm_url_ok
@@ -238,11 +282,11 @@ def list_models(eff, timeout: float = 12.0) -> list[str]:
         base_url = (eff.OPENAI_BASE_URL or "https://api.openai.com/v1").rstrip("/")
     else:
         # claude has no list endpoint; the UI falls back to a free-text field.
-        return []
+        return {"models": [], "error": None}
     ok, err = llm_url_ok(base_url)
     if not ok:
         _LOGGER.warning("refusing to list models: %s", err)
-        return []
+        return {"models": [], "error": f"that base URL is not allowed: {err}"}
 
     try:
         with httpx.Client(timeout=timeout) as c:
@@ -251,10 +295,21 @@ def list_models(eff, timeout: float = 12.0) -> list[str]:
                     if getattr(eff, "OLLAMA_API_KEY", "") else {}
                 r = c.get(f"{base_url}/api/tags", headers=oh)
                 r.raise_for_status()
-                return sorted(m.get("name", "") for m in r.json().get("models", []) if m.get("name"))
+                names = sorted(m.get("name", "") for m in r.json().get("models", []) if m.get("name"))
+                return {"models": names, "error": None}
             h = {"Authorization": f"Bearer {eff.OPENAI_API_KEY}"} if eff.OPENAI_API_KEY else {}
             r = c.get(f"{base_url}/models", headers=h)
             r.raise_for_status()
-            return sorted(m.get("id", "") for m in r.json().get("data", []) if m.get("id"))
-    except Exception:  # noqa: BLE001 - a model-picker failure must not 500
-        return []
+            ids = sorted(m.get("id", "") for m in r.json().get("data", []) if m.get("id"))
+            return {"models": ids, "error": None}
+    except Exception as exc:  # noqa: BLE001 - a model-picker failure must not 500
+        # Still [] for the caller — the UI must render an empty picker, not a
+        # 500. But log WHY: an empty list and a broken list looked identical
+        # from the outside, so "the model list doesn't work" was unanswerable
+        # without attaching a debugger. The URL is included because the usual
+        # cause is probing the wrong host for the selected provider.
+        from .base import safe_upstream_detail  # local: avoids an import cycle
+
+        detail = safe_upstream_detail(exc)
+        _LOGGER.warning("model list failed for provider=%s at %s: %s", p, base_url, detail)
+        return {"models": [], "error": _model_list_hint(exc, p, base_url)}

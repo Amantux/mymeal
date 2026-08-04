@@ -39,15 +39,59 @@ class OllamaProvider(AIProvider):
         # server ignores it. Only send when configured.
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
+    def _explain(self, exc: httpx.HTTPError) -> str:
+        """Turn an httpx failure into something the operator can act on.
+
+        The default rendering is actively misleading: httpx's HTTPStatusError
+        stringifies as "Client error '401 Unauthorized' for url
+        'https://ollama.com/api/chat' For more information check <MDN link>",
+        so the most prominent thing in the message is the URL — which is never
+        the problem. It sent at least one person looking for a wrong endpoint
+        when their key was simply missing.
+
+        Curated messages per status; the upstream response body is deliberately
+        NOT echoed. Anything unrecognised still falls back to the redacted
+        summary so an unexpected failure is not swallowed.
+        """
+        where = "Ollama Cloud" if "ollama.com" in (self.host or "") else f"Ollama at {self.host}"
+
+        if isinstance(exc, httpx.HTTPStatusError):
+            code = exc.response.status_code
+            if code in (401, 403):
+                return (f"{where} rejected the API key. Add or correct the Ollama "
+                        f"API key in Settings → AI provider.")
+            if code == 404:
+                # /api/chat exists on both local and cloud (a genuinely missing
+                # path returns 'path not found'), so a 404 here means the MODEL
+                # is not available, not that the endpoint is wrong.
+                return (f"{where} does not have the model “{self.model}”. Pick one "
+                        f"from the model list in Settings — a cloud key cannot use "
+                        f"a model you only have locally, and vice versa.")
+            if code == 429:
+                return f"{where} is rate-limiting this key. Wait a moment and retry."
+            if code >= 500:
+                return f"{where} had a server error ({code}). This is upstream; retry shortly."
+            return f"{where} refused the request ({code})."
+
+        if isinstance(exc, httpx.TimeoutException):
+            return (f"{where} did not respond within {self.timeout:g}s. A large model on "
+                    f"modest hardware can exceed this — raise the AI timeout in Settings.")
+        if isinstance(exc, httpx.ConnectError):
+            return (f"Could not reach {where}. Check the host is correct and the "
+                    f"server is running.")
+        return f"{where} request failed: {safe_upstream_detail(exc)}"
+
     def _post(self, payload: dict) -> dict:
         try:
+            # /api/chat, not /api/generate: this provider needs the messages
+            # array and tool calling, which /api/generate (single `prompt`,
+            # no tools) does not support. Both endpoints exist on local and
+            # cloud; only this one can drive the assistant.
             r = httpx.post(f"{self.host}/api/chat", json=payload,
                            headers=self._headers(), timeout=self.timeout)
             r.raise_for_status()
         except httpx.HTTPError as exc:
-            raise ProviderError(
-                f"ollama request failed: {safe_upstream_detail(exc)}"
-            ) from exc
+            raise ProviderError(self._explain(exc)) from exc
         return r.json()
 
     def _complete(self, system: str, prompt: str, max_tokens: int) -> str:

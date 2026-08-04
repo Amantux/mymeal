@@ -191,7 +191,7 @@ def list_ai_models():
     values in the request body (provider/baseUrl/apiKey) WITHOUT persisting, so
     'List models' does not save the form as a side effect. Best-effort — returns
     [] rather than erroring."""
-    from ..services.ai.provider_config import list_models, probe_config
+    from ..services.ai.provider_config import list_models_result, probe_config
     from ..services.ai.url_guard import llm_url_ok
 
     data = request.get_json(silent=True) or {}
@@ -203,7 +203,12 @@ def list_ai_models():
     eff = probe_config(_base_settings(), current_group().id,
                        provider=data.get("provider"), base_url=base_url,
                        api_key=data.get("apiKey"))
-    return jsonify({"provider": eff.AI_PROVIDER, "models": list_models(eff)})
+    # 200 with an `error` field, not a failure status: the picker must still
+    # render (Edibl's /assistant/models does the same). An empty list and a
+    # broken one are different problems and used to look identical here.
+    result = list_models_result(eff)
+    return jsonify({"provider": eff.AI_PROVIDER, "models": result["models"],
+                    "error": result["error"]})
 
 
 def _import_events(data, group_id):

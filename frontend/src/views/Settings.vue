@@ -9,6 +9,7 @@ const loading = ref(true)
 const saving = ref(false)
 const providers = ref([])          // status list (name/available/active)
 const models = ref([])             // model-picker options for the active provider
+const modelsError = ref('')        // why the picker is empty, when it is
 const loadingModels = ref(false)
 const discovering = ref(false)
 
@@ -70,7 +71,13 @@ async function autoListModels() {
       provider: form.provider, baseUrl: form.baseUrl, apiKey: form.apiKey || undefined,
     })
     models.value = res.models || []
-  } catch (e) { /* auto-probe is best-effort */ } finally { loadingModels.value = false }
+    // Silent means no toast, NOT no feedback: the picker shows why it is empty.
+    // Previously any failure was swallowed here and an unreachable host looked
+    // exactly like a provider with no models.
+    modelsError.value = res.error || ''
+  } catch (e) {
+    modelsError.value = e.message || 'Could not reach the provider.'
+  } finally { loadingModels.value = false }
 }
 
 async function load() {
@@ -650,6 +657,7 @@ async function findOllama() {
           </datalist>
           <span v-if="models.length" class="help">{{ models.length }} models available — pick from the list.</span>
           <span v-else-if="loadingModels" class="help">Looking for available models…</span>
+          <span v-else-if="modelsError" class="help err">{{ modelsError }}</span>
           <span v-else-if="canList && form.baseUrl" class="help">
             No models found at that host yet — check it's running, or type the model name.
           </span>
@@ -1022,6 +1030,9 @@ async function findOllama() {
 .danger { color: var(--danger); }
 .key-empty { display: flex; align-items: center; gap: 8px; padding: 14px 12px; font-size: 0.85rem; background: var(--surface-2); border-radius: var(--radius-sm); }
 .key-empty .ke-ico { font-size: 1.1rem; opacity: 0.7; }
+/* Why the model picker is empty. Uses the danger token — a provider that can't
+   be reached is an error the user must act on, not neutral help text. */
+.help.err { color: var(--danger); }
 
 /* Learned weights: a row per remembered value. A list rather than a table so it
    stacks on a phone — a table here pushed the Forget button off-screen, which is

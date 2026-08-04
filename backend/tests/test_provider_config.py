@@ -192,3 +192,158 @@ def test_ollama_cloud_key_stored_separately_from_local_ollama(noauth_app):
     assert c.get("/api/v1/ai/settings").get_json()["apiKeySet"] is False  # local: no key
     _put(c, {"provider": "ollama_cloud"})  # switch back
     assert c.get("/api/v1/ai/settings").get_json()["apiKeySet"] is True   # cloud key remembered
+
+
+def test_probing_a_provider_you_have_not_saved_yet_uses_that_providers_host(noauth_app):
+    """Switching the form to Ollama Cloud and opening the model picker BEFORE
+    saving must probe ollama.com — not whatever host the currently-saved
+    provider uses.
+
+    The bug: probe_config resolved the effective settings for the SAVED provider
+    and then only patched OLLAMA_HOST when it happened to be empty. With a local
+    Ollama saved, the host stayed http://localhost:11434, so the cloud model list
+    was fetched from a local server that isn't running and came back empty — with
+    no error at all, because list_models swallows everything and returns [].
+    """
+    from app.services.ai.provider_config import OLLAMA_CLOUD_HOST, probe_config
+
+    app = noauth_app
+    c = app.test_client()
+    c.put("/api/v1/ai/settings", json={"provider": "ollama",
+                                       "baseUrl": "http://localhost:11434",
+                                       "model": "llama3.2"})
+    with app.app_context():
+        from app.extensions import db
+        from app.models import Group
+
+        gid = db.session.query(Group).first().id
+        eff = probe_config(app.config["SETTINGS"], gid, provider="ollama_cloud")
+
+    assert eff.AI_PROVIDER == "ollama_cloud"
+    assert eff.OLLAMA_HOST == OLLAMA_CLOUD_HOST, (
+        f"probed {eff.OLLAMA_HOST!r} instead of the cloud host — the model "
+        f"picker would query the local server and return an empty list")
+
+
+def test_probing_local_ollama_does_not_inherit_a_saved_cloud_host(noauth_app):
+    """The same bug in the other direction: with Ollama Cloud saved, probing
+    'ollama' must not send a local-model request to ollama.com."""
+    from app.services.ai.provider_config import OLLAMA_CLOUD_HOST, probe_config
+
+    app = noauth_app
+    c = app.test_client()
+    c.put("/api/v1/ai/settings", json={"provider": "ollama_cloud",
+                                       "model": "gpt-oss:120b", "apiKey": "k-test"})
+    with app.app_context():
+        from app.extensions import db
+        from app.models import Group
+
+        gid = db.session.query(Group).first().id
+        eff = probe_config(app.config["SETTINGS"], gid, provider="ollama")
+
+    assert eff.AI_PROVIDER == "ollama"
+    assert eff.OLLAMA_HOST != OLLAMA_CLOUD_HOST, (
+        "probing a local Ollama inherited the saved cloud host")
+
+
+def test_an_explicit_base_url_in_the_form_still_wins(noauth_app):
+    """The form's own value must beat both defaults — that is the whole point of
+    probing before saving."""
+    from app.services.ai.provider_config import probe_config
+
+    app = noauth_app
+    c = app.test_client()
+    c.put("/api/v1/ai/settings", json={"provider": "ollama_cloud", "model": "m"})
+    with app.app_context():
+        from app.extensions import db
+        from app.models import Group
+
+        gid = db.session.query(Group).first().id
+        eff = probe_config(app.config["SETTINGS"], gid, provider="ollama_cloud",
+                           base_url="http://192.168.1.50:11434")
+
+    assert eff.OLLAMA_HOST == "http://192.168.1.50:11434"
+
+
+def test_a_401_tells_you_to_fix_the_api_key(noauth_app):
+    """The default httpx rendering put the URL front and centre — which sent a
+    user hunting for a wrong endpoint when the key was simply missing."""
+    import httpx
+
+    from app.services.ai.ollama import OllamaCloudProvider
+
+    p = OllamaCloudProvider.__new__(OllamaCloudProvider)
+    p.host, p.model, p.timeout, p.api_key = "https://ollama.com", "m", 60, ""
+    r = httpx.Response(401, json={"error": "Unauthorized"},
+                       request=httpx.Request("POST", "https://ollama.com/api/chat"))
+    try:
+        r.raise_for_status()
+    except httpx.HTTPError as exc:
+        msg = p._explain(exc)
+
+    assert "API key" in msg
+    assert "/api/chat" not in msg, "the endpoint is never the cause of a 401"
+    assert "HTTPStatusError" not in msg, "internal exception class leaked to the user"
+    assert "developer.mozilla.org" not in msg
+
+
+def test_a_404_points_at_the_model_not_the_endpoint(noauth_app):
+    """/api/chat exists on both local and cloud (a genuinely missing path returns
+    'path not found'), so a 404 here means the model is unavailable."""
+    import httpx
+
+    from app.services.ai.ollama import OllamaCloudProvider
+
+    p = OllamaCloudProvider.__new__(OllamaCloudProvider)
+    p.host, p.model, p.timeout, p.api_key = "https://ollama.com", "llama3.2", 60, "k"
+    r = httpx.Response(404, json={"error": "not found"},
+                       request=httpx.Request("POST", "https://ollama.com/api/chat"))
+    try:
+        r.raise_for_status()
+    except httpx.HTTPError as exc:
+        msg = p._explain(exc)
+
+    assert "llama3.2" in msg and "model" in msg.lower()
+
+
+def test_a_failed_model_list_is_logged_not_swallowed(noauth_app, caplog):
+    """It still returns [] so the picker renders — but an empty list and a broken
+    one used to be indistinguishable from the outside."""
+    import logging
+    from types import SimpleNamespace
+
+    from app.services.ai.provider_config import list_models
+
+    eff = SimpleNamespace(AI_PROVIDER="ollama_cloud", OLLAMA_HOST="http://127.0.0.1:9",
+                          OLLAMA_API_KEY="k", OPENAI_API_KEY="", OPENAI_BASE_URL="")
+    with caplog.at_level(logging.WARNING):
+        assert list_models(eff, timeout=2) == []
+
+    assert any("model list failed" in r.getMessage() for r in caplog.records), \
+        "a broken model list logged nothing — indistinguishable from an empty one"
+
+
+def test_the_curated_message_is_what_a_real_request_actually_raises(noauth_app, monkeypatch):
+    """Wire-level, not helper-level. An earlier version of this file only called
+    _explain() directly, so reverting _post to the raw httpx string broke no
+    test — the mutation survived and the fix was unprotected."""
+    import httpx
+    import pytest
+
+    from app.services.ai.base import ProviderError
+    from app.services.ai.ollama import OllamaCloudProvider
+
+    p = OllamaCloudProvider.__new__(OllamaCloudProvider)
+    p.host, p.model, p.timeout, p.api_key = "https://ollama.com", "m", 60, ""
+
+    def fake_post(*a, **k):
+        return httpx.Response(401, json={"error": "Unauthorized"},
+                              request=httpx.Request("POST", "https://ollama.com/api/chat"))
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    with pytest.raises(ProviderError) as ei:
+        p._post({"model": "m", "messages": []})
+
+    msg = str(ei.value)
+    assert "API key" in msg
+    assert "HTTPStatusError" not in msg and "/api/chat" not in msg
