@@ -69,7 +69,8 @@ def get_provider(settings=None) -> AIProvider:
     return provider
 
 
-def provider_for_group(gid, settings=None, model=None, provider=None) -> AIProvider:
+def provider_for_group(gid, settings=None, model=None, provider=None,
+                       base_url=None, api_key=None) -> AIProvider:
     """Build the provider for a specific group OUTSIDE a request context (e.g. the
     background worker, where ``g.current_group`` isn't set). Resolves that group's
     saved provider overrides explicitly so a UI-configured provider still applies.
@@ -78,6 +79,11 @@ def provider_for_group(gid, settings=None, model=None, provider=None) -> AIProvi
     from .provider_config import effective_settings
     from .settings_access import resolved
     eff = effective_settings(resolved(settings), gid, provider=provider)
+    # A per-run host/key override — used by background jobs pointed at their own
+    # server. Applied to the resolved settings BEFORE the provider is built, so
+    # the provider class needs no knowledge of where the values came from.
+    if base_url or api_key:
+        _apply_endpoint_override(eff, base_url, api_key)
     name = _configured_name(eff)
     if not name:
         raise ProviderError("No AI provider configured.")
@@ -91,18 +97,56 @@ def provider_for_group(gid, settings=None, model=None, provider=None) -> AIProvi
     return provider
 
 
+def _apply_endpoint_override(eff, base_url, api_key) -> None:
+    """Point the resolved settings at a different server / key.
+
+    Writes the attribute the SELECTED provider actually reads, so an override
+    can never land on the wrong provider's field — the same per-provider
+    namespacing rule the stored config follows.
+    """
+    p = (getattr(eff, "AI_PROVIDER", "") or "").strip()
+    if p in ("ollama", "ollama_cloud"):
+        if base_url:
+            eff.OLLAMA_HOST = base_url
+        if api_key:
+            eff.OLLAMA_API_KEY = api_key
+    elif p == "openai":
+        if base_url:
+            eff.OPENAI_BASE_URL = base_url
+        if api_key:
+            eff.OPENAI_API_KEY = api_key
+    elif p == "claude" and api_key:
+        eff.ANTHROPIC_API_KEY = api_key   # Claude has no configurable base URL
+
+
 def resolve_job_provider(kind, gid, settings=None, opts=None) -> AIProvider | None:
     """Provider override for a background job of ``kind`` (nutrition / categorize /
     cluster), or None to fall back to the group's configured chat provider.
-    Precedence: per-run ``opts`` (provider/model) > the stored async preference for
-    this kind. Raises ``ProviderError`` if the chosen provider is unavailable."""
-    from .provider_config import job_preference
+
+    Precedence: per-run ``opts`` > the stored async preference for this kind.
+    A stored base_url/api_key lets async work run on its own server — typically a
+    local box doing the slow jobs while chat stays on something faster.
+
+    Raises ``ProviderError`` if the chosen provider is unavailable."""
+    from .provider_config import job_override
+    from .url_guard import llm_url_ok
+
     opts = opts or {}
-    pref_provider, pref_model = job_preference(gid, kind)
-    provider = opts.get("provider") or pref_provider
-    model = opts.get("model") or pref_model
-    if not (provider or model):
+    pref = job_override(gid, kind)
+    provider = opts.get("provider") or pref["provider"]
+    model = opts.get("model") or pref["model"]
+    base_url = (opts.get("baseUrl") or pref["base_url"] or "").strip()
+    api_key = opts.get("apiKey") or pref["api_key"]
+    if not (provider or model or base_url or api_key):
         return None
+
+    # Validated at the point of USE, not only where it was saved: this value can
+    # also arrive through per-run opts, which never pass the settings guard.
+    if base_url:
+        ok, err = llm_url_ok(base_url)
+        if not ok:
+            raise ProviderError(f"the async AI server URL is not allowed: {err}")
+
     # Only pass provider= when actually switching provider, so a model-only override
     # keeps the original call shape.
     kwargs = {}
@@ -110,6 +154,10 @@ def resolve_job_provider(kind, gid, settings=None, opts=None) -> AIProvider | No
         kwargs["model"] = model
     if provider:
         kwargs["provider"] = provider
+    if base_url:
+        kwargs["base_url"] = base_url
+    if api_key:
+        kwargs["api_key"] = api_key
     return provider_for_group(gid, settings, **kwargs)
 
 

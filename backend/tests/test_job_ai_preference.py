@@ -14,19 +14,23 @@ def _gid(app):
 
 
 def test_job_preference_unset_is_none(auth_client, app):
+    """Every field blank means "same as chat" — the default must not change now
+    that the override also carries a base_url and key."""
     gid = _gid(app)
     with app.app_context():
-        assert pc.job_preference(gid, "nutrition") == (None, None)
-        assert pc.job_preference(gid, "categorize") == (None, None)
+        for kind in ("nutrition", "categorize"):
+            assert pc.job_override(gid, kind) == {
+                "provider": None, "model": None, "base_url": None, "api_key": None}
 
 
 def test_organize_shared_nutrition_separate(auth_client, app):
     gid = _gid(app)
     with app.app_context():
         pc.set_job_prefs(gid, {"organize": {"provider": "ollama", "model": "llama3.1"}})
-        assert pc.job_preference(gid, "categorize") == ("ollama", "llama3.1")
-        assert pc.job_preference(gid, "cluster") == ("ollama", "llama3.1")
-        assert pc.job_preference(gid, "nutrition") == (None, None)
+        for kind in ("categorize", "cluster"):
+            got = pc.job_override(gid, kind)
+            assert (got["provider"], got["model"]) == ("ollama", "llama3.1")
+        assert pc.job_override(gid, "nutrition")["provider"] is None
 
 
 def test_resolve_none_without_pref_or_opts(auth_client, app):
@@ -59,7 +63,8 @@ def test_job_settings_endpoint_roundtrip_and_validation(auth_client):
     r = auth_client.put("/api/v1/ai/job-settings", json={
         "enrich": {"provider": "ollama", "model": "m1"}, "organize": {}})
     assert r.status_code == 200
-    assert r.get_json()["enrich"] == {"provider": "ollama", "model": "m1"}
+    assert r.get_json()["enrich"] == {"provider": "ollama", "model": "m1",
+                                      "baseUrl": "", "apiKeySet": False}
     assert auth_client.get("/api/v1/ai/job-settings").get_json()["enrich"]["provider"] == "ollama"
     assert auth_client.put("/api/v1/ai/job-settings",
                            json={"enrich": {"provider": "bogus"}}).status_code == 422

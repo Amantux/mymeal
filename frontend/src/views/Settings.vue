@@ -126,7 +126,8 @@ onMounted(loadChatDefault)
 
 // Async-job AI preference: a provider+model default for background jobs, separate
 // from chat. Blank provider = same as chat. A per-run choice still wins.
-const jobAi = ref({ enrich: { provider: '', model: '' }, organize: { provider: '', model: '' } })
+const blankJobArea = () => ({ provider: '', model: '', baseUrl: '', apiKey: '', apiKeySet: false })
+const jobAi = ref({ enrich: blankJobArea(), organize: blankJobArea() })
 const jobAiSaving = ref(false)
 const JOB_AREAS = [
   { k: 'enrich', l: 'Nutrition' },
@@ -138,9 +139,24 @@ async function loadJobAi() {
 async function saveJobAi() {
   jobAiSaving.value = true
   try {
-    jobAi.value = await api.put('/ai/job-settings', jobAi.value)
+    // Send the typed key only when one was typed: blank means "leave the stored
+    // key alone", so posting '' on every save would wipe it.
+    const body = {}
+    for (const a of ['enrich', 'organize']) {
+      const v = jobAi.value[a]
+      body[a] = { provider: v.provider, model: v.model, baseUrl: v.baseUrl }
+      if (v.apiKey) body[a].apiKey = v.apiKey
+      if (v.clearApiKey) body[a].clearApiKey = true
+    }
+    jobAi.value = await api.put('/ai/job-settings', body)
     ui.toast('Saved background-task AI')
   } catch (e) { ui.toast(e.message || 'Could not save', 'error') } finally { jobAiSaving.value = false }
+}
+
+function clearJobKey(area) {
+  jobAi.value[area].apiKey = ''
+  jobAi.value[area].clearApiKey = true
+  jobAi.value[area].apiKeySet = false
 }
 onMounted(loadJobAi)
 
@@ -684,12 +700,14 @@ async function findOllama() {
 
   <div class="card" v-if="!loading">
     <h2>AI for background tasks</h2>
-    <p class="muted">Optionally run background jobs on a different model than chat — e.g. a
-      cheap or local model for bulk work. <strong>Same as chat</strong> uses the provider above.
-      A per-run choice still wins.</p>
+    <p class="muted">Run background jobs on a different model — and a different
+      <strong>server</strong> — from chat. The usual setup is a fast hosted model for chat
+      and a small local model on your own machine for the slow bulk work, which can take as
+      long as it likes because nobody is waiting on it.
+      <strong>Same as chat</strong> uses the provider above. A per-run choice still wins.</p>
     <div v-for="area in JOB_AREAS" :key="area.k" style="margin-bottom:14px">
       <div class="muted" style="font-size:0.85rem;font-weight:600;margin-bottom:4px">{{ area.l }}</div>
-      <div class="row" style="gap:8px">
+      <div class="row job-row" style="gap:8px">
         <select v-model="jobAi[area.k].provider" style="flex:1">
           <option value="">Same as chat</option>
           <option v-for="o in ['claude', 'openai', 'ollama', 'ollama_cloud']" :key="o" :value="o">{{ labels[o] }}</option>
@@ -703,6 +721,16 @@ async function findOllama() {
         <input v-else v-model="jobAi[area.k].model" placeholder="model (optional)" style="flex:1" />
         <button type="button" class="secondary sm" :disabled="jobModelsLoading[area.k]"
                 @click="listJobModels(area.k)">{{ jobModelsLoading[area.k] ? '…' : 'List' }}</button>
+      </div>
+      <!-- Its own server + key. Blank = the same one chat uses. -->
+      <div v-if="jobAi[area.k].provider" class="row job-row" style="gap:8px;margin-top:6px">
+        <input v-model="jobAi[area.k].baseUrl" style="flex:2"
+               placeholder="server, e.g. http://192.168.1.50:11434 (blank = same as chat)" />
+        <input v-model="jobAi[area.k].apiKey" type="password" style="flex:1"
+               :placeholder="jobAi[area.k].apiKeySet
+                 ? '•••• (saved — leave blank to keep)' : 'API key (optional)'" />
+        <button v-if="jobAi[area.k].apiKeySet" type="button" class="secondary sm"
+                @click="clearJobKey(area.k)">Clear</button>
       </div>
     </div>
     <div class="row" style="margin-top:8px">
@@ -1030,6 +1058,13 @@ async function findOllama() {
 .danger { color: var(--danger); }
 .key-empty { display: flex; align-items: center; gap: 8px; padding: 14px 12px; font-size: 0.85rem; background: var(--surface-2); border-radius: var(--radius-sm); }
 .key-empty .ke-ico { font-size: 1.1rem; opacity: 0.7; }
+
+/* Background-task AI: four controls per area is fine on a desktop and unusable
+   on a phone — the server URL truncated to "http://192.168.1.5". Stack them. */
+@media (max-width: 560px) {
+  .job-row { flex-direction: column; align-items: stretch; }
+  .job-row > * { width: 100%; flex: none !important; }
+}
 /* Why the model picker is empty. Uses the danger token — a provider that can't
    be reached is an error the user must act on, not neutral help text. */
 .help.err { color: var(--danger); }

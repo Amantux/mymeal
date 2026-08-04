@@ -101,9 +101,10 @@ def put_chat_settings():
 @bp.get("/ai/job-settings")
 @login_required
 def get_ai_job_settings():
-    """The async-job AI preference: a provider+model default for background work,
-    separate from chat. `enrich` = the nutrition job; `organize` = categorize +
-    cluster. Blank provider = same as chat."""
+    """The async-job AI preference: provider, model, SERVER and key for background
+    work, separate from chat. `enrich` = the nutrition job; `organize` =
+    categorize + cluster. Blank field = same as chat. Never returns the key —
+    only `apiKeySet`."""
     from ..services.ai.provider_config import get_job_prefs
     return jsonify(get_job_prefs(current_group().id))
 
@@ -111,13 +112,25 @@ def get_ai_job_settings():
 @bp.put("/ai/job-settings")
 @owner_required
 def put_ai_job_settings():
-    from ..services.ai.provider_config import VALID_PROVIDERS, get_job_prefs, set_job_prefs
+    from ..services.ai.provider_config import (
+        JOB_AREAS, VALID_PROVIDERS, get_job_prefs, set_job_prefs,
+    )
+    from ..services.ai.url_guard import llm_url_ok
+
     data = request.get_json(silent=True) or {}
-    for area in ("enrich", "organize"):
+    for area in JOB_AREAS:
         blk = data.get(area)
-        if isinstance(blk, dict) and blk.get("provider"):
-            if str(blk["provider"]) not in VALID_PROVIDERS:
-                return jsonify({"error": f"unknown provider {blk['provider']!r}"}), 422
+        if not isinstance(blk, dict):
+            continue
+        if blk.get("provider") and str(blk["provider"]) not in VALID_PROVIDERS:
+            return jsonify({"error": f"unknown provider {blk['provider']!r}"}), 422
+        # Refuse an unsafe async server here as well as at the point of use.
+        # Rejecting on save is what makes the mistake visible while the user is
+        # looking at the field, instead of days later in a failed job.
+        if blk.get("baseUrl"):
+            ok, err = llm_url_ok(str(blk["baseUrl"]).strip())
+            if not ok:
+                return jsonify({"error": f"{area}: {err}"}), 422
     set_job_prefs(current_group().id, data)
     return jsonify(get_job_prefs(current_group().id))
 
