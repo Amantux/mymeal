@@ -7,7 +7,7 @@ alembic==1.18.5
 # Postgres driver (optional backend). psycopg 3 bundles libpq via [binary];
 # unused when DATABASE_URL is blank (SQLite default).
 psycopg[binary]>=3.2
-marshmallow==3.22.0
+marshmallow==4.3.0
 PyJWT>=2.10.1
 passlib==1.7.4
 # passlib 1.7.4 reads bcrypt.__about__ which bcrypt>=4.1 removed; pin below that.
