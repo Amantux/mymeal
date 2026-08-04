@@ -1,9 +1,9 @@
-Flask==3.0.3
+Flask==3.1.3
 Flask-SQLAlchemy==3.1.1
 Flask-Cors==4.0.1
-SQLAlchemy==2.0.32
+SQLAlchemy==2.0.51
 # Schema migrations (SQLite + Postgres). Replaces the old create_all/_migrate.
-alembic==1.18.4
+alembic==1.18.5
 # Postgres driver (optional backend). psycopg 3 bundles libpq via [binary];
 # unused when DATABASE_URL is blank (SQLite default).
 psycopg[binary]>=3.2
@@ -19,7 +19,7 @@ gunicorn==22.0.0
 httpx>=0.27.0
 beautifulsoup4>=4.12.0
 # MCP server exposed to Home Assistant (runs alongside the app in the same container)
-mcp==1.27.0  # pin: newer mcp dropped mcp.server.fastmcp (breaks the MCP server + CI)
+mcp==1.29.0  # pin: newer mcp dropped mcp.server.fastmcp (breaks the MCP server + CI)
 uvicorn>=0.29.0
 # Pluggable AI providers (all optional at runtime — imported lazily).
 anthropic>=0.39.0
