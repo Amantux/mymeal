@@ -39,6 +39,7 @@ function planStages() {
 // the parser couldn't read — a clean import goes straight to the recipe.
 const imported = ref(null)
 const proposals = ref([])
+const warnings = ref([])   // non-fatal notes about the source (lint)
 const saving = ref(false)
 
 const canRun = computed(() => {
@@ -87,6 +88,7 @@ function sureness(confidence) {
 
 function beginReview(recipe) {
   imported.value = recipe
+  warnings.value = recipe.warnings || []
   proposals.value = (recipe.ingredientProposals || []).map((p) => ({
     ...p,
     // Opt-in per row. A proposal is a suggestion, and accepting all of them
@@ -126,7 +128,10 @@ async function run() {
     if (!recipe) throw new Error('The import finished without producing a recipe.')
 
     stagesFinished()
-    if ((recipe.ingredientProposals || []).length) {
+    // Stop on the review screen when there is something to confirm OR something
+    // worth telling the user about the source. A silent import that quietly
+    // lost the timings is worse than one that says so.
+    if ((recipe.ingredientProposals || []).length || (recipe.warnings || []).length) {
       beginReview(recipe)
     } else {
       ui.toast('Recipe imported')
@@ -188,8 +193,16 @@ async function applyReview() {
   <!-- Step 2: confirm what the model worked out. Only shown when it proposed
        something; most imports never see this. -->
   <div v-if="imported" class="card">
-    <h2 style="margin-top:0">A few lines needed interpreting</h2>
-    <p class="muted intro">
+    <h2 style="margin-top:0">
+      {{ proposals.length ? 'A few lines needed interpreting' : 'Imported, with notes' }}
+    </h2>
+
+    <!-- Lint: the import succeeded; these say what was thin about the source. -->
+    <ul v-if="warnings.length" class="notes">
+      <li v-for="(w, i) in warnings" :key="i">{{ w }}</li>
+    </ul>
+
+    <p v-if="proposals.length" class="muted intro">
       “{{ imported.name }}” is saved. {{ proposals.length }} ingredient
       line{{ proposals.length === 1 ? '' : 's' }} weren’t written in a form the app
       could measure, so a language model suggested what
@@ -233,10 +246,13 @@ async function applyReview() {
     </div>
 
     <div class="row actions">
-      <button class="secondary" :disabled="saving" @click="skipReview">Leave them as written</button>
-      <button :disabled="saving" @click="applyReview">
-        {{ saving ? 'Saving…' : 'Use these' }}
-      </button>
+      <template v-if="proposals.length">
+        <button class="secondary" :disabled="saving" @click="skipReview">Leave them as written</button>
+        <button :disabled="saving" @click="applyReview">
+          {{ saving ? 'Saving…' : 'Use these' }}
+        </button>
+      </template>
+      <button v-else @click="skipReview">View recipe</button>
     </div>
   </div>
 
@@ -290,7 +306,11 @@ async function applyReview() {
         <textarea v-model="text" rows="12" placeholder="Paste a full recipe here…"></textarea>
       </label>
       <p class="muted" style="font-size:0.85rem">
-        Parsed by your configured AI provider — set one up in Settings if import fails.
+        Paste a recipe’s <strong>schema.org JSON-LD</strong> (a
+        <code>{"@type": "Recipe", …}</code> block, a <code>@graph</code>, or the
+        whole <code>&lt;script type="application/ld+json"&gt;</code> tag) and it is
+        read directly — <strong>no AI provider needed</strong>. Anything else is
+        parsed by your configured AI provider.
       </p>
     </template>
 
@@ -358,6 +378,13 @@ async function applyReview() {
   background: var(--surface-2);
 }
 .proposal.off { opacity: 0.55; }
+.notes {
+  max-width: 760px; margin: 16px 0 0; padding: 12px 12px 12px 30px;
+  background: var(--surface-2); border-left: 3px solid var(--warning);
+  border-radius: var(--radius); font-size: 0.88rem;
+}
+.notes li + li { margin-top: 6px; }
+
 /* Intro, rows and buttons share one measure, so the eye tracks a single column
    instead of the paragraph running to 1100px above 760px-wide rows. */
 .intro { max-width: 760px; }

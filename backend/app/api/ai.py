@@ -21,8 +21,10 @@ from ..services.preferences import preferences_text
 from ..services.ai.recipe_import import (
     import_recipe,
     generate_recipe,
+    lint_payload,
     parse_ingredients,
     UnsafeURLError,
+    UnsupportedPasteError,
 )
 from .recipes import _apply, download_image_to_recipe
 
@@ -257,6 +259,12 @@ def _import_events(data, group_id):
     yield "stage", {"stage": "fetching", "detail": url or "pasted text"}
     try:
         payload = import_recipe(url=url, text=text, provider=provider)
+    except UnsupportedPasteError as exc:
+        # Before ValueError (it subclasses it): pasted structured data that is
+        # not a Recipe. A curated message, and NOT the "no AI provider" 503 —
+        # the provider was never the problem here.
+        yield "error", {"error": str(exc), "status": 422}
+        return
     except UnsafeURLError as exc:
         # Must be checked before ValueError — UnsafeURLError subclasses it.
         yield "error", {"error": str(exc), "status": 400}
@@ -318,7 +326,10 @@ def _import_events(data, group_id):
     yield "done", {**recipe_out(recipe),
                    # Proposals are transient and per-import — they live in the
                    # response for the confirmation step, not in a table.
-                   "ingredientProposals": list(proposals.values())}
+                   "ingredientProposals": list(proposals.values()),
+                   # Non-fatal observations about the source. The import
+                   # succeeded; these say what was thin about it.
+                   "warnings": lint_payload(payload)}
 
 
 @bp.post("/ai/import")

@@ -92,24 +92,46 @@ def _first_servings(recipe_yield) -> int:
     return 0
 
 
-def _instruction_text(step) -> str:
+def _instruction_step(step) -> dict:
+    """One instruction as ``{"title": ..., "text": ...}``.
+
+    A ``HowToStep`` carries the instruction in ``text`` and an optional heading
+    in ``name``. Generic ``_text()`` prefers ``name`` — correct for an
+    ImageObject or a Person, catastrophic here: it returned "Mix the dough" and
+    threw the actual instruction away, so a well-marked-up recipe imported as a
+    list of headings with no method. (It also blinded the temperature scan
+    below, which reads the step text.)
+
+    RecipeStep has a ``title`` column, so both are kept rather than one being
+    picked over the other.
+    """
     if isinstance(step, dict) and step.get("@type") == "HowToSection":
-        return ""  # sections are handled by flattening their itemListElement
-    return _text(step)
+        return {}  # sections are handled by flattening their itemListElement
+    if isinstance(step, dict):
+        text = _text(step.get("text") or step.get("@value") or "")
+        title = _text(step.get("name") or "")
+        if text:
+            # A heading identical to the body is noise, not a title.
+            return {"title": "" if title == text else title, "text": text}
+        # No `text` at all — fall back to whatever _text can find (often `name`),
+        # so a sloppily-marked-up step is still imported rather than dropped.
+        return {"title": "", "text": _text(step)}
+    return {"title": "", "text": _text(step)}
 
 
-def _flatten_instructions(instructions) -> list[str]:
-    out: list[str] = []
+def _flatten_instructions(instructions) -> list[dict]:
+    out: list[dict] = []
     for item in _as_list(instructions):
         if isinstance(item, dict) and item.get("@type") == "HowToSection":
             out += _flatten_instructions(item.get("itemListElement"))
         else:
-            text = _instruction_text(item)
-            if text:
-                out.append(text)
+            step = _instruction_step(item)
+            if step.get("text"):
+                out.append(step)
     # A single blob of text with newlines → split into steps.
-    if len(out) == 1 and "\n" in out[0]:
-        out = [s.strip() for s in out[0].split("\n") if s.strip()]
+    if len(out) == 1 and "\n" in out[0]["text"]:
+        out = [{"title": "", "text": s.strip()}
+               for s in out[0]["text"].split("\n") if s.strip()]
     return out
 
 
@@ -161,7 +183,7 @@ def normalize_jsonld(node: dict, base_url: str = "") -> dict:
         for i in _as_list(node.get("recipeIngredient"))
         if _text(i)
     ]
-    steps = [{"text": t} for t in _flatten_instructions(node.get("recipeInstructions"))]
+    steps = _flatten_instructions(node.get("recipeInstructions"))
     # schema.org has no temperature field, so read it out of the instructions
     # (and cookingMethod, where some sites put "Bake at 180C").
     from ...services.cooking import parse_temperature
@@ -217,6 +239,101 @@ def extract_jsonld_recipe(html: str) -> dict | None:
         if node:
             return node
     return None
+
+
+def extract_pasted_recipe(text: str):
+    """A schema.org Recipe pasted directly, or None.
+
+    Accepts what people actually paste: a bare JSON object, a ``@graph``, an
+    array of nodes, a copied ``<script type="application/ld+json">`` block, or a
+    whole page's HTML.
+
+    This exists so pasting structured markup does NOT go to the model. It is
+    already the exact shape the importer wants, so sending it to an LLM spends a
+    call to re-derive what is in front of us, can get it wrong, and — worse —
+    fails outright with "no AI provider configured" for anyone who has not set
+    one up. Deterministic first, model last.
+
+    Returns ``(node, error)``: ``error`` is a human-readable reason when the text
+    looked like JSON but no Recipe could be found, so the caller can say why
+    instead of silently falling through to the model.
+    """
+    s = (text or "").strip()
+    if not s:
+        return None, ""
+
+    if s[0] in "{[":
+        try:
+            data = json.loads(s)
+        except json.JSONDecodeError as exc:
+            return None, (f"That looks like JSON but could not be parsed: "
+                          f"{exc.msg} at line {exc.lineno}, column {exc.colno}.")
+        node = _find_recipe_node(data)
+        if node:
+            return node, ""
+        found = _describe_types(data)
+        return None, ("That JSON has no schema.org Recipe in it"
+                      + (f" — found {found} instead." if found else "."))
+
+    if "<" in s and "application/ld+json" in s:
+        node = extract_jsonld_recipe(s)
+        if node:
+            return node, ""
+        return None, "That markup has a JSON-LD block, but no Recipe inside it."
+
+    return None, ""
+
+
+def _describe_types(data) -> str:
+    """The @type values present, for a 'no Recipe here' message."""
+    types: list[str] = []
+
+    def walk(v):
+        if isinstance(v, dict):
+            t = v.get("@type")
+            for x in _as_list(t):
+                if isinstance(x, str) and x not in types:
+                    types.append(x)
+            for sub in v.values():
+                walk(sub)
+        elif isinstance(v, list):
+            for sub in v:
+                walk(sub)
+
+    walk(data)
+    return ", ".join(types[:5])
+
+
+def lint_payload(payload: dict) -> list[str]:
+    """Non-fatal problems with an imported recipe, for the user to see.
+
+    The import still succeeds — this is the difference between "it worked" and
+    "it worked, and here is what was thin about the source".
+    """
+    from ...services import units
+
+    warn: list[str] = []
+    ings = payload.get("ingredients") or []
+    steps = payload.get("steps") or []
+
+    if not ings:
+        warn.append("No ingredients were found.")
+    if not steps:
+        warn.append("No instructions were found.")
+    if not payload.get("servings"):
+        warn.append("No serving count — scaling will be unavailable until you set one.")
+
+    unreadable = [i.get("display", "") for i in ings
+                  if i.get("display") and units.parse_line(i["display"])["qty"] is None]
+    if unreadable:
+        warn.append(
+            f"{len(unreadable)} of {len(ings)} ingredient lines have no readable "
+            f"quantity (e.g. “{unreadable[0][:60]}”). They will scale and "
+            f"consolidate poorly on a shopping list."
+        )
+    if not payload.get("totalMinutes"):
+        warn.append("No timings — prep/cook time will be blank.")
+    return warn
 
 
 def _visible_text(html: str) -> str:
@@ -275,6 +392,15 @@ def _og_image(html: str, base: str) -> str:
 
 class UnsafeURLError(ValueError):
     """Raised when a URL targets a non-public / non-http destination."""
+
+
+class UnsupportedPasteError(ValueError):
+    """Pasted text was structured data, but not a schema.org Recipe.
+
+    Typed so the endpoint can return this curated message as a 422 instead of
+    the generic "no AI provider configured" 503 — the provider is not the
+    problem, and saying it is sends people to the wrong settings page.
+    """
 
 
 _MAX_FETCH_BYTES = 3_000_000
@@ -500,6 +626,21 @@ def import_recipe(
                 payload["imageUrl"] = _og_image(html, source_url)
             payload["sourceUrl"] = source_url
             return payload
+
+    # Pasted structured markup: already the shape we want, so parse it here and
+    # never involve the model. This is what makes pasting a schema.org Recipe
+    # work with no AI provider configured at all.
+    if text.strip():
+        node, why = extract_pasted_recipe(text)
+        if node:
+            payload = normalize_jsonld(node, source_url)
+            if source_url:
+                payload["sourceUrl"] = source_url
+            return payload
+        if why and provider is None:
+            # It was JSON, just not a recipe. Say so, rather than reporting the
+            # generic "no AI provider" — the provider was never the problem.
+            raise UnsupportedPasteError(why)
 
     # AI path: raw text, or a page with no usable markup.
     if provider is None:
