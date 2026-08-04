@@ -1,5 +1,5 @@
 name: Shared PostgreSQL
-version: "0.1.0"
+version: "0.2.0"
 slug: shared_postgres
 description: A shared PostgreSQL for myMeal, Edibl & HomeHoard — auto-provisions a separate database per app.
 url: https://github.com/Amantux/mymeal

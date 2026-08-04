@@ -46,3 +46,34 @@ add-on backups. Snapshot the add-on to back it up.
 Turning on shared Postgres gives an app a **fresh** database — it does not copy
 your existing SQLite data. Start on Postgres before entering data you care about,
 or migrate manually with `pg_dump`/`pg_restore` + your app's tools.
+
+## Upgrading PostgreSQL major versions
+
+PostgreSQL cannot open a database directory written by an older major version,
+so moving from 16 to 18 is a real migration, not just a new image. The add-on
+does it for you on first start after the update:
+
+1. Your existing cluster is checked and, if the add-on was previously killed
+   rather than stopped, recovered.
+2. A new PostgreSQL 18 cluster is created with the **same** encoding, collation
+   and checksum settings as your old one — `pg_upgrade` refuses to run if any of
+   those differ.
+3. `pg_upgrade` copies the data across. Copy mode, not link mode: it needs
+   roughly as much free space again as the database currently uses, and the
+   add-on checks that up front and refuses rather than filling `/data`.
+4. The old cluster is **renamed, never deleted** — it stays at
+   `/data/pgdata-old-16`.
+
+**Rolling back.** Reinstall the previous add-on version; it will find the old
+cluster. This is the only rollback path, which is why the folder is kept. Once
+you're satisfied the upgrade went well, delete `/data/pgdata-old-16` to reclaim
+the space.
+
+**If it fails.** The add-on stops with the reason in its log and your original
+database is untouched. It will not start PostgreSQL against a directory it
+cannot read.
+
+**Your own config.** If you hand-edited `postgresql.conf` or `pg_hba.conf`, the
+upgraded cluster gets fresh ones. Your previous files are copied alongside as
+`postgresql.conf.from-16` etc. for reference — they are **not** applied
+automatically, because settings can be removed or renamed between majors.
