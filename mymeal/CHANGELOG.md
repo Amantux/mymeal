@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.2.20
+
+- Paste schema.org JSON-LD directly, and lint what comes back.
+
 ## 1.2.19
 
 - Probe the provider you picked, and say why the model list is empty.
