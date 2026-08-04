@@ -13,7 +13,7 @@ passlib==1.7.4
 # passlib 1.7.4 reads bcrypt.__about__ which bcrypt>=4.1 removed; pin below that.
 bcrypt==4.0.1
 python-dotenv>=1.2.2
-python-slugify>=8.0.0
+python-slugify>=8.0.4
 gunicorn==22.0.0
 # Recipe import: fetch pages + parse embedded schema.org JSON-LD.
 httpx>=0.27.0
