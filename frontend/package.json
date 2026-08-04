@@ -10,7 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "pinia": "^2.2.2",
+    "pinia": "^4.0.2",
     "vue": "^3.4.38",
     "vue-router": "^4.4.3"
   },
