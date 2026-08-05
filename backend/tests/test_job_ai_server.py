@@ -106,7 +106,9 @@ def test_a_blank_apikey_on_resave_keeps_the_stored_one(noauth_app):
     app = noauth_app
     c = app.test_client()
     c.put("/api/v1/ai/job-settings", json={"enrich": {"apiKey": "sk-keep-me"}})
-    c.put("/api/v1/ai/job-settings", json={"enrich": {"model": "other"}})
+    # apiKey="" explicitly — what a form sends when the field is left empty.
+    # Omitting the field instead never exercised the rule at all.
+    c.put("/api/v1/ai/job-settings", json={"enrich": {"model": "other", "apiKey": ""}})
 
     with app.app_context():
         assert job_override(_gid(app), "nutrition")["api_key"] == "sk-keep-me"
