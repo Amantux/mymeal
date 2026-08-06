@@ -169,6 +169,7 @@ def create_app(config_object=None):
     _register_blueprints(app)
     _register_spa(app)
     _register_request_context(app)
+    _register_security_headers(app)
     _register_errors(app)
 
     from .worker import start_worker
@@ -313,6 +314,50 @@ def _register_request_context(app):
             logger.warning("%s %s -> %s in %dms",
                             scrub(request.method), scrub(request.path),
                             resp.status_code, elapsed_ms)
+        return resp
+
+
+def _register_security_headers(app):
+    """Baseline hardening headers on every response.
+
+    Ported from HomeHoard/Edibl, which have had these from the start — myMeal
+    was the only one of the three shipping none at all.
+    """
+    disable_auth = app.config["DISABLE_AUTH"]
+
+    @app.after_request
+    def _set_headers(resp):
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("Referrer-Policy", "no-referrer")
+        # 'unsafe-inline' for styles only — the app uses many inline style
+        # attributes; scripts stay 'self'.
+        csp = (
+            "default-src 'self'; "
+            # The ONLY third-party relaxation: the two hosts services/videos.py
+            # will produce an embed URL for. Every other link opens in a new tab
+            # rather than being framed, so no other origin is ever embedded.
+            "frame-src https://www.youtube-nocookie.com https://player.vimeo.com; "
+            "img-src 'self' data: blob:; "
+            "media-src 'self' blob:; "
+            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self'; "
+            "connect-src 'self'; "
+            "base-uri 'self'; "
+            "form-action 'self'; "
+            "object-src 'none'"
+        )
+        # Under HA ingress the app is legitimately framed by Home Assistant, so
+        # only assert anti-clickjacking when running standalone (auth enabled).
+        # Asserting it unconditionally would blank the panel inside HA.
+        if not disable_auth:
+            csp += "; frame-ancestors 'self'"
+            resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        resp.headers.setdefault("Content-Security-Policy", csp)
+        # HSTS only over HTTPS (harmless/ignored over plain HTTP).
+        if request.is_secure:
+            resp.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+            )
         return resp
 
 
