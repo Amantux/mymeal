@@ -19,7 +19,11 @@ const foods = ref([])
 const units = ref([])
 
 function blank() {
-  return { quantity: '', unit: '', food: '', note: '', refRecipeId: '', refRecipeName: '' }
+  // `qualifier` (the variety: "Vietnamese" in "Vietnamese cinnamon") must be in
+  // the blank row: rows are built as { ...blank(), ...r }, so a key missing here
+  // is dropped from every row the parent hands in.
+  return { quantity: '', unit: '', food: '', note: '', qualifier: '',
+           refRecipeId: '', refRecipeName: '' }
 }
 const rows = ref(props.modelValue.length ? props.modelValue.map((r) => ({ ...blank(), ...r })) : [blank()])
 

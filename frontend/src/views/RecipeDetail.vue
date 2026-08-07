@@ -80,7 +80,10 @@ const editIngredients = ref([]) // structured rows for the edit-mode editor
 const structuring = ref(false)
 
 function rowToDisplay(r) {
-  const parts = [String(r.quantity ?? '').trim(), (r.unit || '').trim(), (r.food || '').trim()].filter(Boolean)
+  // The variety belongs in front of the food, the way a person writes it:
+  // "2 tsp Vietnamese cinnamon", not "2 tsp cinnamon, Vietnamese".
+  const food = [(r.qualifier || '').trim(), (r.food || '').trim()].filter(Boolean).join(' ')
+  const parts = [String(r.quantity ?? '').trim(), (r.unit || '').trim(), food].filter(Boolean)
   let d = parts.join(' ')
   const note = (r.note || '').trim()
   if (note) d = d ? `${d}, ${note}` : note
@@ -93,15 +96,20 @@ const filledRows = () => editIngredients.value.filter(
 // Turn stored ingredients into editor rows. Structured ones (with a food)
 // round-trip exactly; legacy free-text lines drop their whole display into the
 // food field so nothing is lost and the row can be restructured or AI-tidied.
+// The editor rebuilds `display` from these fields on every save, so anything
+// missing here is DESTROYED the first time someone edits an unrelated field.
+// That is why the qualifier has to round-trip before anything starts writing it.
 function ingredientToRow(i) {
   if (i.refRecipe) {
     return { quantity: i.quantity || '', unit: i.unit?.name || '', food: i.refRecipe.name,
-             note: i.note || '', refRecipeId: i.refRecipe.id, refRecipeName: i.refRecipe.name }
+             note: i.note || '', qualifier: i.qualifier || '',
+             refRecipeId: i.refRecipe.id, refRecipeName: i.refRecipe.name }
   }
   if (i.food) {
-    return { quantity: i.quantity || '', unit: i.unit?.name || '', food: i.food.name, note: i.note || '' }
+    return { quantity: i.quantity || '', unit: i.unit?.name || '', food: i.food.name,
+             note: i.note || '', qualifier: i.qualifier || '' }
   }
-  return { quantity: '', unit: '', food: i.display || '', note: '' }
+  return { quantity: '', unit: '', food: i.display || '', note: '', qualifier: i.qualifier || '' }
 }
 
 async function tidyIngredients() {
@@ -111,7 +119,8 @@ async function tidyIngredients() {
   try {
     const res = await api.post('/ai/parse-ingredients', { lines: ls })
     editIngredients.value = res.ingredients.map((r) => ({
-      quantity: r.quantity || '', unit: r.unit || '', food: r.food || '', note: r.note || '',
+      quantity: r.quantity || '', unit: r.unit || '', food: r.food || '',
+      note: r.note || '', qualifier: r.qualifier || '',
     }))
     ui.toast('Tidied ingredients')
   } catch (e) {
@@ -200,7 +209,8 @@ async function save() {
     nutrition: nutritionForm.value,
     ingredients: filledRows().map((r, position) => ({
       display: rowToDisplay(r), quantity: Number(r.quantity) || 0,
-      unit: r.unit || '', food: r.food || '', note: r.note || '', position,
+      unit: r.unit || '', food: r.food || '', note: r.note || '',
+      qualifier: r.qualifier || '', position,
       refRecipeId: r.refRecipeId || undefined,
     })),
     steps: editSteps.value
@@ -251,8 +261,10 @@ function loadBuffersFrom(snap) {
   editIngredients.value = (snap.ingredients || []).map((i) =>
     i.refRecipeId
       ? { quantity: i.quantity || '', unit: i.unit || '', food: i.food || i.display || 'component',
-          note: i.note || '', refRecipeId: i.refRecipeId, refRecipeName: i.food || i.display || 'recipe' }
-      : { quantity: i.quantity || '', unit: i.unit || '', food: i.food || i.display || '', note: i.note || '' })
+          note: i.note || '', qualifier: i.qualifier || '',
+          refRecipeId: i.refRecipeId, refRecipeName: i.food || i.display || 'recipe' }
+      : { quantity: i.quantity || '', unit: i.unit || '', food: i.food || i.display || '',
+          note: i.note || '', qualifier: i.qualifier || '' })
   editSteps.value = (snap.steps || []).map((s) => ({ text: s.text }))
 }
 

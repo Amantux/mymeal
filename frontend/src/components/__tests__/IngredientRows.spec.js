@@ -86,3 +86,32 @@ describe('IngredientRows', () => {
     expect(w.emitted('update:modelValue').length).toBeLessThanOrEqual(before + 1)
   })
 })
+
+describe('qualifier round-trip', () => {
+  // The editor rebuilds `display` from these fields on every save, so a field
+  // missing from the blank row is DESTROYED the first time someone edits an
+  // unrelated part of the recipe. Proven in a browser: dropping `qualifier`
+  // from the row turned "2 tsp Vietnamese cinnamon" into "2 tsp cinnamon"
+  // after changing only the serving count.
+  test('a qualifier handed in survives being emitted back', async () => {
+    const wrapper = mount(IngredientRows, {
+      props: {
+        modelValue: [{ quantity: 2, unit: 'tsp', food: 'cinnamon',
+                       note: '', qualifier: 'Vietnamese' }],
+      },
+    })
+    await flushPromises()
+
+    const emitted = wrapper.emitted('update:modelValue')
+    const rows = emitted ? emitted[emitted.length - 1][0] : wrapper.props('modelValue')
+    expect(rows[0].qualifier).toBe('Vietnamese')
+  })
+
+  test('the blank row declares qualifier so it is never dropped', async () => {
+    // Rows are built as { ...blank(), ...r }: a key absent from blank() is
+    // absent from every row, whatever the parent passed.
+    const wrapper = mount(IngredientRows, { props: { modelValue: [] } })
+    await flushPromises()
+    wrapper.vm.rows.forEach((r) => expect(r).toHaveProperty('qualifier'))
+  })
+})
