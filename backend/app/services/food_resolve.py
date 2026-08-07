@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass, field
 
 # --- seed vocabulary ---------------------------------------------------------
 # name -> (classification, allergens). Classification and allergens are what
@@ -377,3 +378,172 @@ def food_key(raw: str) -> str:
     peanut butter.
     """
     return normalize(raw)[0]
+
+
+# --- the database-backed half ------------------------------------------------
+# Everything above is pure. What follows ranks a name against a household's OWN
+# Food rows, and is modelled directly on Edibl's services/matching.py: ranked
+# candidates carrying a score and the reason they matched, with a separate
+# "resolve for a mutation" gate that refuses to guess.
+
+# Score tiers. The gaps are deliberately wide so a stronger KIND of evidence
+# always beats a pile of weaker ones — the same doctrine as recipe_resolve and
+# Edibl's matcher. MEANINGFUL is the floor for "real evidence the user meant
+# this food"; a description-only hit sits below it and can never, on its own,
+# pick between two foods.
+SCORE_EXACT = 1.0
+SCORE_ALIAS = 0.9
+SCORE_SPLIT = 0.8        # "Vietnamese cinnamon" → an existing `cinnamon` row
+SCORE_SUBSTRING = 0.5
+MEANINGFUL = SCORE_SUBSTRING
+SCORE_DESCRIPTION = 0.2
+
+
+_MIN_SUBSTRING = 3
+
+
+def _contains(query: str, name: str) -> bool:
+    """Substring evidence in either direction, with a length floor on both.
+
+    Without the floor a Food called "ox" matches almost every query, which is
+    the exact bug Edibl's matcher carries a comment about.
+    """
+    if len(name) >= _MIN_SUBSTRING and name in query:
+        return True
+    return len(query) >= _MIN_SUBSTRING and query in name
+
+
+@dataclass
+class Candidate:
+    food: object
+    score: float
+    reasons: list = field(default_factory=list)
+
+
+@dataclass
+class Resolution:
+    food: object            # the resolved Food, or None
+    qualifier: str          # the variety text left over, or ""
+    ambiguous: bool
+    candidates: list
+
+
+def _food_terms(food) -> list[str]:
+    """Every name this Food answers to, normalized: its own plus its aliases."""
+    raw = [getattr(food, "name", "")] + aliases_of(food)
+    return [fold(normalize_text(t)) for t in raw if t]
+
+
+def aliases_of(food) -> list[str]:
+    """Food.aliases as a list, whatever it is stored as.
+
+    It is a comma-separated string today and a JSON list after migration 0013;
+    three different call sites used to each split it their own way. This is the
+    only place that knows.
+    """
+    value = getattr(food, "aliases", None)
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [part.strip() for part in str(value).split(",") if part.strip()]
+
+
+def index(gid: str):
+    """A memoising matcher over one household's foods.
+
+    Two separate savings, worth keeping straight:
+
+    * the household's foods are loaded ONCE, which is what prevents an N+1 —
+      `_set_ingredients` handles up to 200 rows and the shopping build touches
+      every leaf ingredient of a two-week plan;
+    * repeated lookups of the same name are memoised, which saves the ranking
+      work (every food × the seed vocabulary), not a query.
+
+    Same shape as ``conversions.resolver``.
+    """
+    from ..models import Food
+    from ..extensions import db
+
+    foods = db.session.query(Food).filter_by(group_id=gid).all()
+    cache: dict[str, Resolution] = {}
+
+    def match(raw: str) -> Resolution:
+        key = fold(normalize_text(raw))
+        if key not in cache:
+            cache[key] = _rank(foods, raw)
+        return cache[key]
+
+    match.foods = foods          # exposed for callers that need the raw list
+    return match
+
+
+def _rank(foods, raw: str) -> Resolution:
+    """Rank a free-text name against these foods. Never raises."""
+    text = normalize_text(raw)
+    if not text:
+        return Resolution(None, "", False, [])
+    folded = fold(text)
+    canonical, qualifier, _why = normalize(raw)
+    canonical_folded = fold(normalize_text(canonical))
+
+    out: list[Candidate] = []
+    for food in foods:
+        terms = _food_terms(food)
+        if not terms:
+            continue
+        name_term = terms[0]
+        score, reasons = 0.0, []
+        if folded == name_term:
+            score, reasons = SCORE_EXACT, ["exact name"]
+        elif folded in terms[1:]:
+            score, reasons = SCORE_ALIAS, ["alias"]
+        elif canonical_folded and canonical_folded in terms:
+            # The pure layer already decided this split is safe — it cleared the
+            # material-boundary and functional-qualifier guards — so a household
+            # Food matching the canonical is strong evidence, not a substring.
+            score, reasons = SCORE_SPLIT, ["variety of"]
+        elif _contains(folded, name_term):
+            # BOTH directions, as in Edibl: a longer phrase finds a shorter food
+            # ("2 sticks butter" → `butter`) and a shorter query finds longer
+            # foods ("pepper" → `red pepper`, `green pepper` — which is then a
+            # question for a write, not an answer). Length-floored so a
+            # two-letter row cannot match almost everything.
+            score, reasons = SCORE_SUBSTRING, ["substring"]
+        elif folded and folded in fold(normalize_text(getattr(food, "description", "") or "")):
+            score, reasons = SCORE_DESCRIPTION, ["description"]
+        if score:
+            out.append(Candidate(food=food, score=score, reasons=reasons))
+
+    out.sort(key=lambda c: (-c.score, (getattr(c.food, "name", "") or "").lower()))
+    top = out[0] if out else None
+    resolved_qualifier = qualifier if (top and "variety of" in top.reasons) else ""
+    return Resolution(top.food if top else None, resolved_qualifier, False, out)
+
+
+def resolve_for_mutation(match, raw: str) -> Resolution:
+    """Pick ONE food for a WRITE, or refuse.
+
+    Writing a food_id is a mutation, and this codebase's rule (Edibl ADR-0003,
+    and now docs/adr/0001) is that mutations do not guess. Weak-only evidence
+    never picks between candidates, and a near-tie is a question rather than an
+    answer — the caller leaves food_id NULL and shows the candidates instead.
+    """
+    res = match(raw)
+    cands = res.candidates
+    if not cands:
+        return Resolution(None, "", False, [])
+    top = cands[0]
+
+    if top.score < MEANINGFUL:
+        # A description-only hit resolves when it is the ONLY thing found, and
+        # is a question when several foods mention the words.
+        if len(cands) == 1:
+            return Resolution(top.food, res.qualifier, False, cands)
+        return Resolution(None, "", True, cands)
+
+    rivals = [c for c in cands[1:] if c.score >= MEANINGFUL]
+    runner = rivals[0].score if rivals else 0.0
+    if top.score - runner >= 0.3 or not rivals:
+        return Resolution(top.food, res.qualifier, False, cands)
+    return Resolution(None, "", True, cands)
