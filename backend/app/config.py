@@ -21,7 +21,11 @@ class Config:
     DATABASE_URL = os.environ.get("MYMEAL_DATABASE_URL")
 
     # --- Security --------------------------------------------------------
-    SECRET_KEY = os.environ.get("MYMEAL_SECRET_KEY", "change-me-in-production")
+    # No placeholder default: a shipped "change-me-in-production" is exactly the
+    # pattern the settings registry exists to kill (load_settings rejects it
+    # anyway). None → tests set it explicitly; production goes through
+    # ensure_secret_key, never this class.
+    SECRET_KEY = os.environ.get("MYMEAL_SECRET_KEY")
     JWT_EXPIRES = timedelta(hours=int(os.environ.get("MYMEAL_JWT_HOURS", "168")))
 
     # When auth is disabled the app runs single-tenant against a default

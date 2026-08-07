@@ -330,7 +330,7 @@ def _register_security_headers(app):
     Ported from HomeHoard/Edibl, which have had these from the start — myMeal
     was the only one of the three shipping none at all.
     """
-    disable_auth = app.config["DISABLE_AUTH"]
+    from .auth import _request_from_ingress
 
     @app.after_request
     def _set_headers(resp):
@@ -354,9 +354,12 @@ def _register_security_headers(app):
             "object-src 'none'"
         )
         # Under HA ingress the app is legitimately framed by Home Assistant, so
-        # only assert anti-clickjacking when running standalone (auth enabled).
-        # Asserting it unconditionally would blank the panel inside HA.
-        if not disable_auth:
+        # anti-clickjacking is asserted only when the request is NOT from the
+        # ingress peer. Keying on the per-request ingress check, not on auth
+        # mode: disable_auth:false behind ingress is supported (ingress identity
+        # is honoured even with auth on), and keying on auth mode there would
+        # blank the HA panel. A non-ingress request always gets the headers.
+        if not _request_from_ingress():
             csp += "; frame-ancestors 'self'"
             resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
         resp.headers.setdefault("Content-Security-Policy", csp)

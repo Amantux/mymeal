@@ -483,7 +483,14 @@ def delete_recipe(recipe_id):
 
 # --- Image ---------------------------------------------------------------
 def _image_path(filename: str) -> str:
-    return os.path.join(current_app.config["images_dir"](), filename)
+    # safe_join, matching _video_path: the stored name is a server-generated
+    # UUID+ext today so traversal isn't currently reachable, but the repo rule
+    # is safe_join even for an existence check — one hardened path, not two
+    # that differ, so a future caller can't reintroduce the hole.
+    path = safe_join(current_app.config["images_dir"](), filename)
+    if path is None:
+        abort(404)
+    return path
 
 
 def _remove_image_file(filename: str):

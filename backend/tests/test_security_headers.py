@@ -45,12 +45,23 @@ def test_standalone_asserts_anti_clickjacking(client):
 
 
 def test_behind_ingress_we_do_not_block_framing(noauth_app):
-    """DISABLE_AUTH is how the add-on runs behind HA ingress. Home Assistant
-    frames the panel legitimately — asserting frame-ancestors here would show
-    the user a blank panel."""
-    r = noauth_app.test_client().get("/api/v1/status")
+    """From the ingress peer, Home Assistant frames the panel legitimately —
+    asserting frame-ancestors would blank it. Keyed on the PEER, not on auth
+    mode: this must hold whether auth is on or off."""
+    r = noauth_app.test_client().get(
+        "/api/v1/status", environ_overrides={"REMOTE_ADDR": "172.30.32.2"})
     assert "X-Frame-Options" not in r.headers
     assert "frame-ancestors" not in r.headers["Content-Security-Policy"]
+
+
+def test_a_non_ingress_request_is_framed_defended_even_with_auth_disabled(noauth_app):
+    """DISABLE_AUTH is NOT a proxy for "behind ingress": a standalone
+    disable_auth deployment behind a non-HA proxy is still clickjackable, so a
+    request that is not from the ingress peer must get the frame headers. This
+    is the conflation the header logic used to make."""
+    r = noauth_app.test_client().get("/api/v1/status")   # no ingress peer
+    assert r.headers.get("X-Frame-Options") == "SAMEORIGIN"
+    assert "frame-ancestors 'self'" in r.headers["Content-Security-Policy"]
 
 
 def test_hsts_is_not_sent_over_plain_http(client):
