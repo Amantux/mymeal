@@ -5,6 +5,7 @@ optional-auth JSON API under ``/api/v1`` and serves the built Vue SPA. Designed
 to run standalone or as a Home Assistant add-on.
 """
 import logging
+import json
 import os
 import re
 import time
@@ -131,7 +132,13 @@ def create_app(config_object=None):
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     # pool_pre_ping recycles connections dropped by a remote Postgres / network
     # (idle timeouts, restarts). Harmless for SQLite.
-    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True}
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+        "pool_pre_ping": True,
+        # ensure_ascii=False, or a JSON column stores "jalape\u00f1o" and the
+        # lookup endpoint's cast-to-text ILIKE can never match what the user
+        # types. The old CSV column matched raw text; this keeps that true.
+        "json_serializer": lambda obj: json.dumps(obj, ensure_ascii=False),
+    }
     app.config["images_dir"] = lambda: settings.images_dir
     app.config["videos_dir"] = lambda: settings.videos_dir
     app.config["MAX_CONTENT_LENGTH"] = settings.MAX_UPLOAD_MB * 1024 * 1024

@@ -577,42 +577,57 @@ def claim_index(gid: str) -> dict:
     return claims
 
 
-def set_aliases(food, terms, gid: str) -> list[str]:
+def set_aliases(food, terms, gid: str, claims=None):
     """Apply an alias list to a food under the one-key-one-food invariant.
 
     Dedupes by key, drops a key equal to the food's own name, and REFUSES any
     key already claimed by a different food in the household (by name or
     alias). Refusal degrades to "not consolidated", never to two foods
-    answering to one word. Returns what was applied, so a caller can surface
-    what was refused.
+    answering to one word.
+
+    Returns ``(kept, refused)`` so the caller can SURFACE the refusals — a 200
+    that silently stored less than the user typed is how data loss hides.
+
+    ``claims`` lets a caller that already built the claim index (create) pass
+    it in instead of paying for a second full-group scan.
     """
-    claims = claim_index(gid)
+    if claims is None:
+        claims = claim_index(gid)
     own_key = alias_key(getattr(food, "name", ""))
     own_canonical = _lookup(normalize_text(getattr(food, "name", "")))
-    kept, seen = [], set()
+    kept, refused, seen = [], [], set()
     for term in terms:
         term = clean_alias(term)
         key = alias_key(term)
         if not term or not key or key == own_key or key in seen:
-            continue
+            continue  # empty / self / duplicate: dropped, not "refused"
         owner = claims.get(key)
         if owner is not None and owner.id != getattr(food, "id", None):
-            continue  # claimed elsewhere in the household — refuse, don't steal
+            refused.append(term)  # claimed elsewhere — refuse, don't steal
+            continue
         # The lexicon guard: a term the SEED lexicon knows as a DIFFERENT food
-        # cannot become an alias — "salt" must never alias cinnamon, even when
-        # no household row claims it, because the ranker would then answer a
-        # real food word with the wrong ingredient. Same canonical is fine
-        # (that is what an alias IS: "cilantro" for a food named "coriander");
-        # unknown terms are fine (the household's own vocabulary).
+        # cannot become an alias — "salt" must never alias cinnamon, because
+        # the ranker would then answer a real food word with the wrong
+        # ingredient. Same canonical is what an alias IS ("cilantro" for a
+        # food named "coriander").
+        #
+        # It fires ONLY when BOTH sides are known. The first version refused
+        # whenever the term was known, which made own_canonical=None (a
+        # household-named food) refuse every seed word — merging "courgette"
+        # into "zucchini squash" lost the name, and a PUT round-trip deleted
+        # the food's own stored alias. Unknown-on-either-side fails open, the
+        # same direction as the density guard (C6): the claim index still
+        # protects against household collisions.
         canonical = _lookup(normalize_text(term))
-        if canonical and canonical != own_canonical:
+        if canonical and own_canonical and canonical != own_canonical:
+            refused.append(term)
             continue
         seen.add(key)
         kept.append(term)
         if len(kept) >= MAX_ALIASES:
             break
     food.aliases = kept
-    return kept
+    return kept, refused
 
 
 def index(gid: str):

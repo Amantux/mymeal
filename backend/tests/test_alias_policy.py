@@ -201,3 +201,113 @@ def test_lookup_still_searches_aliases_after_the_type_change(auth_client, app, q
     hits = [i for i in body["results"]
             if i.get("type") == "food" and i["id"] == a["id"]]
     assert bool(hits) == expect_hit
+
+
+# --- hardening round 2 (adversarial review findings) -------------------------
+
+def test_merging_a_seed_named_food_into_a_household_named_one_carries_the_name(auth_client, app):
+    """The lexicon guard's first version refused every seed-known term when
+    the TARGET's name was unknown to the lexicon (own_canonical None), so
+    merging "courgette" into "zucchini squash" lost the name — and the next
+    POST /foods {"name": "courgette"} recreated the merged-away row, the exact
+    failure the carry exists to prevent. Both sides must be known to refuse.
+    """
+    keep = _food(auth_client, "zucchini squash")
+    drop = _food(auth_client, "courgette")
+
+    auth_client.post(f"/api/v1/foods/{keep['id']}/merge",
+                     json={"fromId": drop["id"], "confirm": True})
+
+    assert "courgette" in _stored(app, keep["id"])
+    again = auth_client.post("/api/v1/foods", json={"name": "courgette"})
+    assert again.status_code == 200 and again.get_json()["id"] == keep["id"], \
+        "the merged-away name was recreated as a new food"
+
+
+def test_a_put_round_trip_keeps_the_foods_own_seed_known_alias(auth_client, app):
+    """A 0014-migrated DB legitimately holds seed-known aliases on
+    household-named foods; a GET->PUT round-trip must not delete them."""
+    f = _food(auth_client, "zucchini squash")
+    with app.app_context():
+        db.session.get(Food, f["id"]).aliases = ["courgette"]
+        db.session.commit()
+
+    auth_client.put(f"/api/v1/foods/{f['id']}",
+                    json={"aliases": ["courgette", "summer squash"]})
+
+    assert _stored(app, f["id"]) == ["courgette", "summer squash"]
+
+
+def test_a_refused_alias_is_named_in_the_response(auth_client):
+    """A 200 that silently stored less than the user typed is how data loss
+    hides. The refusal must be visible in the body."""
+    _food(auth_client, "coriander", aliases=["nannas green stuff"])
+    b = _food(auth_client, "parsley")
+
+    body = auth_client.put(f"/api/v1/foods/{b['id']}",
+                           json={"aliases": ["nannas green stuff", "persil"]}
+                           ).get_json()
+
+    assert body["aliases"] == ["persil"]
+    assert body["refusedAliases"] == ["nannas green stuff"]
+
+
+def test_create_and_merge_surface_refusals_too(auth_client):
+    _food(auth_client, "coriander", aliases=["nannas green stuff"])
+    body = auth_client.post("/api/v1/foods", json={
+        "name": "parsley", "aliases": ["nannas green stuff"]}).get_json()
+    assert body["refusedAliases"] == ["nannas green stuff"]
+
+    keep = _food(auth_client, "cinnamon")
+    drop = _food(auth_client, "salt, kosher")
+    body = auth_client.post(f"/api/v1/foods/{keep['id']}/merge",
+                            json={"fromId": drop["id"], "confirm": True}
+                            ).get_json()
+    assert "salt" in body["refusedAliases"]
+
+
+def test_renaming_onto_a_claimed_name_is_a_409(auth_client, app):
+    """The invariant is one folded key per food — enforced on aliases but,
+    before this, trivially breakable through the NAME half of the claim
+    space via a plain rename."""
+    _food(auth_client, "coriander")
+    b = _food(auth_client, "parsley")
+
+    r = auth_client.put(f"/api/v1/foods/{b['id']}", json={"name": "Corianders"})
+
+    assert r.status_code == 409
+    with app.app_context():
+        assert db.session.get(Food, b["id"]).name == "parsley"
+
+
+def test_renaming_a_food_to_itself_still_works(auth_client):
+    f = _food(auth_client, "coriander")
+    r = auth_client.put(f"/api/v1/foods/{f['id']}", json={"name": "Coriander"})
+    assert r.status_code == 200
+
+
+def test_a_non_ascii_alias_is_searchable(auth_client):
+    """json.dumps defaults to ensure_ascii=True, storing "jalape\\u00f1o" —
+    which the lookup's cast-to-text ILIKE can never match. The engine
+    serializer must store raw UTF-8, as the old CSV column did."""
+    a = _food(auth_client, "chilli", aliases=["jalapeño grande"])
+    body = auth_client.get("/api/v1/search?q=jalapeño&types=food").get_json()
+    assert [i["id"] for i in body["results"]] == [a["id"]]
+
+
+def test_at_the_cap_the_merged_name_is_the_last_thing_dropped(auth_client, app):
+    """The transfer list puts the source NAME first: it is the one term the
+    carry exists for, so at MAX_ALIASES it must displace an old alias rather
+    than be silently dropped — dropping it is how a re-import recreates the
+    merged-away row."""
+    keep = _food(auth_client, "base",
+                 aliases=[f"alias-{i}" for i in range(food_resolve.MAX_ALIASES)])
+    drop = _food(auth_client, "nannas secret blend")
+
+    auth_client.post(f"/api/v1/foods/{keep['id']}/merge",
+                     json={"fromId": drop["id"], "confirm": True})
+
+    stored = _stored(app, keep["id"])
+    assert "nannas secret blend" in stored, \
+        "the cap dropped the merged name — the one term the carry exists for"
+    assert len(stored) <= food_resolve.MAX_ALIASES

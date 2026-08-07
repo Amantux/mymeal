@@ -39,7 +39,7 @@ def list_foods():
     return jsonify([food_out(f) for f in foods])
 
 
-def _existing_match(gid, name):
+def _existing_match(gid, name, claims=None):
     """An existing Food in this group that ``name`` already refers to.
 
     create_food bypassed find-or-create entirely, so the Foods screen was the
@@ -62,7 +62,8 @@ def _existing_match(gid, name):
     key = food_resolve.alias_key(name)
     if not key:
         return None
-    return food_resolve.claim_index(gid).get(key)
+    claims = claims if claims is not None else food_resolve.claim_index(gid)
+    return claims.get(key)
 
 
 @bp.post("/foods")
@@ -78,7 +79,8 @@ def create_food():
     # The supplied fields are deliberately NOT applied to the existing row. A
     # create must not silently change something that already exists; editing is
     # what PUT is for.
-    existing = _existing_match(current_group().id, data.get("name", ""))
+    claims = food_resolve.claim_index(current_group().id)
+    existing = _existing_match(current_group().id, data.get("name", ""), claims)
     if existing is not None:
         return jsonify({**food_out(existing), "reused": True}), 200
     food = Food(
@@ -93,9 +95,13 @@ def create_food():
     requested = data.get("aliases") or []
     if not isinstance(requested, list):
         requested = str(requested).split(",")
-    food_resolve.set_aliases(food, requested, current_group().id)
+    _, refused = food_resolve.set_aliases(food, requested,
+                                          current_group().id, claims)
     db.session.commit()
-    return jsonify({**food_out(food), "reused": False}), 201
+    # refusedAliases is in the body because a 201 that silently stored less
+    # than the caller sent is how data loss hides.
+    return jsonify({**food_out(food), "reused": False,
+                    "refusedAliases": refused}), 201
 
 
 @bp.put("/foods/<food_id>")
@@ -103,7 +109,19 @@ def create_food():
 def update_food(food_id):
     food = _get_food(food_id)
     data = request.get_json(force=True) or {}
-    if "name" in data:
+    refused = []
+    if "name" in data and data["name"] != food.name:
+        # A rename is a claim like any other: without this check the
+        # one-key-one-food invariant held for aliases while the NAME half of
+        # the claim space stayed trivially breakable.
+        key = food_resolve.alias_key(data["name"])
+        owner = food_resolve.claim_index(current_group().id).get(key) \
+            if key else None
+        if owner is not None and owner.id != food.id:
+            abort(409, description=f"'{data['name']}' already refers to "
+                                   f"'{owner.name}' in this household")
+        food.name = data["name"]
+    elif "name" in data:
         food.name = data["name"]
     if "pluralName" in data:
         food.plural_name = data["pluralName"]
@@ -111,13 +129,16 @@ def update_food(food_id):
         requested = data["aliases"] or []
         if not isinstance(requested, list):
             requested = str(requested).split(",")
-        food_resolve.set_aliases(food, requested, current_group().id)
+        _, refused = food_resolve.set_aliases(food, requested,
+                                              current_group().id)
     if "aisle" in data:
         food.aisle = data["aisle"]
     if "description" in data:
         food.description = data["description"]
     db.session.commit()
-    return jsonify(food_out(food))
+    # refusedAliases: a 200 that silently stored less than the user typed is
+    # how data loss hides.
+    return jsonify({**food_out(food), "refusedAliases": refused})
 
 
 # Every table with a foreign key to foods.id. Both must be handled by delete
@@ -271,8 +292,10 @@ def merge_food(food_id):
     #      runs, so its own claims are out of the claim index — otherwise the
     #      transfer of its name/aliases onto `into` would be refused as
     #      "claimed elsewhere" by the very row being merged away.
-    transfer = (food_resolve.aliases_of(into)
-                + [source.name] + food_resolve.aliases_of(source))
+    # Source NAME first: it is the one term the carry exists for, so at the
+    # count cap it must be the last thing dropped, not the first.
+    transfer = ([source.name] + food_resolve.aliases_of(into)
+                + food_resolve.aliases_of(source))
     # One path for both tables, and the same one delete uses — reassigning the
     # `lines` objects by hand would have covered recipe_ingredients only.
     _repoint(source.id, into.id)
@@ -284,9 +307,10 @@ def merge_food(food_id):
     # claimed by a THIRD food is refused rather than stolen — and the comma
     # case cannot poison the resolver: clean_alias keeps only the identity
     # part, which is all normalize_text ever lets the ranker see.
-    food_resolve.set_aliases(into, transfer, current_group().id)
+    _, refused = food_resolve.set_aliases(into, transfer, current_group().id)
     db.session.commit()
-    return jsonify({**preview, "into": food_out(into), "confirmed": True})
+    return jsonify({**preview, "into": food_out(into), "confirmed": True,
+                    "refusedAliases": refused})
 
 
 # --- Units ---------------------------------------------------------------

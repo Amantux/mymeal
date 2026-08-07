@@ -159,3 +159,30 @@ def test_no_orphans_and_fk_state_survives_the_pragma_dance(tmp_path):
     ).fetchone()[0]
     assert orphans == 0
     c.close()
+
+
+def test_an_already_json_row_still_claims_its_aliases(tmp_path):
+    """The idempotency skip must not skip claim REGISTRATION: with it skipped,
+    a later CSV row kept an alias an earlier JSON row owned, violating the
+    migration's own collision policy in exactly the hybrid state (baseline-
+    built JSON column holding CSV text) its docstring warns about."""
+    db = str(tmp_path / "c.db")
+    assert _run_alembic(db, "upgrade", "0013_food_qualifier").returncode == 0
+    c = sqlite3.connect(db)
+    _insert(c, "groups", {"id": "g", "name": "G"})
+    # Earlier row already JSON; later row CSV claiming the same alias.
+    _insert(c, "foods", {"id": "f1", "group_id": "g", "name": "beef mince",
+                         "aliases": '["nannas mince"]'})
+    _insert(c, "foods", {"id": "f2", "group_id": "g", "name": "pork mince",
+                         "aliases": "nannas mince, ground pork"})
+    c.commit()
+    c.close()
+
+    assert _run_alembic(db, "upgrade", "head").returncode == 0
+
+    c = sqlite3.connect(db)
+    rows = dict(c.execute("SELECT id, aliases FROM foods"))
+    assert json.loads(rows["f1"]) == ["nannas mince"]
+    assert json.loads(rows["f2"]) == ["ground pork"], \
+        "the later CSV row kept an alias the JSON row already owned"
+    c.close()

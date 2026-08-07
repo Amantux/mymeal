@@ -48,6 +48,7 @@ Revises: 0013_food_qualifier
 Create Date: 2026-08-07
 """
 import json
+import logging
 
 import sqlalchemy as sa
 from alembic import op
@@ -69,19 +70,26 @@ def _column_type(table, column):
 
 
 def _as_list(raw):
-    """A stored value as a list, or None when it is already a JSON array
-    (the already-converted / idempotency case)."""
+    """``(already_converted, terms)`` for a stored value.
+
+    Already-converted rows are NOT rewritten (idempotency) — but their terms
+    are still returned, because their claims must still register. The first
+    version skipped them entirely, so a later CSV row could keep an alias an
+    earlier JSON row owned, violating this migration's own collision policy in
+    exactly the hybrid (baseline-built JSON column holding CSV text) the
+    docstring warns about.
+    """
     if isinstance(raw, list):
-        return None  # Postgres returns parsed JSON: already converted
+        return True, [str(v).strip() for v in raw if str(v).strip()]
     text = (raw or "").strip()
     if text.startswith("["):
         try:
             parsed = json.loads(text)
             if isinstance(parsed, list):
-                return None  # already converted — leave alone
+                return True, [str(v).strip() for v in parsed if str(v).strip()]
         except ValueError:
             pass  # malformed bracket text: treat as CSV below
-    return [part.strip() for part in text.split(",") if part.strip()]
+    return False, [part.strip() for part in text.split(",") if part.strip()]
 
 
 def _backfill_to_json(bind):
@@ -105,11 +113,23 @@ def _backfill_to_json(bind):
         if k:
             claimed.setdefault((gid, k), fid)
 
+    # Pass 2 — already-converted rows register their claims WITHOUT being
+    # rewritten, so a later CSV row cannot keep an alias a JSON row owns.
+    converted = {}
+    for fid, gid, _name, aliases in rows:
+        done, terms = _as_list(aliases)
+        converted[fid] = done
+        if done:
+            for term in terms:
+                k = key(term)
+                if k:
+                    claimed.setdefault((gid, k), fid)
+
     update = sa.text("UPDATE foods SET aliases = :value WHERE id = :id")
     for fid, gid, _name, aliases in rows:
-        terms = _as_list(aliases)
-        if terms is None:
-            continue  # already a JSON array
+        if converted[fid]:
+            continue  # already a JSON array; claims registered above
+        _done, terms = _as_list(aliases)
         kept, seen = [], set()
         for term in terms:
             k = key(term)
@@ -118,13 +138,19 @@ def _backfill_to_json(bind):
             owner = claimed.get((gid, k))
             if owner is not None and owner != fid:
                 # Claimed by an earlier food (or a name). Drop, don't move.
-                print(f"0014: dropping alias {term!r} from food {fid} "
-                      f"(key {k!r} already claimed by {owner})")
+                # (repr neutralises CR/LF, so a crafted name cannot forge log
+                # lines.)
+                logging.getLogger("alembic.runtime.migration").info(
+                    "0014: dropping alias %r from food %s (key %r already "
+                    "claimed by %s)", term, fid, k, owner)
                 continue
             claimed[(gid, k)] = fid
             seen.add(k)
             kept.append(term)
-        bind.execute(update, {"value": json.dumps(kept), "id": fid})
+        # ensure_ascii=False to match the app engine's serializer — otherwise
+        # migrated rows hold escaped text the lookup ILIKE can never match.
+        bind.execute(update,
+                     {"value": json.dumps(kept, ensure_ascii=False), "id": fid})
 
 
 def _collect_csv(bind):

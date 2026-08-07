@@ -149,3 +149,43 @@ job, behind a confirmation.
   (provenance + confidence) — `/root/edibl/docs/stock-redesign/adr/`.
 - Edibl `12294e6` fixed the plan-demand contract this exposed: a renamed
   ingredient used to leave its old row behind and double a recipe's demand.
+
+
+## Addendum (Aug 2026): aliases are a JSON list with a write policy
+
+The comma-separated `Food.aliases` column is gone (migration 0014). Storage is
+a JSON list — the shape `allergens` already used and the shape Edibl's
+`FoodConcept.aliases` has always had. The wire contract did not change
+(`food_out` emitted a list all along; nothing external consumes aliases).
+
+**The invariant lives at the write chokepoint, not in the schema.**
+`food_resolve.set_aliases` / `claim_index` / `alias_key` enforce:
+
+- one folded key resolves to at most one food per household (refuse, never
+  steal; deterministic winner by `(created_at, id)`);
+- a term the seed lexicon knows as a DIFFERENT food cannot become an alias
+  ("salt" can never alias cinnamon), while a term sharing the canonical is
+  exactly what an alias is ("cilantro" for coriander);
+- the stored form is the pre-comma identity part — all `normalize_text` ever
+  lets the ranker see; storing text the resolver silently discards is how
+  "salt, kosher" hid a wrong resolution behind a correct-looking list;
+- one equivalence rule: `_existing_match` now folds like the ranker does, so
+  "Cilantros" cannot create a duplicate the ranker treats as the same food.
+
+**A relational `food_aliases` table was evaluated and rejected — for now.**
+The `unit_conversions` shape (unique constraint + provenance + pending gate)
+is the textbook model, but a DB constraint could only see aliases — names live
+on `foods`, and the name-vs-alias collision is the common half. At ~10 alias
+rows per household with no alias-editing UI, the chokepoint wins. Promote to a
+table when any of these lands: an alias-editing UI, a provenance consumer
+(alias review queue), or household alias counts in the hundreds.
+
+Hard-won migration facts, recorded because none were visible from SQLite:
+`PRAGMA foreign_keys` is a no-op inside a transaction (the backfill's UPDATEs
+open one — use `autocommit_block`); Postgres returns `json` columns parsed and
+validates them on write (downgrades must read-before/write-after the alter);
+Postgres refuses `ALTER TYPE` when the column DEFAULT cannot be auto-cast
+(`USING` covers values, not defaults — drop it first). And `0001_baseline` is
+metadata-driven, so "the column type at revision N" depends on which baseline
+built the database — data backfills must be gated on data predicates, not
+column types.
