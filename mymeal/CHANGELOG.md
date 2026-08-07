@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.2.28
+
+- Alias policy hardening — reviewer round.
+
 ## 1.2.27
 
 - "Tidy up ingredients" — propose duplicate-food merges.
