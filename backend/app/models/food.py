@@ -30,7 +30,11 @@ class Food(IDMixin, TimestampMixin, db.Model):
     # material boundary — "almond milk" must never resolve to `milk`. Same
     # fields as Edibl's FoodConcept; see docs/adr/0001.
     classification: Mapped[str] = mapped_column(String(64), default="", server_default="")
-    allergens: Mapped[list] = mapped_column(JSON, default=list)
+    # server_default so create_all() and a 0015-migrated database agree —
+    # this column is the one that broke 0013's own stated rule and produced
+    # two schemas from one codebase.
+    allergens: Mapped[list] = mapped_column(JSON, default=list,
+                                            server_default=text("'[]'"))
     description: Mapped[str] = mapped_column(String(512), default="")
 
     group_id: Mapped[str] = mapped_column(String(36), ForeignKey("groups.id"))
