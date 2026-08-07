@@ -90,7 +90,7 @@ def test_write_key_can_mutate_rest(noauth_app):
 
 # --- MCP: a read-only key is limited to READ_TOOLS ----------------------------
 
-def _run_guard_post(monkeypatch, body, access="read"):
+def _run_guard_post(monkeypatch, body, access="read", external=True, server_token=""):
     import json as _json
     monkeypatch.setattr(mcp_server, "_key_ok", lambda raw: True)
     monkeypatch.setattr(mcp_server, "_key_access", lambda raw: access)
@@ -102,9 +102,9 @@ def _run_guard_post(monkeypatch, body, access="read"):
         result["got_body"] = msg.get("body", b"")
 
     _prev = mcp_server._expose_external
-    mcp_server._expose_external = lambda: True   # these cases are the exposed path
+    mcp_server._expose_external = lambda: external
     try:
-        guarded = mcp_server._guard(inner, server_token="")
+        guarded = mcp_server._guard(inner, server_token=server_token)
     finally:
         mcp_server._expose_external = _prev
     pending = [{"type": "http.request", "body": _json.dumps(body).encode(), "more_body": False}]
@@ -129,6 +129,31 @@ def _call(name):
 def test_read_key_blocked_from_write_tool(monkeypatch):
     r = _run_guard_post(monkeypatch, _call("add_recipe"), access="read")
     assert r["code"] == 403 and r["passed"] is False
+
+
+def test_read_key_blocked_from_write_tool_on_internal_token_path(monkeypatch):
+    """A key's ACCESS is a property of the key, not of how the port is exposed.
+    Mapping the MCP port to the LAN and setting a server token (expose_external
+    off) must NOT grant a read-only key write access — it did, because the
+    read/write check lived inside `if external:`.
+    """
+    r = _run_guard_post(monkeypatch, _call("add_recipe"), access="read",
+                        external=False, server_token="tok")
+    assert r["code"] == 403 and r["passed"] is False
+
+
+def test_read_key_blocked_from_write_tool_on_open_internal_path(monkeypatch):
+    """Even with no server token (HA zero-setup), a presented read-only key is
+    still read-only — enforcement applies to any key that is presented."""
+    r = _run_guard_post(monkeypatch, _call("add_recipe"), access="read",
+                        external=False, server_token="")
+    assert r["code"] == 403 and r["passed"] is False
+
+
+def test_write_key_still_writes_on_the_internal_path(monkeypatch):
+    r = _run_guard_post(monkeypatch, _call("add_recipe"), access="write",
+                        external=False, server_token="tok")
+    assert r["passed"] is True and r["code"] is None
 
 
 def test_read_key_allows_read_tool_and_replays_body(monkeypatch):

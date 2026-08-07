@@ -1051,15 +1051,26 @@ def _guard(asgi_app, server_token: str):
             if names and _key_scope(raw) == "debug":
                 _audit(names, raw, "denied")
                 return await deny(403, b"a debug key may only call the debug tools")
+            # AUTHENTICATION depends on how the port is exposed: external needs
+            # a valid key on every request; on the internal network a server
+            # token is required only if one is configured, and is otherwise
+            # open (the HA zero-setup path).
             if external:
                 if not _authorized(header, server_token):
                     return await deny(401, b"unauthorized")
-                if (_access_for(header, server_token) == "read"
-                        and _is_tools_call_body(body)):
-                    _audit(names, raw, "denied")
-                    return await deny(403, b"this API key is read-only")
             elif server_token and not _authorized(header, server_token):
                 return await deny(401, b"unauthorized")
+
+            # AUTHORIZATION depends only on the KEY, never on the exposure. A
+            # read-only key must not reach a write tool on ANY path — this check
+            # used to live inside `if external:`, so mapping the MCP port to the
+            # LAN and handing out a read-only key granted full write. _access_for
+            # returns "write" for the server token and for no-key (the open
+            # path), so only a genuinely read-scoped key is blocked here.
+            if (_access_for(header, server_token) == "read"
+                    and _is_tools_call_body(body)):
+                _audit(names, raw, "denied")
+                return await deny(403, b"this API key is read-only")
 
         if names:
             _audit(names, raw, "allowed")
