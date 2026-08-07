@@ -256,7 +256,7 @@ def _canonical_densities() -> dict[str, float]:
         table = {}
         for name, density in _DENSITY_G_PER_ML.items():
             table[name] = density
-            key = food_resolve.weight_key(name)
+            key = food_resolve.match_key(name)
             if key:
                 table.setdefault(key, density)
         _CANONICAL_DENSITIES = table
@@ -272,7 +272,7 @@ def _density_for(text: str) -> float | None:
     butter's 0.96. A substring is not evidence of being the same substance.
 
     So the text is canonicalised first and matched as a whole. "unsalted butter"
-    still finds butter (preparation words come off in ``weight_key``), while
+    still finds butter (preparation words come off in ``match_key``), while
     "peanut butter" canonicalises to itself and simply isn't in the table.
 
     Returning None is the correct failure: the weight view omits an estimate it
@@ -280,7 +280,7 @@ def _density_for(text: str) -> float | None:
     """
     from . import food_resolve  # local: keeps this module import-light
 
-    canonical = food_resolve.weight_key(text)
+    canonical = food_resolve.match_key(text)
     if not canonical:
         return None
 

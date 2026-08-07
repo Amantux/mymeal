@@ -398,12 +398,18 @@ PREPARATION_WORDS = frozenset({
 })
 
 
-def weight_key(raw: str) -> str:
-    """The canonical key for anything looking up a WEIGHT for free text.
+def match_key(raw: str) -> str:
+    """The canonical key for asking "are these two texts the same food?".
 
-    Preparation words come off first (they never change mass), then the normal
-    canonicaliser — so "unsalted butter, softened" and "butter" agree while
-    "peanut butter" and "butter" stay apart.
+    Preparation words come off first, then the normal canonicaliser — so
+    "unsalted butter, softened" and "butter" agree while "peanut butter" and
+    "butter" stay apart.
+
+    Used by three callers that must agree or they contradict each other in front
+    of the user: the learned-weight cache key, the density lookup, and inventory
+    coverage. Preparation and grade are irrelevant to all three — a chopped
+    onion weighs what an onion weighs, and having onions means you have chopped
+    onions.
     """
     text = normalize_text(raw)
     if not text:

@@ -83,7 +83,7 @@ def food_term(text: str) -> str:
     """
     # Everything after a comma is preparation, not identity.
     head = str(text or "").split(",")[0]
-    return food_resolve.weight_key(head)[:MAX_TERM_CHARS]
+    return food_resolve.match_key(head)[:MAX_TERM_CHARS]
 
 
 def _threshold() -> float:
