@@ -50,7 +50,8 @@ def test_shopping_list_from_recipes_consolidates(auth_client):
     by = {i["display"]: i for i in res["items"]}
     # "2 eggs" appears in both recipes; the name (qty stripped, stored separately)
     # consolidates to a single "eggs" line with the summed quantity.
-    assert "eggs" in by and by["eggs"]["quantity"] == 4
+    # Canonical singular: "eggs" and "egg" are one thing to buy.
+    assert "egg" in by and by["egg"]["quantity"] == 4
     assert "bread" in by and "cheese" in by
 
 

@@ -398,6 +398,18 @@ PREPARATION_WORDS = frozenset({
 })
 
 
+def is_known(name: str) -> bool:
+    """True when the lexicon actually recognises this food.
+
+    The difference between "we canonicalised this" and "we left it alone":
+    match_key returns the input unchanged for an unrecognised phrase, which is
+    the right key but the wrong thing to SHOW. Rewriting a display name we do
+    not understand mangles it — "bone-in chicken thighs" came back as "bone in
+    chicken thighs" because normalisation strips punctuation.
+    """
+    return _lookup(name) is not None
+
+
 def match_key(raw: str) -> str:
     """The canonical key for asking "are these two texts the same food?".
 

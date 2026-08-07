@@ -8,6 +8,7 @@ for tidy shopping. Purely deterministic — no AI involved.
 from __future__ import annotations
 
 from ..models import Recipe
+from . import food_resolve
 from .components import (  # noqa: F401 — re-exported for callers/tests
     _MAX_COMPONENT_DEPTH,
     _MAX_COMPONENT_EXPANSIONS,
@@ -40,7 +41,26 @@ def build_from_recipes(recipes: list[Recipe]) -> list[dict]:
                 aisle = ing.food.aisle
             else:
                 name = (parse_line(text)["rest"] or text).strip()
-                food_key = name.lower()
+                # Group by canonical food, not by the raw text. Grouping on
+                # name.lower() meant "olive oil" and "extra virgin olive oil"
+                # were two things to buy, and so were "cinnamon" and
+                # "Vietnamese cinnamon" — you would come home with two jars.
+                #
+                # An unrecognised name canonicalises to itself, so it still
+                # consolidates with itself and is never dropped. Materially
+                # different foods (peanut butter vs butter) canonicalise apart
+                # and correctly stay separate purchases.
+                canonical = food_resolve.match_key(name)
+                food_key = canonical or name.lower()
+                # Buy the canonical thing: the variety belongs to the recipe
+                # line, not to what goes in the trolley. Only rename a food we
+                # actually recognise, though — canonicalising text we do not
+                # understand mangles it ("bone-in chicken thighs" loses its
+                # hyphen). Unknown names still group by their canonical key, so
+                # two spellings of the same unknown thing merge; the label just
+                # stays as the user wrote it.
+                if canonical and food_resolve.is_known(canonical):
+                    name = canonical
                 aisle = ""
             unit = (ing.unit.abbreviation or ing.unit.name) if ing.unit else ""
             key = (food_key, unit)
