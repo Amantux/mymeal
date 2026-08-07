@@ -19,6 +19,15 @@ from mcp.server.fastmcp import FastMCP
 API = os.environ.get("MYMEAL_MCP_API", "http://127.0.0.1:7850/api/v1")
 TOKEN = os.environ.get("MYMEAL_MCP_API_TOKEN")  # only needed if app auth is enabled
 _HEADERS = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
+# ⚠️ SINGLE-HOUSEHOLD BY DESIGN. Every tool call is made with this ONE token, so
+# the sidecar always operates on that token's group regardless of which caller's
+# key authenticated at the guard. The ASGI guard authenticates and applies
+# read/write per the caller's key, but the data operated on is fixed. This is
+# correct for the Home Assistant deployment (one household, auth disabled behind
+# ingress) — the only supported MCP mode. A multi-tenant standalone instance
+# with external MCP would let one household's key act on this group's data; that
+# mode is explicitly unsupported and documented as such (mymeal/DOCS.md,
+# docs/mcp-tenancy.md). Do NOT expose MCP externally on a shared instance.
 _HTTP = httpx.Client(base_url=API, headers=_HEADERS, timeout=15)
 
 # The MCP SDK ships DNS-rebinding protection that, by default, rejects any

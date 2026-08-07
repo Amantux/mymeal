@@ -61,6 +61,14 @@ off. ⚠️ The MCP tools can modify your recipes and meal plans, so treat the k
 like a password and prefer putting it behind your own HTTPS reverse proxy when
 crossing untrusted networks.
 
+> **Single-household only.** myMeal is designed for one household, and the MCP
+> server always operates on that household's data. Every key that authenticates
+> is held to its read/write access, but the data it reaches is the same single
+> household — keys are not isolated tenants. **Do not run one myMeal instance
+> for several separate households and expose MCP externally**; a key issued to
+> one household would act on the shared data. Behind Home Assistant (the normal
+> setup) this is exactly right and nothing to configure.
+
 ### What an MCP client can do
 
 **Recipes** — search, read, create, edit and delete them:
