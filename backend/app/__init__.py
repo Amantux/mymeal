@@ -17,7 +17,7 @@ from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import safe_join
 
-from .extensions import db
+from .extensions import db, limiter
 from .logging_setup import configure as configure_logging, request_id_var
 from .logsafe import scrub
 from .settings import FIELDS_BY_NAME, ensure_secret_key, load_settings
@@ -125,6 +125,9 @@ def create_app(config_object=None):
     app.config["SECRET_KEY"] = secret
     app.config["JWT_EXPIRES"] = timedelta(hours=settings.JWT_HOURS)
     app.config["DISABLE_AUTH"] = settings.DISABLE_AUTH
+    # flask_limiter reads RATELIMIT_ENABLED from app.config (setdefault), so set
+    # it BEFORE limiter.init_app — tests turn it off via the Config class.
+    app.config["RATELIMIT_ENABLED"] = settings.RATELIMIT_ENABLED
     app.config["ALLOW_REGISTRATION"] = settings.ALLOW_REGISTRATION
     app.config["WORKER_ENABLED"] = settings.WORKER_ENABLED
     app.config["AI_CONFIDENCE_THRESHOLD"] = settings.AI_CONFIDENCE_THRESHOLD
@@ -162,6 +165,7 @@ def create_app(config_object=None):
 
     _log_startup(settings)
     db.init_app(app)
+    limiter.init_app(app)
 
     from . import models  # noqa: F401  (register models)
 

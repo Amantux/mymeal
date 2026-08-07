@@ -32,6 +32,10 @@ class Config:
     # user/group. Intended for deployment behind Home Assistant ingress,
     # which already enforces authentication.
     DISABLE_AUTH = _bool("MYMEAL_DISABLE_AUTH", False)
+    # Off by default in this (test-only) config so a fixture that hammers login/
+    # chat isn't 429'd. Production goes through load_settings() where the Field
+    # defaults to True.
+    RATELIMIT_ENABLED = False
 
     # Allow public self-registration of new users/groups.
     ALLOW_REGISTRATION = _bool("MYMEAL_ALLOW_REGISTRATION", True)

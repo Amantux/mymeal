@@ -624,8 +624,14 @@ def set_aliases(food, terms, gid: str, claims=None):
             continue
         seen.add(key)
         kept.append(term)
-        if len(kept) >= MAX_ALIASES:
-            break
+    # Anything past the cap is REFUSED, not silently dropped — a caller that
+    # trusts `refused` to be complete (the PUT/merge `refusedAliases` field)
+    # must see cap-drops too, or a term vanishes with a 200 and an empty
+    # refused list. Legacy rows can hold >MAX_ALIASES (the 0014 backfill applied
+    # no cap), so the first PUT round-trip surfaces the overflow here.
+    if len(kept) > MAX_ALIASES:
+        refused.extend(kept[MAX_ALIASES:])
+        kept = kept[:MAX_ALIASES]
     food.aliases = kept
     return kept, refused
 

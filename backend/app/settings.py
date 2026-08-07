@@ -226,6 +226,8 @@ FIELDS: tuple[Field, ...] = (
           "Bind every request to a single local user. ONLY safe behind an "
           "authenticating proxy such as Home Assistant ingress.",
           ha_option="disable_auth"),
+    Field("RATELIMIT_ENABLED", parse_bool, True,
+          "Enable request rate limiting on sensitive endpoints (login, registration, AI chat and recipe import). Disabled automatically under tests. Behind HA ingress the limit is per-household."),
     Field("ALLOW_REGISTRATION", parse_bool, True,
           "Allow anyone who can reach the app to create an account.",
           ha_option="allow_registration"),

@@ -1,6 +1,8 @@
 """Shared extension instances."""
 import sqlite3
 
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
@@ -12,6 +14,15 @@ class Base(DeclarativeBase):
 
 
 db = SQLAlchemy(model_class=Base)
+
+# Rate limiter — keyed on the client IP, opt-in per endpoint via
+# @limiter.limit(...). No default limits (would throttle the whole SPA). Reads
+# RATELIMIT_ENABLED from app.config natively, so tests disable it there.
+# Behind HA ingress every request shares the 172.30.32.2 peer, so the limit is
+# effectively per-household there — still bounds an external brute-force, and
+# in standalone/exposed mode it keys on the real client. In-memory storage is
+# per-worker (accepted for a single-household add-on; matches the siblings).
+limiter = Limiter(key_func=get_remote_address, default_limits=[])
 
 
 @event.listens_for(Engine, "connect")

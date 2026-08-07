@@ -3,7 +3,7 @@ import json
 
 from flask import Blueprint, request, jsonify, abort, Response, stream_with_context
 
-from ..extensions import db
+from ..extensions import db, limiter
 from ..models import ChatSession, ChatMessage
 from ..auth import login_required, current_group
 from ..schemas.serializers import (
@@ -136,6 +136,7 @@ def _next_position(session) -> int:
 
 @bp.post("/ai/chat")
 @login_required
+@limiter.limit("30 per minute")  # bounds LLM cost / abuse
 def chat():
     """Send a message to the assistant. Creates a session if none is given."""
     data = request.get_json(force=True) or {}
@@ -194,6 +195,7 @@ def chat():
 
 @bp.post("/ai/chat/stream")
 @login_required
+@limiter.limit("30 per minute")
 def chat_stream():
     """Streaming twin of :func:`chat`: an NDJSON stream of
     ``{"type":"delta","text"}`` / ``{"type":"tool","name"}`` events ending with a

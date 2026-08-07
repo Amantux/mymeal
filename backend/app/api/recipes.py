@@ -24,8 +24,24 @@ _IMAGE_EXTS = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 MAX_INGREDIENT_ROWS = 200  # cap rows so a payload can't spawn unbounded Unit/Food
 
 
+# Everything recipe_out traverses, eager-loaded so serializing a recipe is a
+# handful of queries instead of one-per-ingredient (food/unit/refRecipe) N+1s.
+def _recipe_load_opts():
+    return (
+        selectinload(Recipe.ingredients).selectinload(RecipeIngredient.food),
+        selectinload(Recipe.ingredients).selectinload(RecipeIngredient.unit),
+        selectinload(Recipe.ingredients).selectinload(RecipeIngredient.ref_recipe),
+        selectinload(Recipe.steps),
+        selectinload(Recipe.videos),
+        selectinload(Recipe.tags),
+        selectinload(Recipe.categories),
+    )
+
+
 def _get(recipe_id) -> Recipe:
-    recipe = db.session.get(Recipe, recipe_id)
+    recipe = (db.session.query(Recipe)
+              .options(*_recipe_load_opts())
+              .filter_by(id=recipe_id).first())
     if not recipe or recipe.group_id != current_group().id:
         abort(404)
     return recipe
@@ -33,10 +49,14 @@ def _get(recipe_id) -> Recipe:
 
 def _get_by_id_or_slug(ident) -> Recipe:
     gid = current_group().id
-    recipe = db.session.get(Recipe, ident)
+    recipe = (db.session.query(Recipe)
+              .options(*_recipe_load_opts())
+              .filter_by(id=ident).first())
     if recipe and recipe.group_id == gid:
         return recipe
-    recipe = db.session.query(Recipe).filter_by(group_id=gid, slug=ident).first()
+    recipe = (db.session.query(Recipe)
+              .options(*_recipe_load_opts())
+              .filter_by(group_id=gid, slug=ident).first())
     if not recipe:
         abort(404)
     return recipe
@@ -63,7 +83,46 @@ def _find_or_create_unit(gid: str, name: str):
     return _find_or_create(Unit, gid, name)
 
 
-def _find_or_create_food(gid: str, name: str):
+class _FoodCache:
+    """The group's foods, loaded ONCE per recipe save.
+
+    ``_find_or_create_food`` used to run a full ``query(Food).filter(group_id)``
+    AND fold every food's terms once PER ingredient row — O(rows × foods), a
+    measured ~23 s save on a large catalog and a worker-exhaustion vector. This
+    loads them once and answers exact-name and folded-term lookups in memory.
+
+    A food created for an EARLIER row is appended (``add``), so a name repeated
+    within one save resolves to the row the first occurrence created rather than
+    spawning a duplicate — the correctness property the per-row re-query used to
+    give for free.
+    """
+
+    def __init__(self, gid: str):
+        from ..services import food_resolve
+        self._fr = food_resolve
+        self._by_exact: dict = {}          # lower(name) -> Food
+        self._by_term: dict = {}           # folded term -> Food (first wins)
+        for food in db.session.query(Food).filter_by(group_id=gid).all():
+            self._add(food)
+
+    def _add(self, food) -> None:
+        self._by_exact.setdefault((food.name or "").lower(), food)
+        for t in [food.name] + self._fr.aliases_of(food):
+            key = self._fr.fold(self._fr.normalize_text(t))
+            if key:
+                self._by_term.setdefault(key, food)
+
+    def exact(self, raw: str):
+        return self._by_exact.get(raw.lower())
+
+    def by_term(self, folded: str):
+        return self._by_term.get(folded)
+
+    def add(self, food) -> None:
+        self._add(food)
+
+
+def _find_or_create_food(gid: str, name: str, cache: "_FoodCache | None" = None):
     """Resolve a free-text food name to a Food id, and the variety split off it.
 
     Returns ``(food_id, qualifier)``.
@@ -80,54 +139,37 @@ def _find_or_create_food(gid: str, name: str):
        "Vietnamese cinnamon" — which is the whole point: one row per real
        ingredient, the variety on the line.
 
-    Aliases are consulted, which they never were before: Food.aliases existed
-    and was written by the Foods API, but find-or-create matched on name only,
-    so an alias could not prevent a duplicate. A bypassed policy, not a missing
-    one (docs/adr/0001).
+    ``cache`` is the per-save :class:`_FoodCache`; passing None builds a
+    throwaway one (single-lookup callers). The two-pass ORDER below is
+    load-bearing: a household's own name/alias (what they TYPED) beats anything
+    the lexicon infers — "Chinese parsley" is coriander, but "chinese" is also a
+    nationality qualifier, so the split alone would strand them on a new
+    "parsley" row.
     """
     from ..services import food_resolve
 
     raw = (name or "").strip()
     if not raw:
         return None, ""
+    if cache is None:
+        cache = _FoodCache(gid)
 
-    exact = (
-        db.session.query(Food)
-        .filter(Food.group_id == gid, db.func.lower(Food.name) == raw.lower())
-        .first()
-    )
+    exact = cache.exact(raw)
     if exact:
         return exact.id, ""
 
     canonical, qualifier, _why = food_resolve.normalize(raw)
     canonical = canonical or raw
 
-    # An alias match counts as the same food. Cheap enough here: this runs only
-    # when the exact lookup missed, i.e. for genuinely new names. One query, two
-    # passes, because the ORDER of the two passes is load-bearing:
-    #
-    # A household's own alias beats anything the lexicon infers. "Chinese
-    # parsley" is a real name for coriander, but "chinese" is also a nationality
-    # qualifier — so the split fires first and would strand the household on a
-    # new "parsley" row despite them having said what they meant. Whatever the
-    # user declared wins over whatever we guessed.
-    foods = db.session.query(Food).filter(Food.group_id == gid).all()
-    terms_by_food = [
-        (food, [food_resolve.fold(food_resolve.normalize_text(t))
-                for t in [food.name] + food_resolve.aliases_of(food)])
-        for food in foods
-    ]
-
     typed = food_resolve.fold(food_resolve.normalize_text(raw))
-    for food, terms in terms_by_food:
-        if typed in terms:
-            # Matched what they actually typed, so nothing was split off it.
-            return food.id, ""
+    hit = cache.by_term(typed)
+    if hit:
+        return hit.id, ""          # matched what they typed; nothing split off
 
     wanted = food_resolve.fold(food_resolve.normalize_text(canonical))
-    for food, terms in terms_by_food:
-        if wanted in terms:
-            return food.id, qualifier
+    hit = cache.by_term(wanted)
+    if hit:
+        return hit.id, qualifier
 
     food = Food(name=canonical[:255], group_id=gid)
     # Stamp what we know about it, so this household's own rows can take part in
@@ -137,6 +179,7 @@ def _find_or_create_food(gid: str, name: str):
         food.classification, food.allergens = seeded[0], list(seeded[1])
     db.session.add(food)
     db.session.flush()
+    cache.add(food)                # visible to later rows in the same save
     return food.id, qualifier
 
 
@@ -166,6 +209,9 @@ def _set_ingredients(recipe: Recipe, rows):
 
     recipe.ingredients.clear()
     gid = recipe.group_id
+    # Load the group's foods ONCE for the whole save, not once per ingredient
+    # (that was an O(rows × foods) ~23 s worker-hog on a large catalog).
+    food_cache = _FoodCache(gid)
     # Cap rows + clamp names so a large/adversarial payload can't spawn thousands
     # of Unit/Food rows or overflow their columns (Unit.name 120, Food.name 255)
     # — a raw string from the AI parser would otherwise 500 on Postgres.
@@ -198,7 +244,8 @@ def _set_ingredients(recipe: Recipe, rows):
         # always wins; otherwise take whatever the split produced.
         qualifier = str(row.get("qualifier") or "")[:120]
         if not ref_recipe_id and not food_id and row.get("food"):
-            food_id, split_qualifier = _find_or_create_food(gid, str(row["food"])[:255])
+            food_id, split_qualifier = _find_or_create_food(
+                gid, str(row["food"])[:255], food_cache)
             qualifier = qualifier or split_qualifier
         # Otherwise best-effort parse the free-text display for qty + unit.
         if not ref_recipe_id and not unit_id and (qty in (None, 0, 0.0, "")) \

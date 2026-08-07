@@ -9,7 +9,7 @@ from datetime import date, timedelta
 import httpx
 from flask import Blueprint, request, jsonify, current_app, stream_with_context
 
-from ..extensions import db
+from ..extensions import db, limiter
 from ..services import conversions, ingredient_ai
 from ..models import Recipe, MealPlanEntry
 from ..auth import login_required, owner_required, current_group
@@ -200,6 +200,7 @@ def put_ai_settings():
 
 
 @bp.post("/ai/models")
+@limiter.limit("6 per hour")
 @owner_required
 def list_ai_models():
     """List models available on the provider, for the UI picker. Probes the
@@ -347,6 +348,7 @@ def _import_events(data, group_id):
 
 @bp.post("/ai/import")
 @login_required
+@limiter.limit("10 per minute")  # bounds outbound URL fetches + LLM cost
 def import_recipe_endpoint():
     """Import a recipe from a URL or pasted text and save it to the group.
 
@@ -366,6 +368,7 @@ def import_recipe_endpoint():
 
 @bp.post("/ai/import/stream")
 @login_required
+@limiter.limit("10 per minute")
 def import_recipe_stream_endpoint():
     """The same import, reporting each stage as it completes (NDJSON).
 
@@ -399,6 +402,7 @@ def import_recipe_stream_endpoint():
 
 
 @bp.post("/ai/generate")
+@limiter.limit("30 per minute")
 @login_required
 def generate_recipe_endpoint():
     """Draft a recipe from a free-text idea and RETURN it (unsaved) so the recipe
@@ -426,6 +430,7 @@ def generate_recipe_endpoint():
 
 
 @bp.post("/ai/parse-ingredients")
+@limiter.limit("30 per minute")
 @login_required
 def parse_ingredients_endpoint():
     """Structure free-text ingredient lines (qty/unit/food/note) with the AI
@@ -451,6 +456,7 @@ def parse_ingredients_endpoint():
 
 
 @bp.post("/ai/nutrition/<recipe_id>")
+@limiter.limit("30 per minute")
 @login_required
 def estimate_nutrition_endpoint(recipe_id):
     """Estimate per-serving nutrition for one recipe from its ingredients, store
@@ -481,6 +487,7 @@ _MAX_PHOTO_BYTES = 10 * 1024 * 1024
 
 
 @bp.post("/ai/photo")
+@limiter.limit("20 per minute")
 @login_required
 def photo_to_recipe_endpoint():
     """Extract a recipe from an uploaded photo (recipe card, cookbook page,
@@ -537,6 +544,7 @@ def photo_to_recipe_endpoint():
 
 
 @bp.post("/ai/suggest")
+@limiter.limit("30 per minute")
 @login_required
 def suggest():
     """Inventory-aware 'what can I cook now?' — deterministic, no provider needed.
@@ -573,6 +581,7 @@ def suggest():
 
 
 @bp.post("/ai/use-it-up")
+@limiter.limit("30 per minute")
 @login_required
 def use_it_up():
     """Suggest recipes that use up soon-to-expire Edibl stock ('use it up').
@@ -638,6 +647,7 @@ def _days_left(expires_at, today):
 
 
 @bp.post("/ai/plan")
+@limiter.limit("20 per minute")
 @login_required
 def plan_week():
     """Generate a meal plan with the AI provider and save it as plan entries.

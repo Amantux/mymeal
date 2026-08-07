@@ -122,37 +122,33 @@ def test_an_unknown_ingredient_is_left_exactly_as_typed(auth_client, app):
     assert _foods(app) == ["quargelkase"]
 
 
-def test_an_existing_food_is_found_without_loading_the_whole_table(auth_client, app):
-    """The exact-name query is a fast path, not behaviour.
-
-    The fold/normalize pass below it would find the same row, so deleting the
-    query changes no result — which is exactly why no behavioural test can
-    protect it. What it buys is that the common case (the food already exists)
-    stays one indexed lookup instead of loading every Food the household owns,
-    and that IS observable. Assert the real property.
+def test_a_save_loads_the_food_catalog_at_most_once(auth_client, app):
+    """The group's foods are loaded ONCE per save (the per-request _FoodCache),
+    not once per ingredient. This replaces the old indexed-exact-lookup fast
+    path: one full load amortised over every row beats a per-row indexed query
+    the moment a recipe has more than a couple of ingredients, and it is what
+    keeps a large catalog from turning a save into an O(rows x foods) worker
+    hog. See test_recipe_save_efficiency for the scaling assertion.
     """
     from sqlalchemy import event
 
-    _save(auth_client, "flour", "butter", "sugar")
+    for n in ("flour", "butter", "sugar", "eggs"):
+        auth_client.post("/api/v1/foods", json={"name": n})
 
     seen = []
 
     def record(conn, cursor, statement, params, context, executemany):
-        if "FROM foods" in statement:
+        low = statement.lower()
+        if "from foods" in low and "group_id" in low and "foods.id =" not in low:
             seen.append(" ".join(statement.split()))
 
     with app.app_context():
         engine = db.engine
     event.listen(engine, "before_cursor_execute", record)
     try:
-        _save(auth_client, "flour")
+        _save(auth_client, "flour", "butter", "sugar")   # 3 existing foods
     finally:
         event.remove(engine, "before_cursor_execute", record)
 
-    assert seen, "no food lookup happened at all — test is not exercising it"
-    # The scan to catch is the alias pass's group-only query. Queries filtering
-    # on lower(name) (the fast path) or on foods.id (serializer loads by PK) are
-    # both bounded and fine.
-    scans = [q for q in seen
-             if "lower" not in q.lower() and "foods.id = ?" not in q]
-    assert not scans, f"a hit loaded the whole foods table: {scans}"
+    # At most one full-catalog load for the whole 3-ingredient save.
+    assert len(seen) <= 1, f"catalog loaded {len(seen)} times in one save: {seen}"

@@ -311,3 +311,17 @@ def test_at_the_cap_the_merged_name_is_the_last_thing_dropped(auth_client, app):
     assert "nannas secret blend" in stored, \
         "the cap dropped the merged name — the one term the carry exists for"
     assert len(stored) <= food_resolve.MAX_ALIASES
+
+
+def test_aliases_past_the_cap_are_reported_as_refused(auth_client):
+    """Terms past MAX_ALIASES must appear in refusedAliases, not vanish with a
+    200 and an empty refused list (the visibility contract of fbade2c)."""
+    from app.services import food_resolve
+    many = [f"distinct-alias-{i:03d}" for i in range(food_resolve.MAX_ALIASES + 6)]
+    body = auth_client.post("/api/v1/foods",
+                            json={"name": "base", "aliases": many}).get_json()
+
+    assert len(body["aliases"]) == food_resolve.MAX_ALIASES
+    assert len(body["refusedAliases"]) == 6
+    # every submitted term is accounted for — none silently lost
+    assert set(body["aliases"]) | set(body["refusedAliases"]) == set(many)

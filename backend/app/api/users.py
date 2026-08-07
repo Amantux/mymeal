@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, request, jsonify, current_app, abort
 
-from ..extensions import db
+from ..extensions import db, limiter
 from ..models import User, Group, GroupInvitation
 from ..auth import (
     login_required,
@@ -45,6 +45,7 @@ def _invitation_expired(inv) -> bool:
 
 
 @bp.post("/users/register")
+@limiter.limit("10 per minute")
 def register():
     if not current_app.config["ALLOW_REGISTRATION"]:
         return jsonify({"error": "registration disabled"}), 403
@@ -108,6 +109,7 @@ def register():
 
 
 @bp.post("/users/login")
+@limiter.limit("5 per minute")  # brute-force bound (bcrypt already slows each try)
 def login():
     data = request.get_json(silent=True) or {}
     email = (
