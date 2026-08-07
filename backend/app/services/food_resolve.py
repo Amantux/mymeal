@@ -74,6 +74,18 @@ SEED_FOODS: dict[str, tuple[str, tuple[str, ...]]] = {
     "cashew": ("nut", (_N,)),
     "peanut": ("legume", ("peanut",)),
     "walnut": ("nut", (_N,)),
+    # The boundary guard can only refuse a qualifier it KNOWS — an unrecognised
+    # one falls through as "not materially different", which is what let
+    # "hazelnut butter" inherit butter's density while "walnut oil" was
+    # correctly refused. The asymmetry was knowledge, not logic, so the rest of
+    # the tree nuts are declared rather than the guard being made fail-closed
+    # (that would wrongly refuse "sunflower oil" and "maple syrup" too).
+    "hazelnut": ("nut", (_N,)),
+    "pecan": ("nut", (_N,)),
+    "pistachio": ("nut", (_N,)),
+    "macadamia": ("nut", (_N,)),
+    "pine nut": ("nut", (_N,)),
+    "brazil nut": ("nut", (_N,)),
     "coconut": ("fruit", ()),
     "desiccated coconut": ("baking", ()),
     # spices — the motivating case
@@ -368,6 +380,36 @@ def normalize(raw: str) -> tuple[str, str, str]:
         return head, qualifier, "split"
 
     return text, "", "unknown"
+
+
+# Words describing preparation or grade — never identity. Stripping them is
+# what makes "unsalted butter, softened" and "butter" share one weight answer,
+# which is correct BECAUSE THEY WEIGH THE SAME.
+#
+# ⚠️ This list is emphatically NOT the shopping-list qualifier lexicon and must
+# never be used as one. "plain" belongs here (plain and self-raising flour have
+# the same density) and must NOT split for shopping (buying the wrong one ruins
+# a bake). Two lists that look alike with opposite safety properties; that is
+# why they live apart with this comment between them. See docs/adr/0001.
+PREPARATION_WORDS = frozenset({
+    "fresh", "freshly", "dried", "chopped", "finely", "roughly", "large",
+    "small", "medium", "unsalted", "salted", "ripe", "raw", "cooked", "of",
+    "a", "an", "the", "plain", "whole", "ground", "grated", "melted", "softened",
+})
+
+
+def weight_key(raw: str) -> str:
+    """The canonical key for anything looking up a WEIGHT for free text.
+
+    Preparation words come off first (they never change mass), then the normal
+    canonicaliser — so "unsalted butter, softened" and "butter" agree while
+    "peanut butter" and "butter" stay apart.
+    """
+    text = normalize_text(raw)
+    if not text:
+        return ""
+    words = [w for w in text.split() if w not in PREPARATION_WORDS]
+    return food_key(" ".join(words)) if words else ""
 
 
 def food_key(raw: str) -> str:

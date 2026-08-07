@@ -54,7 +54,10 @@ def patched(monkeypatch):
     ("butter", "butter"),
     ("unsalted butter, softened", "butter"),
     ("butter (softened)", "butter"),
-    ("large free-range eggs", "eggs"),
+    # The key is the CANONICAL food, so it is singular — "eggs" and "egg" are
+    # not worth two cached weights.
+    ("large free-range eggs", "egg"),
+    ("eggs", "egg"),
     ("finely chopped garlic", "garlic"),
     ("", ""),
 ])

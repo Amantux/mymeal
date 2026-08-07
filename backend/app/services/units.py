@@ -69,8 +69,22 @@ _DENSITY_G_PER_ML = {
     "water": 1.0, "milk": 1.03, "cream": 1.0, "stock": 1.0, "broth": 1.0,
     "oil": 0.92, "olive oil": 0.92, "butter": 0.96, "honey": 1.42, "syrup": 1.37,
     "flour": 0.53, "sugar": 0.85, "brown sugar": 0.90, "powdered sugar": 0.56,
-    "salt": 1.22, "rice": 0.85, "cocoa": 0.52, "oats": 0.41,
+    "salt": 1.22, "rice": 0.85, "cocoa": 0.52, "cocoa powder": 0.52, "oats": 0.41,
     "yogurt": 1.03, "ketchup": 1.14,
+
+    # Compounds that are their OWN substance, listed because the head-noun
+    # fallback in _density_for deliberately refuses them (a nut butter is not
+    # butter). Without a real value they would silently show no weight at all,
+    # and three of these were previously served their head's density, which was
+    # simply wrong — condensed milk is 24% denser than milk, and peanut butter
+    # 13% denser than butter.
+    "peanut butter": 1.09, "almond butter": 1.05, "cashew butter": 1.05,
+    "condensed milk": 1.28, "evaporated milk": 1.07, "buttermilk": 1.03,
+    "almond milk": 1.03, "oat milk": 1.04, "soy milk": 1.03,
+    "coconut milk": 0.98, "coconut cream": 1.00, "coconut oil": 0.92,
+    "chicken stock": 1.0, "beef stock": 1.0, "vegetable stock": 1.0,
+    "rice vinegar": 1.01, "rice wine": 0.99, "vinegar": 1.01,
+    "almond flour": 0.42, "cream of tartar": 0.90,
 }
 
 _UNICODE_FRACTIONS = {
@@ -222,12 +236,70 @@ def scale_line(text: str, factor: float) -> str:
     return f"{new_qty} {tail}".strip()
 
 
+_CANONICAL_DENSITIES: dict[str, float] | None = None
+
+
+def _canonical_densities() -> dict[str, float]:
+    """The density table re-keyed by canonical food name.
+
+    The table is hand-written with everyday spellings ("yogurt"), but lookups
+    arrive canonicalised ("yoghurt"), so a key could sit in the table and never
+    be reachable. Re-keying once removes a whole class of silent miss instead of
+    asking whoever adds a row to know the canonical spelling.
+
+    Built lazily and cached: food_resolve is imported locally to keep this
+    module import-light, so this cannot be a module-level constant.
+    """
+    global _CANONICAL_DENSITIES
+    if _CANONICAL_DENSITIES is None:
+        from . import food_resolve
+        table = {}
+        for name, density in _DENSITY_G_PER_ML.items():
+            table[name] = density
+            key = food_resolve.weight_key(name)
+            if key:
+                table.setdefault(key, density)
+        _CANONICAL_DENSITIES = table
+    return _CANONICAL_DENSITIES
+
+
 def _density_for(text: str) -> float | None:
-    low = (text or "").lower()
-    # Prefer the most specific (longest) matching food keyword.
-    for food in sorted(_DENSITY_G_PER_ML, key=len, reverse=True):
-        if food in low:
-            return _DENSITY_G_PER_ML[food]
+    """Density for an ingredient's food text, or None when it isn't known.
+
+    This used to take the longest density-table key appearing ANYWHERE in the
+    text, which reads plausibly and is wrong: "rice vinegar" contains "rice", so
+    a cup of rice vinegar was weighed at rice's 0.85 g/ml, and peanut butter got
+    butter's 0.96. A substring is not evidence of being the same substance.
+
+    So the text is canonicalised first and matched as a whole. "unsalted butter"
+    still finds butter (preparation words come off in ``weight_key``), while
+    "peanut butter" canonicalises to itself and simply isn't in the table.
+
+    Returning None is the correct failure: the weight view omits an estimate it
+    cannot make, rather than showing a confidently wrong number.
+    """
+    from . import food_resolve  # local: keeps this module import-light
+
+    canonical = food_resolve.weight_key(text)
+    if not canonical:
+        return None
+
+    table = _canonical_densities()
+    if canonical in table:
+        return table[canonical]
+
+    # Fall back to the head noun, so "sesame oil" and "maple syrup" keep the
+    # density they have always had — but only when the qualifier is not itself a
+    # materially different food. That is the one check that separates "sesame
+    # oil is oil" from "peanut butter is not butter"; both look identical to a
+    # substring search, which is why the old rule got the second one wrong.
+    for head in sorted(table, key=len, reverse=True):
+        if not canonical.endswith(" " + head):
+            continue
+        qualifier = canonical[: -(len(head) + 1)].strip()
+        if food_resolve._differs_materially(qualifier, head):
+            return None
+        return table[head]
     return None
 
 

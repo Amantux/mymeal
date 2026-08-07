@@ -28,7 +28,7 @@ from urllib.parse import urlparse
 
 from ..extensions import db
 from ..models.unit_conversion import UnitConversion
-from . import units, websearch
+from . import food_resolve, units, websearch
 
 _LOGGER = logging.getLogger("mymeal.conversions")
 
@@ -70,14 +70,9 @@ def _safe_source_url(raw) -> str:
     return value if scheme in ("http", "https") else ""
 
 
-# Adjectives that describe preparation or grade, never identity. Stripping them
-# is what makes "unsalted butter" and "salted butter" share one answer — which is
-# correct here, because they weigh the same.
-_NOISE = {
-    "fresh", "freshly", "dried", "chopped", "finely", "roughly", "large",
-    "small", "medium", "unsalted", "salted", "ripe", "raw", "cooked", "of",
-    "a", "an", "the", "plain", "whole", "ground", "grated", "melted", "softened",
-}
+# Moved to food_resolve.PREPARATION_WORDS so units._density_for keys the same
+# way; re-exported because this name is the documented one.
+_NOISE = food_resolve.PREPARATION_WORDS
 
 
 def food_term(text: str) -> str:
@@ -86,16 +81,9 @@ def food_term(text: str) -> str:
     "unsalted butter, softened" and "butter (softened)" must hit the same row, or
     the cache never hits and every recipe pays for another lookup.
     """
-    low = (text or "").lower()
     # Everything after a comma is preparation, not identity.
-    low = low.split(",")[0]
-    low = re.sub(r"\([^)]*\)", " ", low)
-    low = re.sub(r"[^a-z ]+", " ", low)
-    words = [w for w in low.split() if w not in _NOISE]
-    # The final word is the food itself; everything before it is describing it.
-    # "large free-range eggs" and "eggs" are not worth two rows — they weigh the
-    # same, which is the only thing this key is used to look up.
-    return (words[-1] if words else "")[:MAX_TERM_CHARS]
+    head = str(text or "").split(",")[0]
+    return food_resolve.weight_key(head)[:MAX_TERM_CHARS]
 
 
 def _threshold() -> float:
