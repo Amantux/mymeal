@@ -1,6 +1,7 @@
 """Foods (canonical ingredients) and units of measure."""
 from flask import Blueprint, request, jsonify, abort
 
+from sqlalchemy import func
 from sqlalchemy.orm import selectinload
 
 from ..extensions import db
@@ -178,6 +179,61 @@ def delete_food(food_id):
     db.session.delete(food)
     db.session.commit()
     return "", 204
+
+
+@bp.get("/foods/duplicates")
+@login_required
+def duplicate_foods():
+    """Groups of Food rows that are the same ingredient written differently.
+
+    A proposal, never an action. A migration rewriting food_id could not be
+    reversed without an audit table recording every touched row, this add-on
+    auto-upgrades so it would land unattended, and silently merging contradicts
+    the propose-then-confirm pattern used everywhere else (see Edibl ADR-0004:
+    low confidence must not silently overwrite). Reversibility comes free when
+    the user saw the change and chose it.
+
+    Executing a proposal is POST /foods/<keep>/merge with each `merge` id, so
+    there is no second write path and the guards are the ones already tested.
+
+    Grouping is by canonical key, which is what makes this safe: peanut butter
+    and butter canonicalise apart and are never proposed together.
+    """
+    gid = current_group().id
+    foods = db.session.query(Food).filter_by(group_id=gid).all()
+
+    usage = {}
+    for model in _FOOD_REFERENCES:
+        for food_id, count in (db.session.query(model.food_id, func.count())
+                               .filter(model.food_id.isnot(None))
+                               .group_by(model.food_id)):
+            usage[food_id] = usage.get(food_id, 0) + count
+
+    groups = {}
+    for food in foods:
+        key = food_resolve.match_key(food.name)
+        if key:
+            groups.setdefault(key, []).append(food)
+
+    def described(food):
+        return {**food_out(food), "usageCount": usage.get(food.id, 0)}
+
+    proposals = []
+    for canonical, members in sorted(groups.items()):
+        if len(members) < 2:
+            continue
+        # Keep the row that already IS the canonical name; failing that, the one
+        # used most, because that is the change touching the fewest recipes.
+        # Name breaks ties so the proposal is stable between requests.
+        members.sort(key=lambda f: (f.name.strip().lower() != canonical,
+                                    -usage.get(f.id, 0), f.name.lower()))
+        keep, rest = members[0], members[1:]
+        proposals.append({
+            "canonical": canonical,
+            "keep": described(keep),
+            "merge": [described(f) for f in rest],
+        })
+    return jsonify(proposals)
 
 
 @bp.post("/foods/<food_id>/merge")
