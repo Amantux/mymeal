@@ -79,6 +79,9 @@ def ingredient_out(ing):
         "display": ing.display,
         "quantity": ing.quantity,
         "note": ing.note,
+        # The variety, split off the food. Separate from `note`, which is
+        # preparation.
+        "qualifier": ing.qualifier,
         "section": ing.section,
         "position": ing.position,
         "unit": unit_out(ing.unit) if ing.unit else None,

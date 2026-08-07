@@ -94,6 +94,11 @@ class RecipeIngredient(IDMixin, TimestampMixin, db.Model):
     display: Mapped[str] = mapped_column(Text, default="")
     quantity: Mapped[float] = mapped_column(Float, default=0.0)
     note: Mapped[str] = mapped_column(String(512), default="")
+    # The VARIETY, split off the food by services.food_resolve: "Vietnamese" for
+    # "Vietnamese cinnamon". Deliberately NOT `note` — note means preparation
+    # ("finely chopped"), and merging the two makes them indistinguishable
+    # forever. `display` still holds the human's original wording.
+    qualifier: Mapped[str] = mapped_column(String(120), default="", server_default="")
     # Optional section heading this line falls under ("For the sauce").
     section: Mapped[str] = mapped_column(String(255), default="")
     position: Mapped[int] = mapped_column(Integer, default=0)

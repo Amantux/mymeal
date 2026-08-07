@@ -42,6 +42,10 @@ def _snapshot_recipe(recipe: Recipe) -> dict:
                 "display": ing.display,
                 "quantity": ing.quantity,
                 "note": ing.note,
+                # MUST be here for the same reason cookTemperatureC is: any
+                # field _apply accepts but the snapshot omits is silently wiped
+                # when a version is restored.
+                "qualifier": ing.qualifier,
                 "section": ing.section,
                 "position": ing.position,
                 "unit": ing.unit.name if ing.unit else "",

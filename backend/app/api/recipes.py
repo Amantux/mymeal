@@ -126,6 +126,7 @@ def _set_ingredients(recipe: Recipe, rows):
                 display=display,
                 quantity=qty,
                 note=row.get("note", ""),
+                qualifier=str(row.get("qualifier") or "")[:120],
                 section=row.get("section", ""),
                 position=row.get("position", i),
                 unit_id=unit_id,

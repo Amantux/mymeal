@@ -5,7 +5,7 @@ oil"), independent of any recipe. Recipe ingredients, pantry items, and
 shopping-list items all point at a Food so quantities can be consolidated and
 matched. ``aisle`` groups foods for tidy shopping lists.
 """
-from sqlalchemy import String, ForeignKey
+from sqlalchemy import JSON, String, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..extensions import db
@@ -21,6 +21,12 @@ class Food(IDMixin, TimestampMixin, db.Model):
     aliases: Mapped[str] = mapped_column(String(512), default="")
     # Supermarket aisle / department for grouping shopping lists.
     aisle: Mapped[str] = mapped_column(String(120), default="")
+    # What KIND of thing this is ("dairy", "grain") and what it contains
+    # ("dairy", "nuts"). These are what stop a substring match crossing a
+    # material boundary — "almond milk" must never resolve to `milk`. Same
+    # fields as Edibl's FoodConcept; see docs/adr/0001.
+    classification: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    allergens: Mapped[list] = mapped_column(JSON, default=list)
     description: Mapped[str] = mapped_column(String(512), default="")
 
     group_id: Mapped[str] = mapped_column(String(36), ForeignKey("groups.id"))
