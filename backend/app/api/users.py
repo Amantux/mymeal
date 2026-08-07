@@ -22,6 +22,14 @@ _LOGGER = logging.getLogger("mymeal.auth")
 
 bp = Blueprint("users", __name__)
 
+# A precomputed hash to verify against when the account is missing, so an
+# absent-user login costs the SAME bcrypt time as a real one — removes the
+# user-enumeration timing oracle (myMeal skipped the hash entirely; both
+# sibling apps already do this). Bound the password length too: bcrypt work
+# grows with input, so an attacker-supplied megabyte string is a cheap DoS.
+_DUMMY_HASH = hash_password("this-is-not-a-real-password")
+_MAX_PASSWORD_LEN = 4096
+
 
 def _invitation_expired(inv) -> bool:
     """True if the invitation's ``expires_at`` (ISO string) is in the past."""
@@ -97,8 +105,14 @@ def login():
         or ""
     ).strip().lower()
     password = data.get("password") or request.form.get("password") or ""
+    if len(password) > _MAX_PASSWORD_LEN:
+        # Reject before hashing — do not feed an unbounded string to bcrypt.
+        return jsonify({"error": "invalid credentials"}), 401
     user = db.session.query(User).filter_by(email=email).first()
-    if not user or not verify_password(password, user.password_hash):
+    # Always run a bcrypt verify (against a dummy hash when the user is missing)
+    # so response time can't reveal whether the account exists.
+    valid = verify_password(password, user.password_hash if user else _DUMMY_HASH)
+    if not user or not valid:
         # myMeal logged no auth events at all, unlike its siblings — so a
         # brute-force attempt left no trace anywhere. The address is masked and
         # the client IP scrubbed: both are attacker-controlled and land in a
