@@ -520,8 +520,10 @@ _PARSE_SYSTEM = (
 )
 _PARSE_HINT = (
     'Return JSON {"ingredients": [ {"display": string, "quantity": number, '
-    '"unit": string, "food": string, "note": string} ]} — exactly one object '
-    "per input line, in the same order."
+    '"unit": string, "food": string, "qualifier": string, "note": string} ]} '
+    "— exactly one object per input line, in the same order. `food` is the "
+    'ingredient WITHOUT its variety ("cinnamon", not "Vietnamese cinnamon"); '
+    "`qualifier` is that variety; `note` is preparation only."
 )
 
 
@@ -550,6 +552,7 @@ def parse_ingredients(lines, provider: AIProvider) -> list[dict]:
             "unit": _text(item.get("unit")),
             "food": _text(item.get("food")),
             "note": _text(item.get("note")),
+            "qualifier": _text(item.get("qualifier"))[:120],
         })
     return out
 

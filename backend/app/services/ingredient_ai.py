@@ -48,9 +48,12 @@ def _prompt(lines: list[str]) -> str:
         '  "index": the line number\n'
         '  "quantity": a number, or null if the line states no amount\n'
         '  "unit": the unit as written (cup, g, stick, handful…), or null\n'
-        '  "food": the ingredient itself, without the amount or preparation\n'
-        '  "note": preparation or qualifiers ("finely chopped", "at room '
-        'temperature"), or ""\n'
+        '  "food": the ingredient itself, WITHOUT the amount, the preparation, '
+        'or the variety — "cinnamon", not "Vietnamese cinnamon"\n'
+        '  "qualifier": the variety or grade, if the line names one '
+        '("Vietnamese", "sea", "extra virgin"), else ""\n'
+        '  "note": preparation only ("finely chopped", "at room temperature"), '
+        'or ""\n'
         '  "confidence": 0.0-1.0, how sure you are\n\n'
         'Reply as {"items": [ ... ]}.\n\n'
         "Lines:\n" + numbered
@@ -94,6 +97,10 @@ def _clean(proposal: dict, original: str) -> dict | None:
         "unit": unit,
         "food": food,
         "note": str(proposal.get("note") or "").strip()[:MAX_LINE_CHARS],
+        # Kept separate from `note`: note is preparation, this is identity-
+        # adjacent. Asking the model for both is what stops varieties being
+        # buried in the preparation field, where nothing can use them.
+        "qualifier": str(proposal.get("qualifier") or "").strip()[:120],
         "confidence": max(0.0, min(1.0, confidence)),
         "source": "ai",
     }

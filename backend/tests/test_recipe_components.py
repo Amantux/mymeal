@@ -61,8 +61,11 @@ def test_shopping_expands_component_recipe(auth_client):
                            json={"recipeIds": [dish["id"]]}).get_json()
     names = {i["display"] for i in res["items"]}
     # The component expanded into the sauce's ingredients (not a "Sauce" line).
+    # The names are the CANONICAL foods: this helper passes the whole display
+    # line as the food name, so before canonicalisation the shopping list —
+    # and the Food table — carried rows literally called "8 cloves garlic".
     assert "flour" in names
-    assert "8 cloves garlic" in names and "1 cup olive oil" in names
+    assert "garlic" in names and "olive oil" in names
     assert "Sauce" not in names and "1 batch Sauce" not in names
 
 

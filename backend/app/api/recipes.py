@@ -64,7 +64,80 @@ def _find_or_create_unit(gid: str, name: str):
 
 
 def _find_or_create_food(gid: str, name: str):
-    return _find_or_create(Food, gid, name)
+    """Resolve a free-text food name to a Food id, and the variety split off it.
+
+    Returns ``(food_id, qualifier)``.
+
+    Order matters, and it is chosen so nothing existing churns:
+
+    1. An exact (case-insensitive) match on what the caller typed wins. A
+       household that already has a Food called "Vietnamese cinnamon" keeps
+       using it — this change must not orphan rows people curated by hand.
+    2. Otherwise the name is split by services.food_resolve, and an existing
+       Food matching the CANONICAL half is used, carrying the variety back as
+       the qualifier.
+    3. Otherwise a Food is created under the canonical name — "cinnamon", not
+       "Vietnamese cinnamon" — which is the whole point: one row per real
+       ingredient, the variety on the line.
+
+    Aliases are consulted, which they never were before: Food.aliases existed
+    and was written by the Foods API, but find-or-create matched on name only,
+    so an alias could not prevent a duplicate. A bypassed policy, not a missing
+    one (docs/adr/0001).
+    """
+    from ..services import food_resolve
+
+    raw = (name or "").strip()
+    if not raw:
+        return None, ""
+
+    exact = (
+        db.session.query(Food)
+        .filter(Food.group_id == gid, db.func.lower(Food.name) == raw.lower())
+        .first()
+    )
+    if exact:
+        return exact.id, ""
+
+    canonical, qualifier, _why = food_resolve.normalize(raw)
+    canonical = canonical or raw
+
+    # An alias match counts as the same food. Cheap enough here: this runs only
+    # when the exact lookup missed, i.e. for genuinely new names. One query, two
+    # passes, because the ORDER of the two passes is load-bearing:
+    #
+    # A household's own alias beats anything the lexicon infers. "Chinese
+    # parsley" is a real name for coriander, but "chinese" is also a nationality
+    # qualifier — so the split fires first and would strand the household on a
+    # new "parsley" row despite them having said what they meant. Whatever the
+    # user declared wins over whatever we guessed.
+    foods = db.session.query(Food).filter(Food.group_id == gid).all()
+    terms_by_food = [
+        (food, [food_resolve.fold(food_resolve.normalize_text(t))
+                for t in [food.name] + food_resolve.aliases_of(food)])
+        for food in foods
+    ]
+
+    typed = food_resolve.fold(food_resolve.normalize_text(raw))
+    for food, terms in terms_by_food:
+        if typed in terms:
+            # Matched what they actually typed, so nothing was split off it.
+            return food.id, ""
+
+    wanted = food_resolve.fold(food_resolve.normalize_text(canonical))
+    for food, terms in terms_by_food:
+        if wanted in terms:
+            return food.id, qualifier
+
+    food = Food(name=canonical[:255], group_id=gid)
+    # Stamp what we know about it, so this household's own rows can take part in
+    # the material-boundary guard rather than only the shipped seed list.
+    seeded = food_resolve.SEED_FOODS.get(canonical)
+    if seeded:
+        food.classification, food.allergens = seeded[0], list(seeded[1])
+    db.session.add(food)
+    db.session.flush()
+    return food.id, qualifier
 
 
 def _set_ingredients(recipe: Recipe, rows):
@@ -101,8 +174,12 @@ def _set_ingredients(recipe: Recipe, rows):
         if not unit_id and row.get("unit"):
             name = (units.canonical_unit(row["unit"]) or str(row["unit"]))[:120]
             unit_id = _find_or_create_unit(gid, name)
+        # An explicit qualifier from the caller (the import confirmation step)
+        # always wins; otherwise take whatever the split produced.
+        qualifier = str(row.get("qualifier") or "")[:120]
         if not ref_recipe_id and not food_id and row.get("food"):
-            food_id = _find_or_create_food(gid, str(row["food"])[:255])
+            food_id, split_qualifier = _find_or_create_food(gid, str(row["food"])[:255])
+            qualifier = qualifier or split_qualifier
         # Otherwise best-effort parse the free-text display for qty + unit.
         if not ref_recipe_id and not unit_id and (qty in (None, 0, 0.0, "")) \
                 and not row.get("unit") and display:
@@ -126,7 +203,7 @@ def _set_ingredients(recipe: Recipe, rows):
                 display=display,
                 quantity=qty,
                 note=row.get("note", ""),
-                qualifier=str(row.get("qualifier") or "")[:120],
+                qualifier=qualifier,
                 section=row.get("section", ""),
                 position=row.get("position", i),
                 unit_id=unit_id,

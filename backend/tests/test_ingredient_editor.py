@@ -58,7 +58,9 @@ def test_structured_ingredient_round_trips(auth_client):
     assert got[0]["note"] == "sifted"
     # No unit is fine; food + note still structured.
     assert got[1]["unit"] is None
-    assert got[1]["food"]["name"] == "eggs" and got[1]["note"] == "beaten"
+    # "eggs" canonicalises to the singular seed food — one row per ingredient
+    # is the point, so "egg" and "eggs" must not be two Foods.
+    assert got[1]["food"]["name"] == "egg" and got[1]["note"] == "beaten"
 
 
 def test_food_reused_not_duplicated_across_recipes(auth_client):
