@@ -78,10 +78,52 @@ qualifier. Longest suffix wins, so "extra virgin olive oil" → `olive oil`, nev
 means preparation ("finely chopped") and is *already* contaminated with variety
 words by two AI prompts. `display` is never rewritten in the database.
 
-⚠️ `_NOISE` (`conversions.py:76`) contains "unsalted", "whole", "plain" and is
-**correct there** — salted and unsalted butter weigh the same, and that list only
-keys a weight cache. It must never be promoted into the qualifier lexicon. Two
-lists that look alike with opposite safety properties.
+⚠️ `_NOISE` contained "unsalted", "whole", "plain" and was **correct there** —
+salted and unsalted butter weigh the same. It must never be promoted into the
+qualifier lexicon. Two lists that look alike with opposite safety properties.
+It now lives as `food_resolve.PREPARATION_WORDS` (three callers needed it and had
+to agree), with that warning kept beside it.
+
+## What implementation changed about this design
+
+Recorded because each was found by measuring, not by reasoning, and each would
+otherwise be re-litigated.
+
+**One key, three callers.** `match_key` (preparation words stripped, then
+canonicalised) backs the learned-weight cache, the density lookup and inventory
+coverage. They must agree or they contradict each other in front of the user.
+It was briefly named `weight_key`, which described one of the three.
+
+**A canonical-only match was too strict, and only measurement showed it.**
+Matching density on the canonical name alone lost 36 of 67 lookups on a realistic
+corpus — including correct ones (sesame oil, chicken stock, maple syrup). The
+shipped rule keeps a head-noun fallback *gated by the material boundary*: that
+gate is the only thing separating "sesame oil is oil" from "peanut butter is not
+butter", which a substring search cannot tell apart. Final result: 0 lookups
+lost, 13 wrong values corrected.
+
+**The boundary guard fails OPEN on unknown qualifiers.** It can only refuse a
+qualifier it knows, so "hazelnut butter" inherited butter's density while
+"walnut oil" was correctly refused. The fix was declaring the remaining tree
+nuts, not making the guard fail closed — closed would also refuse "sunflower
+oil" and "maple syrup". **Coverage of the seed list is therefore a safety
+property here, not just a quality one.**
+
+**Canonicalise the KEY, not always the LABEL.** Rewriting a display name the
+lexicon does not understand mangles it: "6 bone-in chicken thighs" came back as
+"bone in chicken thighs" because normalisation strips punctuation. Renaming is
+gated on `is_known`; unknown names still group by canonical key so two spellings
+merge, but are shown exactly as written.
+
+**A lookup table must be keyed the way lookups arrive.** The density table said
+"yogurt" while lookups canonicalised to "yoghurt", so that row existed and could
+never be hit. Tables consulted with canonical keys are now re-keyed canonically.
+
+**Explicit creation is not deduplication.** `POST /foods` matches on exact name
+or alias only, never on the canonical key — otherwise a household could never
+deliberately keep "Vietnamese cinnamon" as its own food, which is precisely the
+guarantee find-or-create protects. Collapsing varieties is the merge endpoint's
+job, behind a confirmation.
 
 ## Consequences
 
@@ -97,6 +139,9 @@ lists that look alike with opposite safety properties.
   answer.
 - **−** Merging existing duplicate `Food` rows is a user-facing proposal, not a
   migration. See Edibl ADR-0004: low-confidence must not silently overwrite.
+- **−** Cache keys changed, so existing `unit_conversions` rows stop being hit.
+  The poisoned ones are not repairable — the original text was never stored — so
+  they age out rather than being migrated.
 
 ## Related
 
