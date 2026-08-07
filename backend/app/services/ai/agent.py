@@ -10,6 +10,7 @@ MCP server (later milestone) reuses these executors.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date
 
 from ...extensions import db
@@ -18,6 +19,8 @@ from ..edibl import EdiblClient
 from ..inventory import rank_recipes
 from ..preferences import preferences_text
 from .base import AIProvider
+
+_log = logging.getLogger("mymeal.chat")
 
 SYSTEM = (
     "You are myMeal, a friendly and practical home cooking assistant. Help the "
@@ -310,7 +313,8 @@ def execute_tool(gid: str, name: str, args: dict):
         except ProviderError as exc:
             return {"error": str(exc)}
         except Exception as exc:  # noqa: BLE001 - fetch/parse errors feed back, never 500
-            return {"error": f"could not import that recipe: {exc}"}
+            _log.warning("recipe import failed", exc_info=exc)
+            return {"error": "could not import that recipe"}
         title = payload.get("name") or "Imported Recipe"
         recipe = Recipe(name=title, slug=unique_slug(Recipe, gid, title), group_id=gid)
         db.session.add(recipe)
@@ -581,7 +585,15 @@ def run_chat(
             try:
                 output = execute_tool(gid, call.name, call.arguments)
             except Exception as exc:  # noqa: BLE001 - feed errors back, never 500
-                output = {"error": f"{call.name} failed: {exc}"}
+                # `trace` is returned to the browser and persisted as
+                # tool_trace, so the exception text must not ride along: an ORM
+                # error's str() carries the SQL statement and bound parameters,
+                # a connection error the DSN. execute_tool returns curated
+                # {"error": ...} for every expected case, so this is an
+                # unexpected failure — log it (scrubbed by the global
+                # formatter) and hand the model a generic message.
+                _log.warning("chat tool %s failed", call.name, exc_info=exc)
+                output = {"error": f"{call.name} failed unexpectedly"}
             trace.append(
                 {"tool": call.name, "args": call.arguments, "result": output}
             )
@@ -645,7 +657,8 @@ def run_chat_stream(gid, provider, history, user_message, max_iters=6):
             try:
                 output = execute_tool(gid, call.name, call.arguments)
             except Exception as exc:  # noqa: BLE001 - feed errors back, never 500
-                output = {"error": f"{call.name} failed: {exc}"}
+                _log.warning("chat tool %s failed", call.name, exc_info=exc)
+                output = {"error": f"{call.name} failed unexpectedly"}
             trace.append({"tool": call.name, "args": call.arguments, "result": output})
             messages.append({"role": "user", "content": (
                 f"Result of {call.name}({json.dumps(call.arguments)}): "

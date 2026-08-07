@@ -6,7 +6,6 @@ BEHAVIOUR (a request is not made, a traversal is refused, a secret is redacted)
 rather than the shape of the code, so a refactor that keeps the guarantee keeps
 the tests green.
 """
-from types import SimpleNamespace
 
 import pytest
 from app.services.ai.base import ProviderError, safe_upstream_detail
@@ -14,12 +13,20 @@ from app.services.ai.provider_config import list_models
 
 # --- SSRF: validate the base URL where it is USED, not only where it is saved --
 
+class _Eff:
+    """An effective-settings stand-in that returns "" for any AI_* field a
+    provider reads but the test didn't set — so a provider constructor can't
+    AttributeError. Explicit values still win."""
+    def __init__(self, provider, **kw):
+        self.__dict__["AI_PROVIDER"] = provider
+        self.__dict__.update(kw)
+
+    def __getattr__(self, name):
+        return ""
+
+
 def _eff(provider, **kw):
-    """A minimal effective-settings stand-in (what list_models reads)."""
-    base = {"AI_PROVIDER": provider, "OLLAMA_HOST": "", "OLLAMA_API_KEY": "",
-            "OPENAI_BASE_URL": "", "OPENAI_API_KEY": ""}
-    base.update(kw)
-    return SimpleNamespace(**base)
+    return _Eff(provider, **kw)
 
 
 def _no_network(monkeypatch):
@@ -90,6 +97,40 @@ def test_private_lan_ollama_host_still_reaches_the_provider(monkeypatch):
     eff = _eff("ollama", OLLAMA_HOST="http://192.168.1.50:11434")
     assert list_models(eff) == ["llama3", "mistral"]
     assert called["url"] == "http://192.168.1.50:11434/api/tags"
+
+
+def test_get_provider_refuses_a_link_local_ollama_host(monkeypatch):
+    """list_models was guarded; the CHAT path (get_provider) was not, so an
+    env/add-on-options host reached the network with the API key attached.
+    Validate at the point of use on every path.
+    """
+    from app.services.ai.base import ProviderError
+    from app.services.ai.registry import get_provider
+
+    eff = _eff("ollama", OLLAMA_HOST="http://169.254.169.254",
+               OLLAMA_MODEL="llama3", OLLAMA_API_KEY="k")
+    with pytest.raises(ProviderError):
+        get_provider(eff)
+
+
+def test_get_provider_refuses_a_link_local_openai_base_url(monkeypatch):
+    from app.services.ai.base import ProviderError
+    from app.services.ai.registry import get_provider
+
+    eff = _eff("openai", OPENAI_BASE_URL="http://169.254.169.254/v1",
+               OPENAI_MODEL="gpt-4", OPENAI_API_KEY="k")
+    with pytest.raises(ProviderError):
+        get_provider(eff)
+
+
+def test_get_provider_allows_a_private_lan_host(monkeypatch):
+    """The guard must not break a self-hosted LAN Ollama on the chat path."""
+    from app.services.ai.registry import get_provider
+
+    eff = _eff("ollama", OLLAMA_HOST="http://192.168.1.50:11434",
+               OLLAMA_MODEL="llama3", OLLAMA_API_KEY="k")
+    provider = get_provider(eff)          # must not raise
+    assert provider is not None
 
 
 # --- SPA path traversal ------------------------------------------------------
@@ -177,3 +218,43 @@ def test_provider_error_message_is_still_actionable():
     """Sanitising must not genericise the curated messages users rely on."""
     exc = ProviderError("this AI provider does not support image input")
     assert "does not support image input" in str(exc)
+
+
+# --- anti-clickjacking is keyed on ingress, not on auth mode -----------------
+
+def test_frame_headers_asserted_for_a_non_ingress_request(app):
+    """A standalone/browser request must get X-Frame-Options + frame-ancestors,
+    so the app cannot be framed by an attacker."""
+    client = app.test_client()
+    resp = client.get("/api/v1/misc/health")
+    assert resp.headers.get("X-Frame-Options") == "SAMEORIGIN"
+    assert "frame-ancestors 'self'" in resp.headers.get("Content-Security-Policy", "")
+
+
+def test_frame_headers_omitted_for_an_ingress_request(app):
+    """From the ingress peer, HA legitimately frames the app — asserting
+    anti-clickjacking blanks the panel. This must hold even with auth ENABLED
+    (disable_auth: false behind ingress is a supported configuration, because
+    ingress identity is honoured regardless of auth mode).
+    """
+    client = app.test_client()
+    resp = client.get("/api/v1/misc/health",
+                      environ_overrides={"REMOTE_ADDR": "172.30.32.2"})
+    assert "X-Frame-Options" not in resp.headers
+    assert "frame-ancestors" not in resp.headers.get("Content-Security-Policy", "")
+
+
+# --- image path is safe_join'd, like the video path -------------------------
+
+def test_image_path_refuses_traversal(app):
+    from werkzeug.exceptions import NotFound
+    from app.api.recipes import _image_path
+    with app.test_request_context():
+        # A crafted filename that would escape the images dir must 404, not
+        # resolve to /etc/passwd. secure_filename + a UUID name make this
+        # unreachable via the API today; the guard is defence-in-depth.
+        try:
+            path = _image_path("../../../../etc/passwd")
+        except NotFound:
+            return  # safe_join rejected it → abort(404)
+        assert "etc/passwd" not in path

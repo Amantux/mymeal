@@ -39,6 +39,30 @@ def _effective(settings=None):
     return effective_settings(base, gid)
 
 
+# The base-URL field each provider actually dials. claude has no configurable
+# endpoint, so it needs no check. ollama_cloud inherits self.host = OLLAMA_HOST
+# and its host IS overridable, so it is guarded too — a fixed default alone is
+# not a guarantee.
+_ENDPOINT_FIELD = {"ollama": "OLLAMA_HOST", "ollama_cloud": "OLLAMA_HOST",
+                   "openai": "OPENAI_BASE_URL"}
+
+
+def _assert_endpoint_ok(name: str, eff) -> None:
+    """Refuse a provider whose configured base URL points at a blocked host.
+
+    The point-of-use SSRF guard: /ai/settings validates on save, but a host can
+    arrive via env / add-on options / stored group overrides that never touch
+    that path. Runs on every provider build, so no completion path is exempt.
+    """
+    from .url_guard import llm_url_ok
+    field = _ENDPOINT_FIELD.get(name)
+    if not field:
+        return
+    ok, err = llm_url_ok(getattr(eff, field, "") or "")
+    if not ok:
+        raise ProviderError(err or "the configured base URL is not allowed")
+
+
 def _instance(name: str, eff) -> AIProvider:
     """Build a provider from the effective config. Not cached: config can
     change at runtime (a UI save) and must take effect on the next request."""
@@ -60,6 +84,7 @@ def get_provider(settings=None) -> AIProvider:
         )
     if name not in _REGISTRY:
         raise ProviderError(f"Unknown AI provider '{name}'.")
+    _assert_endpoint_ok(name, eff)  # SSRF: validate the base URL at point of use
     provider = _instance(name, eff)
     if not provider.available():
         raise ProviderError(
@@ -89,6 +114,7 @@ def provider_for_group(gid, settings=None, model=None, provider=None,
         raise ProviderError("No AI provider configured.")
     if name not in _REGISTRY:
         raise ProviderError(f"Unknown AI provider '{name}'.")
+    _assert_endpoint_ok(name, eff)  # SSRF: validate the base URL at point of use
     provider = _instance(name, eff)
     if not provider.available():
         raise ProviderError(f"AI provider '{name}' is not fully configured.")

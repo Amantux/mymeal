@@ -71,6 +71,16 @@ class EdiblClient:
         """
         if not self.configured:
             return {"ok": False, "configured": False, "reachable": False}
+        # SSRF at the point of USE: the base URL arrives from a DB Setting the
+        # operator edits, which never passes the API's save-time check when set
+        # via env/options. llm_url_ok blocks link-local (169.254.169.254) while
+        # allowing loopback/private LAN, where a sibling Edibl add-on legitimately
+        # runs. Refuse BEFORE the bearer token is attached to the request.
+        from .ai.url_guard import llm_url_ok
+        ok, _err = llm_url_ok(self.base_url)
+        if not ok:
+            return {"ok": False, "configured": True, "reachable": False,
+                    "error": "connected-app URL is not allowed"}
         try:
             r = call()
             r.raise_for_status()
@@ -81,7 +91,9 @@ class EdiblClient:
                     "error": f"HTTP {exc.response.status_code}", "status": exc.response.status_code}
         except httpx.HTTPError as exc:
             logger.warning("edibl request failed: %s", exc)
-            return {"ok": False, "configured": True, "reachable": False, "error": str(exc)}
+            from .ai.base import safe_upstream_detail
+            return {"ok": False, "configured": True, "reachable": False,
+                    "error": safe_upstream_detail(exc)}
 
     def _get(self, path: str, params: dict | None = None) -> dict:
         return self._finish(lambda: httpx.get(
@@ -103,6 +115,16 @@ class EdiblClient:
         (which parses JSON). Classified the same {ok, reachable, ...} way."""
         if not self.configured:
             return {"ok": False, "configured": False, "reachable": False}
+        # SSRF at the point of USE: the base URL arrives from a DB Setting the
+        # operator edits, which never passes the API's save-time check when set
+        # via env/options. llm_url_ok blocks link-local (169.254.169.254) while
+        # allowing loopback/private LAN, where a sibling Edibl add-on legitimately
+        # runs. Refuse BEFORE the bearer token is attached to the request.
+        from .ai.url_guard import llm_url_ok
+        ok, _err = llm_url_ok(self.base_url)
+        if not ok:
+            return {"ok": False, "configured": True, "reachable": False,
+                    "error": "connected-app URL is not allowed"}
         try:
             r = httpx.delete(f"{self.base_url}{path}",
                              headers=self._headers(), timeout=self.timeout)
