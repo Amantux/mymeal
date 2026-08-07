@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.2.32
+
+Build-only republish; no user-visible change.
+
 ## 1.2.31
 
 - Scope ingredient foodId/unitId to the group; harden register.
