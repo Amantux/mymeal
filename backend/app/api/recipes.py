@@ -140,6 +140,20 @@ def _find_or_create_food(gid: str, name: str):
     return food.id, qualifier
 
 
+def _owned_id(gid: str, model, raw):
+    """Return ``raw`` only if it names a row of ``model`` in this group, else None.
+
+    The tenancy check for a caller-supplied foodId/unitId — an id that belongs
+    to another group (or doesn't exist) is dropped rather than linked, so it can
+    never be read back through the serializer.
+    """
+    if not raw:
+        return None
+    rid = str(raw)
+    exists = db.session.query(model.id).filter_by(id=rid, group_id=gid).first()
+    return rid if exists else None
+
+
 def _set_ingredients(recipe: Recipe, rows):
     """Replace a recipe's ingredient lines with ``rows`` (list of dicts).
 
@@ -158,8 +172,14 @@ def _set_ingredients(recipe: Recipe, rows):
     for i, row in enumerate((rows or [])[:MAX_INGREDIENT_ROWS]):
         display = str(row.get("display", ""))[:1000]
         qty = row.get("quantity")
-        unit_id = row.get("unitId") or None
-        food_id = row.get("foodId") or None
+        # A caller-supplied foodId/unitId must belong to THIS group, exactly
+        # like refRecipeId below. Without the scope check, group A could
+        # reference group B's Food/Unit by id and read its name/description/
+        # aliases back through food_out — a cross-tenant disclosure. Unknown or
+        # cross-group ids drop to None (the row falls back to its free-text
+        # food/unit name, or none).
+        unit_id = _owned_id(gid, Unit, row.get("unitId"))
+        food_id = _owned_id(gid, Food, row.get("foodId"))
         # A row may LINK another recipe as a component. Validate it belongs to
         # this group and isn't the recipe itself; when set, it replaces the food
         # (a component references a recipe, not a Food).

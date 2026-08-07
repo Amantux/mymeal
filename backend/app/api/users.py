@@ -71,9 +71,21 @@ def register():
             return jsonify({"error": "invitation token expired"}), 422
         if inv.uses <= 0:
             return jsonify({"error": "invitation token already used"}), 422
-        inv.uses -= 1
+        # Consume a use ATOMICALLY: a plain read-then-decrement lets two
+        # concurrent registrations both observe uses==1 and both succeed,
+        # seating an extra member. UPDATE ... WHERE uses > 0 → 0 rows means we
+        # lost the race. (Matches HomeHoard's register.)
+        consumed = (
+            db.session.query(GroupInvitation)
+            .filter(GroupInvitation.id == inv.id, GroupInvitation.uses > 0)
+            .update({GroupInvitation.uses: GroupInvitation.uses - 1})
+        )
+        if not consumed:
+            db.session.rollback()
+            return jsonify({"error": "invitation token already used"}), 422
         group = inv.group
         is_owner = False
+        db.session.refresh(inv)
         if inv.uses <= 0:
             db.session.delete(inv)
     else:
@@ -211,6 +223,10 @@ def change_password():
     user = current_user()
     if not verify_password(data.get("current", ""), user.password_hash):
         return jsonify({"error": "current password incorrect"}), 400
-    user.password_hash = hash_password(data.get("new", ""))
+    new_password = data.get("new", "")
+    if len(new_password) > _MAX_PASSWORD_LEN:
+        # Same bcrypt-input bound as login: don't hash an unbounded string.
+        return jsonify({"error": "password too long"}), 422
+    user.password_hash = hash_password(new_password)
     db.session.commit()
     return "", 204
