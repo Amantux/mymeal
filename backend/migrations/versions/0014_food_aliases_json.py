@@ -221,8 +221,14 @@ def _alter(to_json: bool) -> None:
 
 
 def upgrade() -> None:
-    if "JSON" not in (_column_type("foods", "aliases") or ""):
-        _backfill_to_json(op.get_bind())
+    # The backfill runs UNCONDITIONALLY, not gated on the column type: it is
+    # idempotent by data predicate (rows already holding a JSON array are
+    # skipped), and gating it on type misses a real hybrid — 0001_baseline is
+    # metadata-driven, so a database whose baseline ran under the NEW model
+    # already has a JSON-typed column, which SQLite will happily let CSV text
+    # sit in. Type answers "does the ALTER need to run", not "is the data
+    # converted"; those are different questions.
+    _backfill_to_json(op.get_bind())
     _alter(to_json=True)
 
 

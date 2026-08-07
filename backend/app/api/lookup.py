@@ -2,6 +2,7 @@
 
 Backs both the SPA's global search box and the MCP ``search_recipes`` tool.
 """
+import sqlalchemy as sa
 from flask import Blueprint, request, jsonify
 from sqlalchemy.orm import selectinload
 
@@ -60,7 +61,10 @@ def _search_foods(gid, q, limit):
     if q:
         like = f"%{q}%"
         query = query.filter(
-            db.or_(Food.name.ilike(like), Food.aliases.ilike(like))
+            # aliases is JSON now; Postgres has no ILIKE for json, so search
+            # its text form. SQLite stores JSON as TEXT and is unaffected.
+            db.or_(Food.name.ilike(like),
+                   sa.cast(Food.aliases, sa.Text).ilike(like))
         )
     return [
         {"type": "food", "id": f.id, "name": f.name, "aisle": f.aisle}

@@ -2,6 +2,8 @@
 import json
 from datetime import datetime, date
 
+from ..services import food_resolve
+
 
 def iso(dt):
     if dt is None:
@@ -45,7 +47,10 @@ def food_out(f):
         "id": f.id,
         "name": f.name,
         "pluralName": f.plural_name,
-        "aliases": [a.strip() for a in (f.aliases or "").split(",") if a.strip()],
+        # aliases_of, not a hand-rolled split: this was the FOURTH divergent
+        # parser, and it mangled JSON-string rows onto the wire as
+        # ['["eggplant"', '"brinjal"]'].
+        "aliases": food_resolve.aliases_of(f),
         "aisle": f.aisle,
         "description": f.description,
     }

@@ -5,7 +5,7 @@ oil"), independent of any recipe. Recipe ingredients, pantry items, and
 shopping-list items all point at a Food so quantities can be consolidated and
 matched. ``aisle`` groups foods for tidy shopping lists.
 """
-from sqlalchemy import JSON, String, ForeignKey
+from sqlalchemy import JSON, String, ForeignKey, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..extensions import db
@@ -17,8 +17,12 @@ class Food(IDMixin, TimestampMixin, db.Model):
 
     name: Mapped[str] = mapped_column(String(255), index=True)
     plural_name: Mapped[str] = mapped_column(String(255), default="")
-    # Comma-separated alternate names, used for fuzzy matching on import.
-    aliases: Mapped[str] = mapped_column(String(512), default="")
+    # Alternate names, used for matching on import. A JSON list (migration
+    # 0014); writes go through services.food_resolve.set_aliases, which owns
+    # the one-alias-one-food invariant. server_default so create_all() and a
+    # migrated database describe the same table.
+    aliases: Mapped[list] = mapped_column(JSON, default=list,
+                                          server_default=text("'[]'"))
     # Supermarket aisle / department for grouping shopping lists.
     aisle: Mapped[str] = mapped_column(String(120), default="")
     # What KIND of thing this is ("dairy", "grain") and what it contains

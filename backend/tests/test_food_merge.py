@@ -260,11 +260,15 @@ def test_a_comma_in_a_merged_name_cannot_forge_extra_aliases(auth_client):
     assert again.get_json()["name"] != "cinnamon"
 
 
-def test_repeated_merges_do_not_overflow_the_alias_column(auth_client, app):
-    """Food.aliases is String(512). SQLite ignores that; Postgres raises
-    "value too long", and once over the limit even a plain PUT on the row
-    fails. Merge only ever appended.
+def test_repeated_merges_store_a_bounded_list(auth_client, app):
+    """The column is a JSON list since migration 0014, capped by COUNT
+    (food_resolve.MAX_ALIASES), not bytes — the old 512-byte assertion became
+    vacuously true of a list and is superseded by test_alias_policy, which
+    also asserts every merged name SURVIVES up to the cap (the byte cap's
+    silent data loss was its own bug). Kept here: the row stays usable.
     """
+    from app.services import food_resolve
+
     keep = _food(auth_client, "base")
     for i in range(40):
         drop = _food(auth_client, f"a-fairly-long-food-name-number-{i:02d}")
@@ -272,8 +276,9 @@ def test_repeated_merges_do_not_overflow_the_alias_column(auth_client, app):
                          json={"fromId": drop["id"], "confirm": True})
 
     with app.app_context():
-        stored = db.session.get(Food, keep["id"]).aliases or ""
-    assert len(stored) <= 512, f"aliases grew to {len(stored)} chars"
+        stored = db.session.get(Food, keep["id"]).aliases
+    assert isinstance(stored, list)
+    assert len(stored) <= food_resolve.MAX_ALIASES
     # Still usable afterwards.
     assert auth_client.put(f"/api/v1/foods/{keep['id']}",
                            json={"aisle": "Baking"}).status_code == 200

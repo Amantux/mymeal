@@ -21,38 +21,11 @@ def _get_food(food_id):
     return food
 
 
-# Food.aliases is a comma-separated String(512). Both facts bite:
-#   * a term containing a comma becomes TWO aliases - merging a food named
-#     "salt, kosher" gave cinnamon the aliases ['salt', 'kosher'], after which
-#     POST /foods {"name": "salt"} returned cinnamon and every DB-backed
-#     resolver inherited the same wrong mapping.
-#   * merge only ever appends, so repeated merges exceed 512 chars. SQLite
-#     ignores VARCHAR length so it looks fine; Postgres rejects the value as
-#     too long, and then even a plain PUT on that row fails.
-_ALIAS_MAX_CHARS = 500
-
-
-def _clean_alias(term) -> str:
-    """One alias, safe to store in a comma-delimited column."""
-    return " ".join(str(term or "").replace(",", " ").split())
-
-
-def _aliases_str(value):
-    if not isinstance(value, list):
-        value = [v for v in str(value or "").split(",")]
-    out, total = [], 0
-    for item in value:
-        term = _clean_alias(item)
-        if not term or term.lower() in {o.lower() for o in out}:
-            continue
-        # +1 for the joining comma. Stop at a whole term rather than cutting one
-        # in half, so a stored alias is always a complete alias.
-        if total + len(term) + (1 if out else 0) > _ALIAS_MAX_CHARS:
-            break
-        total += len(term) + (1 if out else 0)
-        out.append(term)
-    return ",".join(out)
-
+# Aliases are a JSON list (migration 0014) and every write goes through
+# food_resolve.set_aliases — the policy chokepoint that owns the alias
+# equivalence (folded keys) and the one-alias-one-food invariant. The CSV
+# sanitiser/byte-cap that used to live here existed only to patrol the
+# delimited column's failure modes and went with it.
 
 @bp.get("/foods")
 @login_required
@@ -73,21 +46,23 @@ def _existing_match(gid, name):
     one place in the app that could still manufacture the duplicates everything
     else works to avoid.
 
-    Deliberately matches on the NAME or an alias only, never on the canonical
-    key. Creating a food here is an explicit act: someone typed a distinct name
-    on the Foods screen, and "Vietnamese cinnamon" canonicalises to "cinnamon",
-    so a canonical match would make it impossible to keep a variety as its own
-    food - the exact thing _find_or_create_food goes out of its way to protect.
-    Collapsing varieties is what the merge endpoint is for, with a confirmation.
+    Matches by FOLDED key (food_resolve.alias_key) — the same equivalence the
+    ranker uses. This code used to compare raw lowercase while _rank compared
+    folded keys, so "Cilantros" was created as a duplicate that the resolver
+    then scored as the same food. One equivalence rule, defined once.
+
+    Still deliberately NOT the canonical key (match_key): "Vietnamese
+    cinnamon" keys apart from "cinnamon", so a variety stays creatable as its
+    own food. Collapsing varieties is the merge endpoint's job, confirmed.
+
+    claim_index iterates in (created_at, id) order, so when legacy data holds
+    a collision the winner is stable across requests instead of row-order
+    roulette.
     """
-    raw = (name or "").strip()
-    if not raw:
+    key = food_resolve.alias_key(name)
+    if not key:
         return None
-    for food in db.session.query(Food).filter_by(group_id=gid).all():
-        terms = [food.name] + food_resolve.aliases_of(food)
-        if raw.lower() in {t.strip().lower() for t in terms if t}:
-            return food
-    return None
+    return food_resolve.claim_index(gid).get(key)
 
 
 @bp.post("/foods")
@@ -109,12 +84,16 @@ def create_food():
     food = Food(
         name=data.get("name", ""),
         plural_name=data.get("pluralName", ""),
-        aliases=_aliases_str(data.get("aliases")),
         aisle=data.get("aisle", ""),
         description=data.get("description", ""),
         group_id=current_group().id,
     )
     db.session.add(food)
+    db.session.flush()  # the policy needs food.id to recognise self-claims
+    requested = data.get("aliases") or []
+    if not isinstance(requested, list):
+        requested = str(requested).split(",")
+    food_resolve.set_aliases(food, requested, current_group().id)
     db.session.commit()
     return jsonify({**food_out(food), "reused": False}), 201
 
@@ -129,7 +108,10 @@ def update_food(food_id):
     if "pluralName" in data:
         food.plural_name = data["pluralName"]
     if "aliases" in data:
-        food.aliases = _aliases_str(data["aliases"])
+        requested = data["aliases"] or []
+        if not isinstance(requested, list):
+            requested = str(requested).split(",")
+        food_resolve.set_aliases(food, requested, current_group().id)
     if "aisle" in data:
         food.aisle = data["aisle"]
     if "description" in data:
@@ -282,20 +264,27 @@ def merge_food(food_id):
     if not data.get("confirm"):
         return jsonify({**preview, "confirmed": False})
 
-    # Carry the old name and its aliases across, or the next import recreates
-    # exactly the row that was just merged away.
-    aliases = [a for a in food_resolve.aliases_of(into)]
-    for term in [source.name] + food_resolve.aliases_of(source):
-        term = (term or "").strip()
-        if term and term.lower() != into.name.lower() \
-                and term.lower() not in {a.lower() for a in aliases}:
-            aliases.append(term)
-    into.aliases = _aliases_str(aliases)
-
+    # Order matters twice here:
+    #   1. References move BEFORE the source row is deleted, or the delete
+    #      violates the foreign keys it is supposed to be freeing.
+    #   2. The source row is deleted (and flushed) BEFORE the alias policy
+    #      runs, so its own claims are out of the claim index — otherwise the
+    #      transfer of its name/aliases onto `into` would be refused as
+    #      "claimed elsewhere" by the very row being merged away.
+    transfer = (food_resolve.aliases_of(into)
+                + [source.name] + food_resolve.aliases_of(source))
     # One path for both tables, and the same one delete uses — reassigning the
     # `lines` objects by hand would have covered recipe_ingredients only.
     _repoint(source.id, into.id)
     db.session.delete(source)
+    db.session.flush()
+
+    # Carry the old name and its aliases across, or the next import recreates
+    # exactly the row that was just merged away. Through set_aliases, so a key
+    # claimed by a THIRD food is refused rather than stolen — and the comma
+    # case cannot poison the resolver: clean_alias keeps only the identity
+    # part, which is all normalize_text ever lets the ranker see.
+    food_resolve.set_aliases(into, transfer, current_group().id)
     db.session.commit()
     return jsonify({**preview, "into": food_out(into), "confirmed": True})
 

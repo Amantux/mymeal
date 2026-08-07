@@ -497,9 +497,9 @@ def _food_terms(food) -> list[str]:
 def aliases_of(food) -> list[str]:
     """Food.aliases as a list, whatever it is stored as.
 
-    It is a comma-separated string today and a JSON list after migration 0013;
-    three different call sites used to each split it their own way. This is the
-    only place that knows.
+    It is a JSON list after migration 0014 and a comma-separated string on rows
+    from before it (or in test fakes); three different call sites used to each
+    split it their own way. This is the only place that knows.
     """
     value = getattr(food, "aliases", None)
     if not value:
@@ -507,6 +507,112 @@ def aliases_of(food) -> list[str]:
     if isinstance(value, list):
         return [str(v).strip() for v in value if str(v).strip()]
     return [part.strip() for part in str(value).split(",") if part.strip()]
+
+
+# --- the alias write policy --------------------------------------------------
+# One folded key resolves to at most ONE food per household. That invariant is
+# what makes alias-driven resolution deterministic, and it lives here — at the
+# write chokepoint, where names AND aliases are both visible — rather than as a
+# DB constraint, which could only see aliases (names live on the foods table).
+# A relational food_aliases table was evaluated and deliberately rejected at
+# this scale; the promotion triggers are recorded in docs/adr/0001.
+
+# A count cap, replacing the old 500-BYTE cap whose truncation silently dropped
+# later merges' names — after which a re-import recreated exactly the row that
+# had been merged away.
+MAX_ALIASES = 50
+
+
+def alias_key(term: str) -> str:
+    """THE alias equivalence: folded, singularized, comma-truncated.
+
+    One definition, used by every alias write and lookup. Before this,
+    create/update compared raw lowercase while the ranker compared folded keys
+    — two disagreeing answers to "is this the same name?", so "Cilantros"
+    could be created as a duplicate the ranker then scored as the same food.
+
+    Deliberately fold(normalize_text()), NOT normalize()/match_key: the key
+    does not canonicalise, so "Vietnamese cinnamon" keys apart from "cinnamon"
+    and a variety stays creatable as its own food.
+    """
+    return fold(normalize_text(term or ""))
+
+
+def clean_alias(term: str) -> str:
+    """One alias as stored: its identity part, whitespace-collapsed.
+
+    Everything after a comma is cut because ``normalize_text`` cuts it — the
+    resolver can only ever see the pre-comma part, and storing text the
+    resolver silently discards is how "salt, kosher" hid a wrong resolution
+    behind a correct-looking stored list.
+    """
+    head = str(term or "").split(",")[0]
+    return " ".join(head.split())[:255]
+
+
+def claim_index(gid: str) -> dict:
+    """Every folded key this household's foods answer to -> the owning food.
+
+    One query. Iteration order is (created_at, id), so when legacy data
+    already contains a collision the winner is deterministic across requests —
+    not whatever row order the database happens to return.
+    """
+    from ..extensions import db
+    from ..models import Food
+
+    claims: dict[str, object] = {}
+    foods = (db.session.query(Food).filter_by(group_id=gid)
+             .order_by(Food.created_at, Food.id).all())
+    # Names claim first, in one full pass: a name always outranks an alias,
+    # even an alias belonging to an earlier-created food.
+    for food in foods:
+        key = alias_key(food.name)
+        if key:
+            claims.setdefault(key, food)
+    for food in foods:
+        for term in aliases_of(food):
+            key = alias_key(term)
+            if key:
+                claims.setdefault(key, food)
+    return claims
+
+
+def set_aliases(food, terms, gid: str) -> list[str]:
+    """Apply an alias list to a food under the one-key-one-food invariant.
+
+    Dedupes by key, drops a key equal to the food's own name, and REFUSES any
+    key already claimed by a different food in the household (by name or
+    alias). Refusal degrades to "not consolidated", never to two foods
+    answering to one word. Returns what was applied, so a caller can surface
+    what was refused.
+    """
+    claims = claim_index(gid)
+    own_key = alias_key(getattr(food, "name", ""))
+    own_canonical = _lookup(normalize_text(getattr(food, "name", "")))
+    kept, seen = [], set()
+    for term in terms:
+        term = clean_alias(term)
+        key = alias_key(term)
+        if not term or not key or key == own_key or key in seen:
+            continue
+        owner = claims.get(key)
+        if owner is not None and owner.id != getattr(food, "id", None):
+            continue  # claimed elsewhere in the household — refuse, don't steal
+        # The lexicon guard: a term the SEED lexicon knows as a DIFFERENT food
+        # cannot become an alias — "salt" must never alias cinnamon, even when
+        # no household row claims it, because the ranker would then answer a
+        # real food word with the wrong ingredient. Same canonical is fine
+        # (that is what an alias IS: "cilantro" for a food named "coriander");
+        # unknown terms are fine (the household's own vocabulary).
+        canonical = _lookup(normalize_text(term))
+        if canonical and canonical != own_canonical:
+            continue
+        seen.add(key)
+        kept.append(term)
+        if len(kept) >= MAX_ALIASES:
+            break
+    food.aliases = kept
+    return kept
 
 
 def index(gid: str):
