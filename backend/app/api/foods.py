@@ -351,6 +351,13 @@ def create_unit():
 @bp.delete("/units/<unit_id>")
 @login_required
 def delete_unit(unit_id):
-    db.session.delete(_get_unit(unit_id))
+    unit = _get_unit(unit_id)
+    # Detach recipe lines that use this unit before deleting it — units.id is
+    # FK-referenced by recipe_ingredients and FKs are enforced, so a bare
+    # delete of an in-use unit (every auto-created "cup"/"g" is in use) 500'd.
+    # Same pattern as _repoint for foods; the line keeps its display text.
+    db.session.query(RecipeIngredient).filter_by(unit_id=unit.id).update(
+        {"unit_id": None}, synchronize_session=False)
+    db.session.delete(unit)
     db.session.commit()
     return "", 204

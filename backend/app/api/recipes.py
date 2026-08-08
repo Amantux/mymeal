@@ -543,6 +543,13 @@ def delete_recipe(recipe_id):
     # holds even on installs whose migrated schema lacks that constraint.
     db.session.query(RecipeIngredient).filter_by(ref_recipe_id=recipe.id).update(
         {"ref_recipe_id": None}, synchronize_session=False)
+    # Detach meal-plan entries too: mealplan_entries.recipe_id has no ON DELETE
+    # rule and FKs are enforced, so a bare delete of a PLANNED recipe 500'd
+    # (and broke the MCP delete_recipe tool + HA service). The plan slot
+    # survives with a null recipe rather than blocking the delete.
+    from ..models import MealPlanEntry
+    db.session.query(MealPlanEntry).filter_by(recipe_id=recipe.id).update(
+        {"recipe_id": None}, synchronize_session=False)
     db.session.delete(recipe)
     db.session.commit()
     return "", 204
