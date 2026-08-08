@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.2.34
+
+- Deleting a planned recipe or an in-use unit no longer 500s.
+
 ## 1.2.33
 
 - Register RATELIMIT_ENABLED in gen_config_docs GROUPS.
