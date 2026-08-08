@@ -56,6 +56,7 @@ docker compose run --rm app python3 -m app.config_check
 | `MYMEAL_JWT_HOURS` | enum/int | `168` | no | yes | How long an issued token stays valid, in hours. |
 | `MYMEAL_DISABLE_AUTH` | boolean | `false` | no | yes | Bind every request to a single local user. ONLY safe behind an authenticating proxy such as Home Assistant ingress. HA option: `disable_auth`. |
 | `MYMEAL_ALLOW_REGISTRATION` | boolean | `true` | no | yes | Allow anyone who can reach the app to create an account. HA option: `allow_registration`. |
+| `MYMEAL_RATELIMIT_ENABLED` | boolean | `true` | no | yes | Enable request rate limiting on sensitive endpoints (login, registration, AI chat and recipe import). Disabled automatically under tests. Behind HA ingress the limit is per-household. |
 
 ### Network & proxy
 
