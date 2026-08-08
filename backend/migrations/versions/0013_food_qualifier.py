@@ -58,12 +58,29 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Dropping a column is a table rebuild on SQLite; batch_alter does that
-    # transparently and is a plain ALTER on Postgres. No foreign key points at
-    # these columns, so no PRAGMA dance is needed (unlike HomeHoard's 0014).
-    for table, columns in _ADDED.items():
-        present = [name for name, _ in columns if _has_column(table, name)]
-        if not present:
-            continue
-        with op.batch_alter_table(table) as batch:
-            for name in present:
-                batch.drop_column(name)
+    # transparently and is a plain ALTER on Postgres. The hazard is a FK pointing
+    # at the TABLE being rebuilt (not the column): `foods` is FK-referenced by
+    # recipe_ingredients and shopping_list_items, and this app enforces foreign
+    # keys (extensions.py: PRAGMA foreign_keys=ON), so the rebuild's `DROP TABLE
+    # foods` raised "FOREIGN KEY constraint failed" on a populated DB and left an
+    # _alembic_tmp corpse. Suspend enforcement around the rebuild (PRAGMA is a
+    # no-op inside a transaction → autocommit_block). Same dance as 0014/0015.
+    bind = op.get_bind()
+    is_sqlite = bind.dialect.name == "sqlite"
+    if is_sqlite:
+        with op.get_context().autocommit_block():
+            for table in _ADDED:
+                op.execute(f'DROP TABLE IF EXISTS "_alembic_tmp_{table}"')
+            op.execute("PRAGMA foreign_keys=OFF")
+    try:
+        for table, columns in _ADDED.items():
+            present = [name for name, _ in columns if _has_column(table, name)]
+            if not present:
+                continue
+            with op.batch_alter_table(table) as batch:
+                for name in present:
+                    batch.drop_column(name)
+    finally:
+        if is_sqlite:
+            with op.get_context().autocommit_block():
+                op.execute("PRAGMA foreign_keys=ON")
