@@ -24,4 +24,4 @@ mcp==1.29.0  # pin: newer mcp dropped mcp.server.fastmcp (breaks the MCP server 
 uvicorn>=0.29.0
 # Pluggable AI providers (all optional at runtime — imported lazily).
 anthropic>=0.39.0
-openai>=1.40.0
+openai>=2.53.0
