@@ -143,6 +143,20 @@ def recipe_ids_in_range(gid, start, end) -> list[str]:
     return [e.recipe_id for e in query.all() if e.recipe_id]
 
 
+def entries_in_range(gid, start, end):
+    """The meal-plan ENTRIES in the range (recipe + servings eager-loaded),
+    NOT deduped — a recipe cooked twice appears twice so shopping sums it."""
+    from sqlalchemy.orm import selectinload
+    from ..services.components import component_load_opts
+    query = (db.session.query(MealPlanEntry).filter_by(group_id=gid)
+             .options(*component_load_opts(selectinload(MealPlanEntry.recipe))))
+    if start:
+        query = query.filter(MealPlanEntry.date >= start)
+    if end:
+        query = query.filter(MealPlanEntry.date <= end)
+    return [e for e in query.order_by(MealPlanEntry.date.asc()).all() if e.recipe_id]
+
+
 # Re-export for callers that pass ISO strings.
 def parse_date(value):
     if isinstance(value, (date, datetime)):

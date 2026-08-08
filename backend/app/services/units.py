@@ -156,7 +156,9 @@ def _parse_number(token: str):
         return total or None
 
 
-_NUM = r"\d+\s+\d+/\d+|\d+/\d+|\d*\.?\d+|[" + "".join(_UNICODE_FRACTIONS) + r"]"
+_NUM = (r"\d+\s*[" + "".join(_UNICODE_FRACTIONS) + r"]"      # "1½" / "1 ½"
+        r"|\d+\s+\d+/\d+|\d+/\d+|\d*\.?\d+"
+        r"|[" + "".join(_UNICODE_FRACTIONS) + r"]")
 _QTY_RE = re.compile(
     r"^\s*(?P<qty>" + _NUM + r")"
     # Optional range ("2-3", "2 to 3") — we keep the low end and ignore the rest.

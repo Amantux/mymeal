@@ -18,14 +18,21 @@ from .units import parse_line
 
 
 def build_from_recipes(recipes: list[Recipe]) -> list[dict]:
-    """Return consolidated shopping-list item dicts for the given recipes.
+    """Consolidated shopping-list item dicts for the given recipes (each ×1)."""
+    return build_from_entries([(r, 1.0) for r in recipes])
+
+
+def build_from_entries(pairs) -> list[dict]:
+    """Like :func:`build_from_recipes` but each entry carries its own
+    multiplier — so a meal-plan that cooks a recipe twice, or at double
+    servings, buys the summed, scaled quantities rather than one unscaled copy.
 
     A recipe used as a component (a linked sub-recipe) is expanded into its own
     ingredients so the list is a real buy-list, not a reference."""
     # key -> aggregate. key groups by (food_id or lowercased text) + unit.
     agg: dict[tuple, dict] = {}
     order: list[tuple] = []
-    for recipe in recipes:
+    for recipe, extra in pairs:
         for ing, mult in iter_leaf_ingredients(recipe):
             text = (ing.display or "").strip()
             if not text and not ing.food:
@@ -73,7 +80,7 @@ def build_from_recipes(recipes: list[Recipe]) -> list[dict]:
                     "foodId": ing.food_id,
                 }
                 order.append(key)
-            agg[key]["quantity"] += float(ing.quantity or 0) * mult
+            agg[key]["quantity"] += float(ing.quantity or 0) * mult * extra
     # Stable: group by aisle (unassigned last), then original insertion order.
     items = [agg[k] for k in order]
     items.sort(key=lambda i: (i["aisle"] == "", i["aisle"].lower()))

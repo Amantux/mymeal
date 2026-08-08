@@ -16,8 +16,16 @@ import sys
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-API = os.environ.get("MYMEAL_MCP_API", "http://127.0.0.1:7850/api/v1")
-TOKEN = os.environ.get("MYMEAL_MCP_API_TOKEN")  # only needed if app auth is enabled
+# Config comes through the settings registry (parses /data/options.json + env
+# once), NOT raw os.environ — the entrypoint exports only RESOLVED_MCP_* and
+# never the token or the debug-tools flag, so reading raw env made the
+# mcp_debug_tools add-on option a silent no-op. Mirrors the HomeHoard/Edibl
+# sidecars (one config adapter, per the SOP).
+from app.settings import load_settings as _load_settings_mod
+_MCP_SETTINGS = _load_settings_mod()
+
+API = os.environ.get("MYMEAL_MCP_API") or _MCP_SETTINGS.mcp_api
+TOKEN = _MCP_SETTINGS.MCP_API_TOKEN or None  # only needed if app auth is enabled
 _HEADERS = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
 # ⚠️ SINGLE-HOUSEHOLD BY DESIGN. Every tool call is made with this ONE token, so
 # the sidecar always operates on that token's group regardless of which caller's
@@ -1101,7 +1109,7 @@ if __name__ == "__main__":
     server_token = os.environ.get("MYMEAL_MCP_SERVER_TOKEN", "")
     expose_external = _bool_env("MYMEAL_MCP_EXPOSE_EXTERNAL")
 
-    if _bool_env("MYMEAL_MCP_DEBUG_TOOLS"):
+    if _MCP_SETTINGS.MCP_DEBUG_TOOLS:
         # Fail-closed, mirroring the external-exposure check: serving log-reading
         # tools that nobody can authenticate to would be worse than not serving
         # them.

@@ -8,7 +8,7 @@ from ..auth import login_required, current_group
 from ..schemas.serializers import shopping_list_out, shopping_item_out
 from ..services.shopping import build_from_recipes
 from ..utils import to_float
-from .mealplans import recipe_ids_in_range
+from .mealplans import entries_in_range
 
 bp = Blueprint("shopping_lists", __name__)
 
@@ -45,8 +45,10 @@ def _parse_date(value):
 @bp.get("/shopping-lists")
 @login_required
 def list_lists():
+    from sqlalchemy.orm import selectinload
     lists = (
         db.session.query(ShoppingList)
+        .options(selectinload(ShoppingList.items))  # avoid a query per list
         .filter_by(group_id=current_group().id)
         .order_by(ShoppingList.created_at.asc())
         .all()
@@ -129,9 +131,10 @@ def delete_item(item_id):
     return "", 204
 
 
-def _append_consolidated(sl, recipes):
+def _append_consolidated(sl, recipes, from_entries=False):
     base = _next_position(sl)
-    built = build_from_recipes(recipes)
+    from ..services.shopping import build_from_entries
+    built = build_from_entries(recipes) if from_entries else build_from_recipes(recipes)
     for row in built:
         db.session.add(
             ShoppingListItem(
@@ -170,14 +173,20 @@ def from_mealplan(list_id):
     sl = _get_list(list_id)
     data = request.get_json(force=True) or {}
     gid = current_group().id
-    ids = recipe_ids_in_range(
+    # Build from ENTRIES, not a deduped recipe set: cooking a recipe on Monday
+    # AND Thursday must buy its ingredients twice, and a per-entry serving
+    # override must scale them. The old path collapsed duplicates via
+    # Recipe.id.in_(ids) and never saw entry.servings.
+    entries = entries_in_range(
         gid, _parse_date(data.get("start")), _parse_date(data.get("end"))
     )
-    recipes = (
-        db.session.query(Recipe)
-        .filter(Recipe.id.in_(ids), Recipe.group_id == gid)
-        .options(*_shopping_load_opts())
-        .all()
-    )
-    count = _append_consolidated(sl, recipes)
+    pairs = []
+    for e in entries:
+        if not e.recipe:
+            continue
+        mult = 1.0
+        if e.servings and e.recipe.servings and e.recipe.servings > 0:
+            mult = e.servings / e.recipe.servings
+        pairs.append((e.recipe, mult))
+    count = _append_consolidated(sl, pairs, from_entries=True)
     return jsonify({**shopping_list_out(sl), "added": count}), 201

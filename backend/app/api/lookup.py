@@ -14,6 +14,11 @@ from ..services import recipe_resolve
 bp = Blueprint("lookup", __name__)
 
 
+# Bound the ranked candidate set: rank-then-limit must still not load an
+# unbounded catalog into memory. Household search sets are far below this.
+_SEARCH_CANDIDATE_CAP = 500
+
+
 def _search_recipes(gid, q, limit):
     query = db.session.query(Recipe).filter_by(group_id=gid)
     if q:
@@ -30,6 +35,11 @@ def _search_recipes(gid, q, limit):
     # tell us. Ordering by name alone made "chicken" resolve to whatever sorted
     # first, so callers were effectively guessing.
     query = query.options(selectinload(Recipe.tags))
+    # Rank BEFORE limiting: a pre-rank `.limit(limit)` ordered by name dropped
+    # the best match whenever it sorted late (an exact-name hit cut by 5 filler
+    # rows). Load the matching set (bounded so a huge catalog can't OOM), rank
+    # in Python, then take the top `limit`. Group-scoped + LIKE-filtered, so the
+    # candidate set is small in practice.
     rows = [
         {
             "type": "recipe",
@@ -41,9 +51,9 @@ def _search_recipes(gid, q, limit):
             "tags": [t.name for t in r.tags],
             "description": r.description or "",
         }
-        for r in query.order_by(Recipe.name.asc()).limit(limit).all()
+        for r in query.order_by(Recipe.name.asc()).limit(_SEARCH_CANDIDATE_CAP).all()
     ]
-    ranked = recipe_resolve.rank(rows, q)
+    ranked = recipe_resolve.rank(rows, q)[:limit]
     out = []
     for row, score, matched_on in ranked:
         row["matchedOn"] = matched_on

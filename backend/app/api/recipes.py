@@ -335,7 +335,6 @@ def _apply(recipe: Recipe, data: dict):
         "prepMinutes": "prep_minutes",
         "cookMinutes": "cook_minutes",
         "totalMinutes": "total_minutes",
-        "cookTemperatureC": "cook_temperature_c",
         "sourceUrl": "source_url",
         "rating": "rating",
         "isFavorite": "is_favorite",
@@ -344,6 +343,13 @@ def _apply(recipe: Recipe, data: dict):
     for key, col in simple.items():
         if key in data and data[key] is not None:
             setattr(recipe, col, data[key])
+
+    # cookTemperatureC is the one nullable field, so it applies on PRESENCE
+    # (including an explicit null) — otherwise a PUT clearing the oven temp, and
+    # a version restore of a null-temp snapshot, both silently kept the old
+    # value (the None-skip loop above dropped them).
+    if "cookTemperatureC" in data:
+        recipe.cook_temperature_c = data["cookTemperatureC"]
 
     if "name" in data and data["name"]:
         recipe.name = data["name"]
@@ -388,7 +394,8 @@ def list_recipes():
 
     # Eager-load taxonomy so the summary loop doesn't fire ~2 queries per row.
     query = query.options(
-        selectinload(Recipe.tags), selectinload(Recipe.categories)
+        selectinload(Recipe.tags), selectinload(Recipe.categories),
+        selectinload(Recipe.videos),  # recipe_summary reads r.videos per row
     )
     recipes = query.order_by(Recipe.name.asc()).all()
     return jsonify(
