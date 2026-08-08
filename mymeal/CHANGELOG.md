@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.2.37
+
+- Medium/Nits sweep — leaks, 500s, wrong results, N+1s, indexes.
+
 ## 1.2.36
 
 - FK-safe SQLite rebuild in 0013 downgrade.
