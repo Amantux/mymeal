@@ -33,7 +33,7 @@ class ShoppingListItem(IDMixin, TimestampMixin, db.Model):
     position: Mapped[int] = mapped_column(Integer, default=0)
 
     shopping_list_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("shopping_lists.id")
+        String(36), ForeignKey("shopping_lists.id"), index=True
     )
     shopping_list = relationship("ShoppingList", back_populates="items")
 

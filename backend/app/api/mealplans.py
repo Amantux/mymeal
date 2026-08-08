@@ -20,6 +20,17 @@ def _parse_date(value):
         return None
 
 
+def entry_load_opts():
+    """Eager-load what `mealplan_entry_out` -> `recipe_summary` actually touches:
+    the recipe plus its videos, tags and categories. Without this a month view
+    cost ~4 queries per distinct recipe, and /ha/summary is polled on a timer."""
+    from sqlalchemy.orm import selectinload
+    r = selectinload(MealPlanEntry.recipe)
+    return [r.selectinload(Recipe.videos),
+            r.selectinload(Recipe.tags),
+            r.selectinload(Recipe.categories)]
+
+
 def _get(entry_id) -> MealPlanEntry:
     entry = db.session.get(MealPlanEntry, entry_id)
     if not entry or entry.group_id != current_group().id:
@@ -72,7 +83,8 @@ def plan_ingredients():
 @login_required
 def list_entries():
     gid = current_group().id
-    query = db.session.query(MealPlanEntry).filter_by(group_id=gid)
+    query = (db.session.query(MealPlanEntry).filter_by(group_id=gid)
+             .options(*entry_load_opts()))
     start = _parse_date(request.args.get("start"))
     end = _parse_date(request.args.get("end"))
     if start:
@@ -88,6 +100,11 @@ def list_entries():
 def create_entry():
     data = request.get_json(force=True) or {}
     entry_date = _parse_date(data.get("date")) or date.today()
+    # A recipeId that doesn't resolve used to be dropped silently, so the caller
+    # got a 201 and a blank "Meal" slot. Say so instead. (PUT keeps its
+    # clear-on-null semantics — there, an explicit null means "unlink".)
+    if data.get("recipeId") and _valid_recipe_id(data["recipeId"]) is None:
+        return jsonify({"error": "unknown recipeId"}), 422
     entry = MealPlanEntry(
         date=entry_date,
         meal_type=data.get("mealType", "dinner"),

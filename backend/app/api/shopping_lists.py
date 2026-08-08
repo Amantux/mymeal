@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 from flask import Blueprint, request, jsonify, abort
 
@@ -177,9 +177,16 @@ def from_mealplan(list_id):
     # AND Thursday must buy its ingredients twice, and a per-entry serving
     # override must scale them. The old path collapsed duplicates via
     # Recipe.id.in_(ids) and never saw entry.servings.
-    entries = entries_in_range(
-        gid, _parse_date(data.get("start")), _parse_date(data.get("end"))
-    )
+    # An omitted (or unparseable) range used to mean NO date filter at all, so
+    # "build from the plan" quietly bought every meal ever planned, back years.
+    # Default to the week ahead — the same window /plan/ingredients uses — and
+    # refuse a date we couldn't read rather than silently widening to everything.
+    for key in ("start", "end"):
+        if data.get(key) and _parse_date(data[key]) is None:
+            return jsonify({"error": f"unparseable {key} date"}), 422
+    start = _parse_date(data.get("start")) or date.today()
+    end = _parse_date(data.get("end")) or (start + timedelta(days=7))
+    entries = entries_in_range(gid, start, end)
     pairs = []
     for e in entries:
         if not e.recipe:

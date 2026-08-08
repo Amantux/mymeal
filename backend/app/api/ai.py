@@ -749,6 +749,10 @@ def plan_week():
             offset = int(day.get("offset", 0))
         except (ValueError, TypeError):
             offset = 0
+        # Bound the model's offset: a large value overflows timedelta (500 AFTER
+        # the paid provider call, losing the whole plan) and a moderate one
+        # silently plans outside the window the user asked for.
+        offset = max(0, min(offset, max(days - 1, 0)))
         entry_date = start + timedelta(days=offset)
         meals = day.get("meals")
         if not isinstance(meals, list):
@@ -761,8 +765,10 @@ def plan_week():
                 rid = None
             entry = MealPlanEntry(
                 date=entry_date,
-                meal_type=meal.get("mealType", "dinner"),
-                title=meal.get("title", ""),
+                # Clamped to the column widths: a verbose model reply would
+                # otherwise DataError on Postgres and discard the whole plan.
+                meal_type=str(meal.get("mealType") or "dinner")[:32],
+                title=str(meal.get("title") or "")[:255],
                 servings=servings,
                 recipe_id=rid,
                 group_id=gid,

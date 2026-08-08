@@ -13,6 +13,7 @@ from sqlalchemy import func
 from ..extensions import db
 from ..models import Recipe, MealPlanEntry, ShoppingList, ShoppingListItem
 from ..auth import login_required, current_group
+from .mealplans import entry_load_opts
 
 bp = Blueprint("ha", __name__)
 
@@ -39,6 +40,9 @@ def summary():
 
     week_entries = (
         db.session.query(MealPlanEntry)
+        # Polled by the HA coordinator on a timer — eager-load the recipe graph
+        # the serializer reads (see mealplans.entry_load_opts).
+        .options(*entry_load_opts())
         .filter(
             MealPlanEntry.group_id == gid,
             MealPlanEntry.date >= today,
@@ -130,6 +134,7 @@ def calendar():
 
     entries = (
         db.session.query(MealPlanEntry)
+        .options(*entry_load_opts())
         .filter(
             MealPlanEntry.group_id == gid,
             MealPlanEntry.date >= start,

@@ -84,7 +84,17 @@ class EdiblClient:
         try:
             r = call()
             r.raise_for_status()
-            return {"ok": True, "configured": True, "reachable": True, "data": r.json()}
+            try:
+                data = r.json()
+            except ValueError:
+                # A 200 that isn't JSON means the URL points at something that
+                # isn't Edibl (ingress root, captive portal, wrong port). That is
+                # "unreachable", not a 500 — this client's contract is to never
+                # raise at the caller.
+                logger.warning("edibl returned non-JSON from %s", r.request.url)
+                return {"ok": False, "configured": True, "reachable": False,
+                        "error": "not an Edibl endpoint (non-JSON response)"}
+            return {"ok": True, "configured": True, "reachable": True, "data": data}
         except httpx.HTTPStatusError as exc:
             logger.warning("edibl request -> HTTP %s", exc.response.status_code)
             return {"ok": False, "configured": True, "reachable": True,
@@ -137,7 +147,9 @@ class EdiblClient:
                     "status": exc.response.status_code}
         except httpx.HTTPError as exc:
             logger.warning("edibl DELETE failed: %s", exc)
-            return {"ok": False, "configured": True, "reachable": False, "error": str(exc)}
+            from .ai.base import safe_upstream_detail
+            return {"ok": False, "configured": True, "reachable": False,
+                    "error": safe_upstream_detail(exc)}
 
     # -- operations --------------------------------------------------------
 

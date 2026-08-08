@@ -269,9 +269,12 @@ def _set_ingredients(recipe: Recipe, rows):
             RecipeIngredient(
                 display=display,
                 quantity=qty,
-                note=row.get("note", ""),
+                # Clamped like display/unit/food above: an AI- or import-supplied
+                # value over the column width is a DataError -> 500 on Postgres
+                # that loses the whole recipe save.
+                note=str(row.get("note") or "")[:512],
                 qualifier=qualifier,
-                section=row.get("section", ""),
+                section=str(row.get("section") or "")[:255],
                 position=row.get("position", i),
                 unit_id=unit_id,
                 food_id=None if ref_recipe_id else food_id,
@@ -514,6 +517,12 @@ def _apply_view(out: dict, recipe: Recipe, args):
             # Keep the original measure, append the weight in parentheses.
             line = units.annotate_weight(line, learned=learned)
         ing["display"] = line
+        # Scale the STRUCTURED quantity by the same factor. Without this the
+        # response carried a scaled string next to an unscaled number, and every
+        # consumer that reads `quantity` (shopping list, MCP, HA, the SPA) used
+        # the un-scaled one.
+        if factor != 1.0 and isinstance(ing.get("quantity"), (int, float)):
+            ing["quantity"] = round(ing["quantity"] * factor, 4)
 
 
 @bp.put("/recipes/<recipe_id>")

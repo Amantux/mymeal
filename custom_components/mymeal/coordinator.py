@@ -174,14 +174,21 @@ class MyMealDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return {"status": "not_found", "error": f"No recipe matching '{ident}'."}
 
     async def search_recipes(self, query: str) -> dict:
+        # /search, not /recipes?q=: the MCP server already uses /search, which
+        # RANKS by relevance and also matches tags. Against /recipes?q= a recipe
+        # matching only by tag ("curry") was findable through Assist/MCP and
+        # invisible through this service, and identical queries came back in a
+        # different order on each surface.
         try:
-            data = await self._get("/api/v1/recipes", {"q": query})
+            data = await self._get(
+                "/api/v1/search", {"q": query, "types": "recipe"})
         except (ClientError, asyncio.TimeoutError):
             return {"status": "error", "matches": []}
         return {
             "status": "ok",
             "matches": [
-                {"id": r.get("id"), "name": r.get("name")} for r in data.get("items", [])
+                {"id": r.get("id"), "name": r.get("name")}
+                for r in data.get("results", [])
             ],
         }
 

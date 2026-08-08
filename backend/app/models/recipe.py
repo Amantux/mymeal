@@ -53,7 +53,8 @@ class Recipe(IDMixin, TimestampMixin, db.Model):
         String(64), unique=True, index=True, nullable=True, default=None
     )
 
-    group_id: Mapped[str] = mapped_column(String(36), ForeignKey("groups.id"))
+    group_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("groups.id"), index=True)
     group = relationship("Group", back_populates="recipes")
 
     ingredients = relationship(
@@ -103,7 +104,8 @@ class RecipeIngredient(IDMixin, TimestampMixin, db.Model):
     section: Mapped[str] = mapped_column(String(255), default="")
     position: Mapped[int] = mapped_column(Integer, default=0)
 
-    recipe_id: Mapped[str] = mapped_column(String(36), ForeignKey("recipes.id"))
+    recipe_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("recipes.id"), index=True)
     recipe = relationship("Recipe", back_populates="ingredients", foreign_keys=[recipe_id])
 
     # Optional link to ANOTHER recipe used as a component ("1 batch Garlic
@@ -132,7 +134,8 @@ class RecipeStep(IDMixin, TimestampMixin, db.Model):
     text: Mapped[str] = mapped_column(Text, default="")
     title: Mapped[str] = mapped_column(String(255), default="")
 
-    recipe_id: Mapped[str] = mapped_column(String(36), ForeignKey("recipes.id"))
+    recipe_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("recipes.id"), index=True)
     recipe = relationship("Recipe", back_populates="steps")
 
 

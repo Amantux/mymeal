@@ -265,7 +265,9 @@ def plan_week(preferences: str = "", days: int = 7) -> dict:
     try:
         data = _post("/ai/plan", {"days": days, "preferences": preferences})
     except httpx.HTTPStatusError as exc:
-        return {"error": f"Planning failed: {exc.response.text}"}
+        # _api_error, never exc.response.text: a raw upstream body can carry a
+        # DSN or key material, and every other tool here already curates.
+        return {"error": f"Planning failed: {_api_error(exc)}"}
     return {"planned": len(data.get("entries", []))}
 
 

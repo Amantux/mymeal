@@ -97,7 +97,10 @@ def _search_tags(gid, q, limit):
 def search():
     q = (request.args.get("q") or "").strip()
     try:
-        limit = min(int(request.args.get("limit", 25) or 25), 100)
+        # max(1, ...): a negative limit sliced ranked[:-n] (silently dropping the
+        # BEST tail matches) and is a hard error on Postgres (LIMIT must not be
+        # negative).
+        limit = max(1, min(int(request.args.get("limit", 25) or 25), 100))
     except ValueError:
         limit = 25
     gid = current_group().id
