@@ -225,7 +225,7 @@ def test_update_experiment_preserves_unpassed_snapshot_fields(mcp_api):
     assert got["servings"] == 4
 
 
-def test_restore_round_trips(mcp_api):
+def test_mcp_restore_round_trips(mcp_api):
     _make_recipe()
     _fn(mcp_server.update_recipe)("Onion Soup", servings=9)
     auto = [v for v in _fn(mcp_server.list_recipe_versions)("Onion Soup")["versions"]

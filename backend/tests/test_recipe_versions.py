@@ -95,7 +95,7 @@ def test_promote_experiment_updates_live_and_is_reversible(auth_client):
     assert any(v["kind"] == "auto" for v in vs)
 
 
-def test_restore_round_trips(auth_client):
+def test_rest_restore_round_trips(auth_client):
     rid = _new_recipe(auth_client, "Original")
     # edit → creates an auto snapshot of "Original"
     auth_client.put(f"/api/v1/recipes/{rid}", json={"name": "Changed"})

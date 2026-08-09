@@ -7,40 +7,10 @@ foods table mid-flight and this app enforces foreign keys. An empty database
 cannot catch that.
 """
 import json
-import os
 import sqlite3
-import subprocess
 
 
-def _run_alembic(db_path, *args):
-    env = dict(os.environ, MYMEAL_DATABASE_URL=f"sqlite:///{db_path}")
-    return subprocess.run(["python3", "-m", "alembic", *args],
-                          capture_output=True, text=True, env=env,
-                          cwd=os.path.dirname(os.path.dirname(__file__)))
-
-
-def _insert(conn, table, values):
-    """INSERT with type-appropriate filler for every NOT-NULL-no-default
-    column, read from the live schema. Hand-enumerating them was whack-a-mole
-    across thirteen revisions of history."""
-    row = dict(values)
-    for _cid, name, ctype, notnull, default, _pk in \
-            conn.execute(f"PRAGMA table_info({table})"):
-        if name in row or not notnull or default is not None:
-            continue
-        if name in ("created_at", "updated_at"):
-            row[name] = "2026-01-01 00:00:00"
-        elif any(t in (ctype or "").upper() for t in ("INT", "REAL", "FLOA", "NUM")):
-            row[name] = 0
-        elif "JSON" in (ctype or "").upper():
-            row[name] = "[]"
-        else:
-            row[name] = ""
-    cols = ",".join(row)
-    marks = ",".join("?" for _ in row)
-    conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({marks})",
-                 list(row.values()))
-
+from migration_harness import _insert, _run_alembic  # noqa: E402
 
 def _seeded_db_at_0013(tmp_path):
     """A database at revision 0013 holding one of each storage form, each with
