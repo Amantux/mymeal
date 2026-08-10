@@ -2,29 +2,22 @@
 separate from chat. Nutrition→enrich preference; categorize/cluster→organize.
 Precedence: per-run opts > stored kind preference > the chat provider."""
 
-from app.extensions import db
-from app.models import User
 from app.services.ai import provider_config as pc
 from app.services.ai.registry import resolve_job_provider
 
 
-def _gid(app):
-    with app.app_context():
-        return db.session.query(User).filter_by(email="t@t.com").first().group_id
-
-
-def test_job_preference_unset_is_none(auth_client, app):
+def test_job_preference_unset_is_none(auth_client, app, gid):
     """Every field blank means "same as chat" — the default must not change now
     that the override also carries a base_url and key."""
-    gid = _gid(app)
+
     with app.app_context():
         for kind in ("nutrition", "categorize"):
             assert pc.job_override(gid, kind) == {
                 "provider": None, "model": None, "base_url": None, "api_key": None}
 
 
-def test_organize_shared_nutrition_separate(auth_client, app):
-    gid = _gid(app)
+def test_organize_shared_nutrition_separate(auth_client, app, gid):
+
     with app.app_context():
         pc.set_job_prefs(gid, {"organize": {"provider": "ollama", "model": "llama3.1"}})
         for kind in ("categorize", "cluster"):
@@ -33,14 +26,14 @@ def test_organize_shared_nutrition_separate(auth_client, app):
         assert pc.job_override(gid, "nutrition")["provider"] is None
 
 
-def test_resolve_none_without_pref_or_opts(auth_client, app):
-    gid = _gid(app)
+def test_resolve_none_without_pref_or_opts(auth_client, app, gid):
+
     with app.app_context():
         assert resolve_job_provider("nutrition", gid, opts={}) is None
 
 
-def test_resolve_switches_provider_via_preference(auth_client, app):
-    gid = _gid(app)
+def test_resolve_switches_provider_via_preference(auth_client, app, gid):
+
     with app.app_context():
         # Group's chat provider is Claude, but the Nutrition job prefers a local Ollama.
         pc.set_overrides(gid, provider="ollama", base_url="http://ollama.local:11434", model="base")
@@ -50,8 +43,8 @@ def test_resolve_switches_provider_via_preference(auth_client, app):
         assert p is not None and p.name == "ollama" and p.model == "tinyllama"
 
 
-def test_per_run_opts_win_over_preference(auth_client, app):
-    gid = _gid(app)
+def test_per_run_opts_win_over_preference(auth_client, app, gid):
+
     with app.app_context():
         pc.set_overrides(gid, provider="ollama", base_url="http://o", model="base")
         pc.set_job_prefs(gid, {"enrich": {"provider": "ollama", "model": "pref-model"}})

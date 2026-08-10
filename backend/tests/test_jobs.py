@@ -8,13 +8,8 @@ import json
 from datetime import timedelta
 
 from app.extensions import db
-from app.models import Group, Job, Recipe, RecipeIngredient, User, utcnow
+from app.models import Group, Job, Recipe, RecipeIngredient, utcnow
 from app.services import jobs
-
-
-def _gid(app):
-    with app.app_context():
-        return db.session.query(User).filter_by(email="t@t.com").first().group_id
 
 
 def _recipe(gid, name="Omelette", servings=2, nutrition="", ings=("3 eggs",)):
@@ -28,24 +23,24 @@ def _recipe(gid, name="Omelette", servings=2, nutrition="", ings=("3 eggs",)):
     return r
 
 
-def test_enqueue_creates_pending_and_dedups(auth_client, app):
-    gid = _gid(app)
+def test_enqueue_creates_pending_and_dedups(auth_client, app, gid):
+
     with app.app_context():
         a = jobs.enqueue("nutrition", gid)
         b = jobs.enqueue("nutrition", gid)
         assert a.id == b.id and a.status == "pending"
 
 
-def test_claim_is_atomic_no_double_run(auth_client, app):
-    gid = _gid(app)
+def test_claim_is_atomic_no_double_run(auth_client, app, gid):
+
     with app.app_context():
         jobs.enqueue("nutrition", gid)
         assert jobs.claim_one() is not None
         assert jobs.claim_one() is None
 
 
-def test_nutrition_job_estimates_missing(auth_client, app, monkeypatch):
-    gid = _gid(app)
+def test_nutrition_job_estimates_missing(auth_client, app, monkeypatch, gid):
+
     with app.app_context():
         _recipe(gid, name="Omelette")                       # missing → estimated
         _recipe(gid, name="Toast", nutrition='{"calories":90}')  # already has it
@@ -65,9 +60,9 @@ def test_nutrition_job_estimates_missing(auth_client, app, monkeypatch):
         assert json.loads(om.nutrition)["calories"] == 210
 
 
-def test_nutrition_job_errors_when_no_provider(auth_client, app, monkeypatch):
+def test_nutrition_job_errors_when_no_provider(auth_client, app, monkeypatch, gid):
     from app.services.ai.base import ProviderError
-    gid = _gid(app)
+
     with app.app_context():
         _recipe(gid)
 
@@ -79,8 +74,8 @@ def test_nutrition_job_errors_when_no_provider(auth_client, app, monkeypatch):
         assert db.session.get(Job, job.id).status == "error"
 
 
-def test_reap_stale_requeues_dead_and_spares_live(auth_client, app):
-    gid = _gid(app)
+def test_reap_stale_requeues_dead_and_spares_live(auth_client, app, gid):
+
     with app.app_context():
         dead = Job(kind="nutrition", group_id=gid, status="running",
                    started_at=utcnow() - timedelta(hours=1))
@@ -95,9 +90,9 @@ def test_reap_stale_requeues_dead_and_spares_live(auth_client, app):
         assert db.session.get(Job, live.id).status == "running"
 
 
-def test_only_one_active_job_per_group_kind_enforced(auth_client, app):
+def test_only_one_active_job_per_group_kind_enforced(auth_client, app, gid):
     from sqlalchemy.exc import IntegrityError
-    gid = _gid(app)
+
     with app.app_context():
         db.session.add(Job(kind="nutrition", group_id=gid, status="pending"))
         db.session.commit()

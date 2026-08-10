@@ -1,13 +1,8 @@
 """AI tooling: confidence-gated auto-tag recipes, cluster proposals, review queue,
 and ICL feedback. No live vendor calls (a fake provider is injected)."""
 from app.extensions import db
-from app.models import AiSuggestion, Group, Recipe, Tag, User
+from app.models import AiSuggestion, Group, Recipe, Tag
 from app.services import jobs
-
-
-def _gid(app):
-    with app.app_context():
-        return db.session.query(User).filter_by(email="t@t.com").first().group_id
 
 
 def _recipe(gid, name="Omelette"):
@@ -35,8 +30,8 @@ def _run(kind, gid):
     jobs.run_job(jobs.claim_one())
 
 
-def test_categorize_auto_applies_high_confidence_existing_tag(auth_client, app, monkeypatch):
-    gid = _gid(app)
+def test_categorize_auto_applies_high_confidence_existing_tag(auth_client, app, monkeypatch, gid):
+
     with app.app_context():
         db.session.add(Tag(name="Breakfast", slug="breakfast", group_id=gid))
         _recipe(gid, "Omelette")
@@ -51,8 +46,8 @@ def test_categorize_auto_applies_high_confidence_existing_tag(auth_client, app, 
         assert db.session.query(AiSuggestion).filter_by(status="accepted").count() == 1
 
 
-def test_categorize_queues_new_tag(auth_client, app, monkeypatch):
-    gid = _gid(app)
+def test_categorize_queues_new_tag(auth_client, app, monkeypatch, gid):
+
     with app.app_context():
         _recipe(gid, "Mystery dish")
         _use_provider(monkeypatch, _FakeProvider(
@@ -66,8 +61,8 @@ def test_categorize_queues_new_tag(auth_client, app, monkeypatch):
         assert db.session.query(AiSuggestion).filter_by(status="pending").count() == 1
 
 
-def test_categorize_rerun_does_not_duplicate_pending(auth_client, app, monkeypatch):
-    gid = _gid(app)
+def test_categorize_rerun_does_not_duplicate_pending(auth_client, app, monkeypatch, gid):
+
     with app.app_context():
         _recipe(gid, "Mystery dish")
         _use_provider(monkeypatch, _FakeProvider({"label": "Fusion", "confidence": 0.4}))
@@ -76,8 +71,8 @@ def test_categorize_rerun_does_not_duplicate_pending(auth_client, app, monkeypat
         assert db.session.query(AiSuggestion).filter_by(status="pending").count() == 1
 
 
-def test_categorize_malformed_confidence_completes(auth_client, app, monkeypatch):
-    gid = _gid(app)
+def test_categorize_malformed_confidence_completes(auth_client, app, monkeypatch, gid):
+
     with app.app_context():
         _recipe(gid, "Thing")
         _use_provider(monkeypatch, _FakeProvider({"label": "X", "confidence": "high"}))
@@ -86,8 +81,8 @@ def test_categorize_malformed_confidence_completes(auth_client, app, monkeypatch
         assert db.session.query(Job).filter_by(kind="categorize").first().status == "done"
 
 
-def test_accept_categorize_creates_and_applies_tag(auth_client, app):
-    gid = _gid(app)
+def test_accept_categorize_creates_and_applies_tag(auth_client, app, gid):
+
     with app.app_context():
         r = _recipe(gid, "Pancakes")
         s = AiSuggestion(kind="categorize", status="pending", label="Breakfast",
@@ -101,8 +96,8 @@ def test_accept_categorize_creates_and_applies_tag(auth_client, app):
         assert "Breakfast" in [t.name for t in r.tags]  # tag created (with slug) + attached
 
 
-def test_cluster_and_accept_tags_members(auth_client, app, monkeypatch):
-    gid = _gid(app)
+def test_cluster_and_accept_tags_members(auth_client, app, monkeypatch, gid):
+
     with app.app_context():
         a, b, c = _recipe(gid, "Tacos"), _recipe(gid, "Burrito"), _recipe(gid, "Cake")
         _use_provider(monkeypatch, _FakeProvider(
@@ -118,8 +113,8 @@ def test_cluster_and_accept_tags_members(auth_client, app, monkeypatch):
         assert db.session.get(Recipe, cid).tags == []  # not a member
 
 
-def test_reject_suggestion(auth_client, app):
-    gid = _gid(app)
+def test_reject_suggestion(auth_client, app, gid):
+
     with app.app_context():
         s = AiSuggestion(kind="categorize", status="pending", label="Nope",
                          confidence=0.3, group_id=gid)
@@ -131,8 +126,8 @@ def test_reject_suggestion(auth_client, app):
         assert db.session.get(AiSuggestion, sid).status == "rejected"
 
 
-def test_delete_recipe_with_suggestion_succeeds(auth_client, app):
-    gid = _gid(app)
+def test_delete_recipe_with_suggestion_succeeds(auth_client, app, gid):
+
     with app.app_context():
         r = _recipe(gid, "Disposable")
         db.session.add(AiSuggestion(kind="categorize", status="accepted", label="X",
@@ -144,8 +139,8 @@ def test_delete_recipe_with_suggestion_succeeds(auth_client, app):
         assert db.session.query(AiSuggestion).filter_by(recipe_id=rid).count() == 0
 
 
-def test_categorize_applies_model_override(auth_client, app, monkeypatch):
-    gid = _gid(app)
+def test_categorize_applies_model_override(auth_client, app, monkeypatch, gid):
+
     captured = {}
     with app.app_context():
         _recipe(gid, "X")
