@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-from .base import AIProvider, ChatResult, ProviderError, ToolCall, safe_upstream_detail
+from .base import AIProvider, ChatResult, ProviderError, ToolCall, raise_provider_error
 
 
 class ClaudeProvider(AIProvider):
@@ -50,9 +50,7 @@ class ClaudeProvider(AIProvider):
                 messages=[{"role": "user", "content": prompt}],
             )
         except Exception as exc:   # normalise every SDK failure
-            raise ProviderError(
-                f"claude request failed: {safe_upstream_detail(exc)}"
-            ) from exc
+            raise_provider_error("Claude", exc)
         return "".join(b.text for b in resp.content if b.type == "text")
 
     def _complete_image(self, system, prompt, image_b64, media_type, max_tokens) -> str:
@@ -70,9 +68,7 @@ class ClaudeProvider(AIProvider):
                 ]}],
             )
         except Exception as exc:   # normalise every SDK failure
-            raise ProviderError(
-                f"claude request failed: {safe_upstream_detail(exc)}"
-            ) from exc
+            raise_provider_error("Claude", exc)
         return "".join(b.text for b in resp.content if b.type == "text")
 
     def chat(self, messages, system="", tools=None, max_tokens=2048) -> ChatResult:
@@ -96,9 +92,7 @@ class ClaudeProvider(AIProvider):
         try:
             resp = client.messages.create(**kwargs)
         except Exception as exc:   # normalise every SDK failure
-            raise ProviderError(
-                f"claude request failed: {safe_upstream_detail(exc)}"
-            ) from exc
+            raise_provider_error("Claude", exc)
         out = ChatResult()
         for block in resp.content:
             if block.type == "text":
@@ -131,9 +125,7 @@ class ClaudeProvider(AIProvider):
                     yield {"type": "delta", "text": text}
                 final = stream.get_final_message()
         except Exception as exc:
-            raise ProviderError(
-                f"claude request failed: {safe_upstream_detail(exc)}"
-            ) from exc
+            raise_provider_error("Claude", exc)
         out = ChatResult(content=content)
         for block in final.content:
             if block.type == "tool_use":

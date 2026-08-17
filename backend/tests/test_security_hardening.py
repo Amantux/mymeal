@@ -87,7 +87,7 @@ def test_private_lan_ollama_host_still_reaches_the_provider(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def get(self, url, headers=None):
+        def get(self, url, headers=None, extensions=None):
             called["url"] = url
             return _Resp()
 
@@ -258,3 +258,189 @@ def test_image_path_refuses_traversal(app):
         except NotFound:
             return  # safe_join rejected it → abort(404)
         assert "etc/passwd" not in path
+
+
+# --- Ollama Cloud host check is a real hostname match, not a substring -------
+
+def test_ollama_cloud_substring_in_path_or_elsewhere_does_not_match():
+    from app.services.ai.url_guard import is_ollama_cloud_host
+
+    assert is_ollama_cloud_host("https://ollama.com") is True
+    assert is_ollama_cloud_host("https://api.ollama.com") is True
+    # The text "ollama.com" appears in the URL but is NOT the host.
+    assert is_ollama_cloud_host("https://evil.com/ollama.com") is False
+    assert is_ollama_cloud_host("https://ollama.com.evil.com") is False
+    assert is_ollama_cloud_host("http://localhost:11434") is False
+    assert is_ollama_cloud_host("") is False
+
+
+# --- Provider failures: generic message to the client, detail logged --------
+
+def test_unexpected_provider_failure_is_generic_to_the_client_but_logged(caplog):
+    """CWE-209: the redacted upstream detail is still exception-derived, so it
+    must never reach the HTTP response — only the exception's class name does.
+    The full detail is still available server-side, in the log."""
+    import logging
+
+    from app.services.ai.base import raise_provider_error
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(ProviderError) as exc_info:
+            raise_provider_error("Claude", RuntimeError("sk-liveSecretKey1234567890"))
+
+    msg = str(exc_info.value)
+    assert "sk-liveSecretKey1234567890" not in msg
+    assert "RuntimeError" in msg          # still says WHAT kind of failure
+    assert "Claude" in msg
+    # The detail (redacted, but still exception-derived) is on the server only.
+    assert any("Claude request failed" in r.getMessage() for r in caplog.records)
+
+
+def test_claude_and_openai_unexpected_failures_use_the_generic_path():
+    """Every raise site in these providers goes through raise_provider_error —
+    a regression here (reverting to embedding safe_upstream_detail directly in
+    the raised message) is exactly what reopened the stack-trace-exposure
+    alerts this pins."""
+    from types import SimpleNamespace
+
+    from app.services.ai.claude import ClaudeProvider
+    from app.services.ai.openai import OpenAIProvider
+
+    class _BoomClient:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                raise RuntimeError("upstream said: password=hunter2secret")
+
+    p = ClaudeProvider.__new__(ClaudeProvider)
+    p.model, p.timeout, p._client = "m", 30, _BoomClient()
+    with pytest.raises(ProviderError) as exc_info:
+        p._complete("sys", "prompt", 100)
+    assert "hunter2secret" not in str(exc_info.value)
+    assert "unexpectedly" in str(exc_info.value)
+
+    class _BoomChatCompletions:
+        @staticmethod
+        def create(**kw):
+            raise RuntimeError("upstream said: password=hunter2secret")
+
+    op = OpenAIProvider.__new__(OpenAIProvider)
+    op.model, op.timeout = "m", 30
+    op._client = SimpleNamespace(chat=SimpleNamespace(completions=_BoomChatCompletions()))
+    with pytest.raises(ProviderError) as exc_info:
+        op._complete("sys", "prompt", 100)
+    assert "hunter2secret" not in str(exc_info.value)
+    assert "unexpectedly" in str(exc_info.value)
+
+
+# --- Log injection: an operator-set host cannot forge a fake log line -------
+
+def test_model_list_failure_log_is_not_forgeable_via_the_host(caplog):
+    """A base URL containing a literal newline must not split into two log
+    lines — that is how a crafted config value forges a fake log entry."""
+    import logging
+
+    from app.services.ai.provider_config import list_models
+
+    evil_host = "http://127.0.0.1:9\nWARNING mymeal:fake admin login succeeded"
+    eff = _eff("ollama", OLLAMA_HOST=evil_host, OLLAMA_MODEL="m")
+    with caplog.at_level(logging.WARNING):
+        assert list_models(eff, timeout=2) == []
+
+    assert caplog.records  # something was actually logged
+    for record in caplog.records:
+        assert "\n" not in record.getMessage(), \
+            "a literal newline reached the log — it can forge a fake log entry"
+
+
+# --- SSRF: the connection is pinned to the address that was validated -------
+
+def test_pinned_get_args_connects_to_the_resolved_ip_not_the_hostname():
+    """Closing the DNS-rebinding TOCTOU: the returned URL targets the resolved
+    IP directly, and the original hostname travels only in the Host header (and
+    SNI for https) — so a SECOND, separate resolution by the HTTP client can
+    never return a different (unvalidated) address."""
+    from app.services.ai.url_guard import llm_pinned_get_args
+
+    pinned, headers, ext = llm_pinned_get_args("http://127.0.0.1:9/api/tags")
+    assert pinned == "http://127.0.0.1:9/api/tags"  # 127.0.0.1 pins to itself
+    assert headers["Host"] == "127.0.0.1:9"
+
+
+def test_pinned_get_args_refuses_a_link_local_address():
+    from app.services.ai.url_guard import UnsafeHostError, llm_pinned_get_args
+
+    with pytest.raises(UnsafeHostError):
+        llm_pinned_get_args("http://169.254.169.254/api/tags")
+
+
+def test_ollama_chat_post_is_also_pinned_not_just_model_listing():
+    """The DNS-rebinding pin must cover the actual, data-carrying chat request
+    (self.host-derived, operator-configurable) — not only the informational
+    model-listing GET. A prior version of this fix pinned list_models_result
+    but left _post/chat_stream calling httpx.post(f"{self.host}/...") directly,
+    leaving the higher-value target open to the exact TOCTOU the fix claims to
+    close."""
+    import httpx
+
+    from app.services.ai.ollama import OllamaProvider
+
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["headers"] = kwargs.get("headers")
+        return httpx.Response(200, json={"message": {"content": "hi"}},
+                              request=httpx.Request("POST", url))
+
+    p = OllamaProvider.__new__(OllamaProvider)
+    p.host, p.model, p.timeout, p.api_key = "http://127.0.0.1:11434", "m", 30, ""
+    monkeypatch_target = httpx.post
+    httpx.post = fake_post
+    try:
+        p._post({"model": "m", "messages": []})
+    finally:
+        httpx.post = monkeypatch_target
+
+    # 127.0.0.1 pins to itself, so the URL is unchanged — but the Host header
+    # (what a real DNS-rebind attack would need to differ from) is present,
+    # proving the pinned path was taken rather than the raw f-string URL.
+    assert captured["url"] == "http://127.0.0.1:11434/api/chat"
+    assert captured["headers"]["Host"] == "127.0.0.1:11434"
+
+
+def test_ollama_chat_post_refuses_a_link_local_host():
+    from app.services.ai.base import ProviderError
+    from app.services.ai.ollama import OllamaProvider
+
+    p = OllamaProvider.__new__(OllamaProvider)
+    p.host, p.model, p.timeout, p.api_key = "http://169.254.169.254", "m", 30, ""
+    with pytest.raises(ProviderError, match="not allowed"):
+        p._post({"model": "m", "messages": []})
+
+
+# --- _explain must not leak the raw host into the log OR the client message -
+
+def test_explain_scrubs_the_host_in_both_the_log_and_the_message(caplog):
+    """A crafted OLLAMA_HOST with an embedded newline must not (a) forge a
+    second log line when an unrecognised failure is logged, or (b) split the
+    client-facing message returned by _explain — which is used for EVERY
+    status branch (401/403/404/timeout/connect), not just the catch-all."""
+    import logging
+
+    from app.services.ai.ollama import OllamaProvider
+
+    evil_host = "127.0.0.1\nWARNING mymeal:fake admin login succeeded"
+    p = OllamaProvider.__new__(OllamaProvider)
+    p.host, p.model, p.timeout, p.api_key = evil_host, "m", 30, ""
+
+    # The client-facing message (used by every branch of _explain).
+    msg = p._explain(RuntimeError("boom"))
+    assert "\n" not in msg
+
+    # The server-side log line for the catch-all branch.
+    with caplog.at_level(logging.WARNING):
+        p._explain(RuntimeError("boom"))
+    assert caplog.records
+    for record in caplog.records:
+        assert "\n" not in record.getMessage()

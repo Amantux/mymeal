@@ -4,18 +4,20 @@ More AI features (meal planning, pantry suggestions, the cooking agent) attach
 to this blueprint in later milestones.
 """
 import json
+import logging
 from datetime import date, timedelta
 
 import httpx
 from flask import Blueprint, request, jsonify, current_app, stream_with_context
 
 from ..extensions import db, limiter
+from ..logsafe import scrub
 from ..services import conversions, ingredient_ai
 from ..models import Recipe, MealPlanEntry
 from ..auth import login_required, owner_required, current_group
 from ..schemas.serializers import recipe_out, mealplan_entry_out
 from ..utils import unique_slug
-from ..services.ai.base import ProviderError
+from ..services.ai.base import ProviderError, safe_upstream_detail
 from ..services.ai.registry import get_provider, list_providers
 from ..services.preferences import preferences_text
 from ..services.ai.recipe_import import (
@@ -29,6 +31,7 @@ from ..services.ai.recipe_import import (
 from .recipes import _apply, download_image_to_recipe
 
 bp = Blueprint("ai", __name__)
+_LOGGER = logging.getLogger("mymeal")
 
 
 @bp.get("/ai/discover-ollama")
@@ -287,7 +290,13 @@ def _import_events(data, group_id):
         # Also before ValueError: UnicodeError subclasses it, so this arm was
         # previously unreachable and a malformed-encoding URL was reported as
         # "no AI provider configured" (503) instead of a fetch failure (502).
-        yield "error", {"error": f"could not fetch the URL: {exc}", "status": 502}
+        # The raw exception text is not shown to the client (CWE-209) — logged
+        # server-side only; the client gets the exception's class name, which
+        # is enough to tell "timed out" from "bad response" from "bad URL".
+        _LOGGER.warning("recipe import fetch failed: %s", scrub(safe_upstream_detail(exc)))
+        yield "error", {"error": f"could not fetch the URL ({type(exc).__name__}). "
+                                 "Check the server logs for details.",
+                        "status": 502}
         return
     except ProviderError as exc:
         yield "error", {"error": str(exc), "status": 502}

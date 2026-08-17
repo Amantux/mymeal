@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 
-from .base import AIProvider, ChatResult, ProviderError, ToolCall, safe_upstream_detail
+from .base import AIProvider, ChatResult, ProviderError, ToolCall, raise_provider_error
 
 
 class OpenAIProvider(AIProvider):
@@ -57,7 +57,7 @@ class OpenAIProvider(AIProvider):
                 ],
             )
         except Exception as exc:   # normalise every SDK failure
-            raise ProviderError(f"OpenAI request failed: {safe_upstream_detail(exc)}") from exc
+            raise_provider_error("OpenAI", exc)
         return resp.choices[0].message.content or ""
 
     def _complete_image(self, system, prompt, image_b64, media_type, max_tokens) -> str:
@@ -76,9 +76,7 @@ class OpenAIProvider(AIProvider):
                 ],
             )
         except Exception as exc:   # normalise every SDK failure
-            raise ProviderError(
-                f"OpenAI request failed: {safe_upstream_detail(exc)}"
-            ) from exc
+            raise_provider_error("OpenAI", exc)
         return resp.choices[0].message.content or ""
 
     def chat(self, messages, system="", tools=None, max_tokens=2048) -> ChatResult:
@@ -100,9 +98,7 @@ class OpenAIProvider(AIProvider):
         try:
             resp = client.chat.completions.create(**kwargs)
         except Exception as exc:   # normalise every SDK failure
-            raise ProviderError(
-                f"openai request failed: {safe_upstream_detail(exc)}"
-            ) from exc
+            raise_provider_error("OpenAI", exc)
         msg = resp.choices[0].message
         out = ChatResult(content=msg.content or "")
         for call in msg.tool_calls or []:
@@ -149,9 +145,7 @@ class OpenAIProvider(AIProvider):
                     if tc.function and tc.function.arguments:
                         slot["args"] += tc.function.arguments
         except Exception as exc:   # normalize SDK/HTTP errors
-            raise ProviderError(
-                f"openai request failed: {safe_upstream_detail(exc)}"
-            ) from exc
+            raise_provider_error("OpenAI", exc)
         out = ChatResult(content=content)
         for idx in sorted(frags):
             f = frags[idx]

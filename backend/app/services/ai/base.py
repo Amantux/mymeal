@@ -16,14 +16,19 @@ Two operations cover every feature:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import NoReturn
 
 # The credential pattern lives in app.logsafe: applied both here (at the raise
 # site, for text that reaches an API client) and as a logging filter over every
 # record we write. One definition, two consumers.
 from ...logsafe import SECRETISH as _SECRETISH
+from ...logsafe import scrub as _scrub
+
+_LOGGER = logging.getLogger("mymeal")
 
 
 class ProviderError(RuntimeError):
@@ -51,6 +56,26 @@ def safe_upstream_detail(exc: BaseException, limit: int = _MAX_UPSTREAM_DETAIL) 
         detail = detail[:limit].rstrip() + "…"
     kind = type(exc).__name__
     return f"{kind}: {detail}" if detail else kind
+
+
+def raise_provider_error(provider_label: str, exc: BaseException) -> NoReturn:
+    """Raise ``ProviderError`` for an unrecognised upstream failure.
+
+    ``safe_upstream_detail`` already strips credentials, but the redacted text
+    is still exception-derived (CWE-209: information exposure through an
+    exception — CodeQL's ``py/stack-trace-exposure``). So it is logged here,
+    server-side only; the client-facing message is built entirely from data we
+    control (the provider label and the exception's class name), never from the
+    exception's own text. Curated, per-status messages (bad key, missing model,
+    timeout, connection refused) stay in each provider's own happy-path
+    branches — this is only the "something unexpected happened" tail.
+    """
+    detail = safe_upstream_detail(exc)
+    _LOGGER.warning("%s request failed: %s", provider_label, _scrub(detail))
+    raise ProviderError(
+        f"{provider_label} request failed unexpectedly ({type(exc).__name__}). "
+        "Check the server logs for details."
+    ) from exc
 
 
 @dataclass

@@ -264,9 +264,11 @@ def _model_list_hint(exc, provider: str, base_url: str) -> str:
     """
     import httpx
 
-    from .base import safe_upstream_detail
+    from .url_guard import UnsafeHostError, is_ollama_cloud_host
 
-    where = "Ollama Cloud" if "ollama.com" in (base_url or "") else base_url
+    where = "Ollama Cloud" if is_ollama_cloud_host(base_url or "") else base_url
+    if isinstance(exc, UnsafeHostError):
+        return f"{where} is not allowed: {exc}"
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
         if code in (401, 403):
@@ -278,7 +280,10 @@ def _model_list_hint(exc, provider: str, base_url: str) -> str:
         return f"Could not reach {where} — is it running, and is the base URL right?"
     if isinstance(exc, httpx.TimeoutException):
         return f"{where} did not respond in time."
-    return f"Could not list models from {where}: {safe_upstream_detail(exc)}"
+    # Unrecognised failure: the caller already logged the redacted (but still
+    # exception-derived, CWE-209) detail server-side — the client only gets a
+    # message built from data we control (where + the exception's class).
+    return f"Could not list models from {where} ({type(exc).__name__}). Check the server logs for details."
 
 
 def list_models(eff, timeout: float = 12.0) -> list[str]:
@@ -299,7 +304,7 @@ def list_models_result(eff, timeout: float = 12.0) -> dict:
     """
     import httpx
 
-    from .url_guard import llm_url_ok
+    from .url_guard import llm_pinned_get_args, llm_url_ok
 
     p = eff.AI_PROVIDER
     # Resolve the base URL and validate it BEFORE constructing any HTTP client,
@@ -325,12 +330,19 @@ def list_models_result(eff, timeout: float = 12.0) -> dict:
             if p in ("ollama", "ollama_cloud"):
                 oh = {"Authorization": f"Bearer {eff.OLLAMA_API_KEY}"} \
                     if getattr(eff, "OLLAMA_API_KEY", "") else {}
-                r = c.get(f"{base_url}/api/tags", headers=oh)
+                # Pin to the resolved IP: llm_url_ok validated the HOSTNAME
+                # above, but a second, separate resolution here (what a plain
+                # `c.get(f"{base_url}/...")` would trigger) could return a
+                # different address (DNS rebinding). Connecting to the exact
+                # address we already checked closes that gap.
+                pinned, host_hdr, ext = llm_pinned_get_args(f"{base_url}/api/tags")
+                r = c.get(pinned, headers={**oh, **host_hdr}, extensions=ext)
                 r.raise_for_status()
                 names = sorted(m.get("name", "") for m in r.json().get("models", []) if m.get("name"))
                 return {"models": names, "error": None}
             h = {"Authorization": f"Bearer {eff.OPENAI_API_KEY}"} if eff.OPENAI_API_KEY else {}
-            r = c.get(f"{base_url}/models", headers=h)
+            pinned, host_hdr, ext = llm_pinned_get_args(f"{base_url}/models")
+            r = c.get(pinned, headers={**h, **host_hdr}, extensions=ext)
             r.raise_for_status()
             ids = sorted(m.get("id", "") for m in r.json().get("data", []) if m.get("id"))
             return {"models": ids, "error": None}
@@ -341,7 +353,12 @@ def list_models_result(eff, timeout: float = 12.0) -> dict:
         # without attaching a debugger. The URL is included because the usual
         # cause is probing the wrong host for the selected provider.
         from .base import safe_upstream_detail  # local: avoids an import cycle
+        from ...logsafe import scrub
 
         detail = safe_upstream_detail(exc)
-        _LOGGER.warning("model list failed for provider=%s at %s: %s", p, base_url, detail)
+        # base_url is an operator-set value (env/add-on option or a DB override
+        # that bypasses the env-layer parser) and could contain a literal
+        # newline crafted to forge a fake log entry — scrub before logging.
+        _LOGGER.warning("model list failed for provider=%s at %s: %s",
+                        p, scrub(base_url), scrub(detail))
         return {"models": [], "error": _model_list_hint(exc, p, base_url)}

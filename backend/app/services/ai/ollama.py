@@ -12,7 +12,13 @@ import json
 
 import httpx
 
+import logging
+
+from ...logsafe import scrub
 from .base import AIProvider, ChatResult, ProviderError, ToolCall, safe_upstream_detail
+from .url_guard import UnsafeHostError, is_ollama_cloud_host, llm_pinned_get_args
+
+_LOGGER = logging.getLogger("mymeal")
 
 
 class OllamaProvider(AIProvider):
@@ -39,6 +45,16 @@ class OllamaProvider(AIProvider):
         # server ignores it. Only send when configured.
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
+    def _where(self) -> str:
+        """A human label for the configured host, safe to put in a client-facing
+        message OR a log line. ``self.host`` is operator-set (env/add-on option
+        or a DB override that bypasses the env-layer parser) and could contain a
+        literal newline crafted to forge a fake log entry or split a returned
+        error message — scrub it before it reaches either sink."""
+        if is_ollama_cloud_host(self.host or ""):
+            return "Ollama Cloud"
+        return f"Ollama at {scrub(self.host or '')}"
+
     def _explain(self, exc: httpx.HTTPError) -> str:
         """Turn an httpx failure into something the operator can act on.
 
@@ -53,7 +69,7 @@ class OllamaProvider(AIProvider):
         NOT echoed. Anything unrecognised still falls back to the redacted
         summary so an unexpected failure is not swallowed.
         """
-        where = "Ollama Cloud" if "ollama.com" in (self.host or "") else f"Ollama at {self.host}"
+        where = self._where()
 
         if isinstance(exc, httpx.HTTPStatusError):
             code = exc.response.status_code
@@ -79,7 +95,13 @@ class OllamaProvider(AIProvider):
         if isinstance(exc, httpx.ConnectError):
             return (f"Could not reach {where}. Check the host is correct and the "
                     f"server is running.")
-        return f"{where} request failed: {safe_upstream_detail(exc)}"
+        # Unrecognised failure: the redacted detail is still exception-derived
+        # (CWE-209), so it is logged server-side only; the client gets a
+        # message built from data we control (where + the exception's class).
+        # `where` is already scrub()'d by _where() above.
+        _LOGGER.warning("%s request failed: %s", where, scrub(safe_upstream_detail(exc)))
+        return (f"{where} request failed unexpectedly ({type(exc).__name__}). "
+                "Check the server logs for details.")
 
     def _post(self, payload: dict) -> dict:
         try:
@@ -87,9 +109,20 @@ class OllamaProvider(AIProvider):
             # array and tool calling, which /api/generate (single `prompt`,
             # no tools) does not support. Both endpoints exist on local and
             # cloud; only this one can drive the assistant.
-            r = httpx.post(f"{self.host}/api/chat", json=payload,
-                           headers=self._headers(), timeout=self.timeout)
+            #
+            # Pinned to the resolved IP (not just f"{self.host}/api/chat"):
+            # get_provider() already validated self.host via llm_url_ok at
+            # construction time, but a second, separate DNS resolution here —
+            # what a plain httpx.post(f"{self.host}/...") triggers — could
+            # return a different (blocked) address. Connecting to the exact
+            # address already checked closes that TOCTOU window.
+            pinned, host_hdr, ext = llm_pinned_get_args(f"{self.host}/api/chat")
+            r = httpx.post(pinned, json=payload,
+                           headers={**self._headers(), **host_hdr}, extensions=ext,
+                           timeout=self.timeout)
             r.raise_for_status()
+        except UnsafeHostError as exc:
+            raise ProviderError(f"{self._where()} is not allowed: {exc}") from exc
         except httpx.HTTPError as exc:
             raise ProviderError(self._explain(exc)) from exc
         return r.json()
@@ -179,8 +212,16 @@ class OllamaProvider(AIProvider):
         content = ""
         raw_calls: list[dict] = []
         try:
-            with httpx.stream("POST", f"{self.host}/api/chat", json=payload,
-                              headers=self._headers(), timeout=self.timeout) as r:
+            # Pinned for the same reason as _post: closes the DNS-rebinding
+            # TOCTOU window between the host being validated and a later,
+            # separate resolution at connect time.
+            pinned, host_hdr, ext = llm_pinned_get_args(f"{self.host}/api/chat")
+        except UnsafeHostError as exc:
+            raise ProviderError(f"{self._where()} is not allowed: {exc}") from exc
+        try:
+            with httpx.stream("POST", pinned, json=payload,
+                              headers={**self._headers(), **host_hdr}, extensions=ext,
+                              timeout=self.timeout) as r:
                 r.raise_for_status()
                 for line in r.iter_lines():
                     if not line:
@@ -196,9 +237,7 @@ class OllamaProvider(AIProvider):
                     if obj.get("done"):
                         break
         except httpx.HTTPError as exc:
-            raise ProviderError(
-                f"ollama request failed: {safe_upstream_detail(exc)}"
-            ) from exc
+            raise ProviderError(self._explain(exc)) from exc
         out = ChatResult(content=content)
         for i, call in enumerate(raw_calls):
             fn = call.get("function", {})
