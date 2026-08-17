@@ -197,9 +197,7 @@ def extract_json(text: str) -> dict:
             try:
                 parsed = json.loads(text[start : end + 1])
             except json.JSONDecodeError as exc:
-                raise ProviderError(
-                    f"model did not return valid JSON: {exc}"
-                ) from exc
+                raise_provider_error("The AI provider", exc)
     if not isinstance(parsed, dict):
         raise ProviderError("model did not return a JSON object")
     return parsed

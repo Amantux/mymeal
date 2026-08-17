@@ -173,6 +173,16 @@ def test_extract_json_non_object_raises():
             extract_json(bad)
 
 
+def test_extract_json_malformed_braces_is_generic_not_a_raw_parser_error():
+    """The {...}-span fallback's own JSONDecodeError must not leak the parser's
+    raw message (CWE-209) — it's exception-derived, however benign."""
+    with pytest.raises(ProviderError) as exc_info:
+        extract_json("prose {not: valid, json outer}")
+    msg = str(exc_info.value)
+    assert "Expecting" not in msg  # the raw json module wording
+    assert "JSONDecodeError" in msg
+
+
 class _BadJsonProvider(_FakeProvider):
     def _complete(self, system, prompt, max_tokens):
         return "[1, 2, 3]"  # valid JSON, wrong shape
