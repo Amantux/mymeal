@@ -360,5 +360,5 @@ def list_models_result(eff, timeout: float = 12.0) -> dict:
         # that bypasses the env-layer parser) and could contain a literal
         # newline crafted to forge a fake log entry — scrub before logging.
         _LOGGER.warning("model list failed for provider=%s at %s: %s",
-                        p, scrub(base_url), scrub(detail))
+                        scrub(p), scrub(base_url), scrub(detail))
         return {"models": [], "error": _model_list_hint(exc, p, base_url)}

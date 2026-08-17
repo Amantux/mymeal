@@ -122,7 +122,7 @@ class OllamaProvider(AIProvider):
                            timeout=self.timeout)
             r.raise_for_status()
         except UnsafeHostError as exc:
-            raise ProviderError(f"{self._where()} is not allowed: {exc}") from exc
+            raise ProviderError(f"{self._where()} is not allowed.") from exc
         except httpx.HTTPError as exc:
             raise ProviderError(self._explain(exc)) from exc
         return r.json()
@@ -217,7 +217,7 @@ class OllamaProvider(AIProvider):
             # separate resolution at connect time.
             pinned, host_hdr, ext = llm_pinned_get_args(f"{self.host}/api/chat")
         except UnsafeHostError as exc:
-            raise ProviderError(f"{self._where()} is not allowed: {exc}") from exc
+            raise ProviderError(f"{self._where()} is not allowed.") from exc
         try:
             with httpx.stream("POST", pinned, json=payload,
                               headers={**self._headers(), **host_hdr}, extensions=ext,
