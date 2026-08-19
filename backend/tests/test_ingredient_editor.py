@@ -102,3 +102,50 @@ def test_food_reused_not_duplicated_across_recipes(auth_client):
             "name": "R", "ingredients": [{"display": "1 onion", "food": "onion"}]})
     foods = [f["name"] for f in auth_client.get("/api/v1/foods").get_json()]
     assert foods.count("onion") == 1
+
+
+def test_ingredient_exposes_a_lossless_amount_split(auth_client):
+    """The read view shows the amount as its own scannable column. It must never
+    be built by re-rendering food.name: names are canonicalized on save, so
+    "granulated sugar" becomes the "sugar" Food and the reader would see less
+    than they typed. restText is `display` minus its leading amount instead."""
+    rid = auth_client.post("/api/v1/recipes", json={
+        "name": "Split", "servings": 2,
+        "ingredients": [
+            {"display": "2/3 cup granulated sugar", "quantity": 0.6667,
+             "unit": "cup", "food": "granulated sugar"},
+            {"display": "a good knob of butter"},          # no amount at all
+        ],
+    }).get_json()["id"]
+
+    got = auth_client.get(f"/api/v1/recipes/{rid}").get_json()["ingredients"]
+
+    assert got[0]["amountText"] == "2/3"          # not the raw 0.6667 float
+    assert got[0]["unitText"] == "cup"
+    assert got[0]["restText"] == "granulated sugar"
+    assert got[0]["food"]["name"] == "sugar"      # the lossy part we must not use
+    # An unstructured line keeps its whole text and simply has no amount.
+    assert got[1]["amountText"] == "" and got[1]["restText"] == "a good knob of butter"
+
+
+def test_scaled_view_keeps_the_amount_split_consistent(auth_client):
+    """A stale amountText beside a scaled display would show two different
+    numbers for one ingredient, and a raw float would leak on a fractional
+    factor."""
+    rid = auth_client.post("/api/v1/recipes", json={
+        "name": "Split2", "servings": 2,
+        "ingredients": [
+            {"display": "1 cup milk", "quantity": 1, "unit": "cup", "food": "milk"},
+            {"display": "Salt to taste"},
+        ],
+    }).get_json()["id"]
+
+    got = auth_client.get(f"/api/v1/recipes/{rid}?servings=3").get_json()["ingredients"]
+
+    assert got[0]["amountText"] == "1 1/2"        # 1.5, rendered not raw
+    assert got[0]["unitText"] == "cups"           # agrees with the scaled amount
+    assert got[0]["restText"] == "milk"
+    assert got[0]["scaled"] is True
+    # The line with no parseable amount is flagged, so the reader can tell it
+    # apart from the scaled ones instead of trusting it silently.
+    assert got[1]["scaled"] is False

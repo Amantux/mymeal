@@ -2,7 +2,7 @@
 import json
 from datetime import datetime, date
 
-from ..services import food_resolve
+from ..services import food_resolve, units
 
 
 def iso(dt):
@@ -83,6 +83,21 @@ def ingredient_out(ing):
         "id": ing.id,
         "display": ing.display,
         "quantity": ing.quantity,
+        # Display-ready amount, so the SPA renders the quantity as its own
+        # typographic column without re-deriving anything. `quantity` is a raw
+        # float (0.6667 after scaling), which must never reach a cook's eye;
+        # format_qty turns it back into "2/3". Kept alongside `display` rather
+        # than replacing it — `display` stays the source of truth and is still
+        # what unstructured/legacy rows and the weight annotation rely on.
+        "amountText": units.format_qty(ing.quantity) if ing.quantity else "",
+        "unitText": units.pluralize_unit(ing.unit.name, ing.quantity) if ing.unit else "",
+        # `display` with its leading amount removed — the other half of the split,
+        # so the SPA can show a scannable amount column WITHOUT rebuilding the
+        # ingredient from food.name. That rebuild is lossy: food names are
+        # canonicalized on save ("granulated sugar" -> the "sugar" Food), so a
+        # reader would have seen less than they typed. Splitting the authoritative
+        # string instead is lossless by construction.
+        "restText": units.parse_line(ing.display or "")["rest"],
         "note": ing.note,
         # The variety, split off the food. Separate from `note`, which is
         # preparation.

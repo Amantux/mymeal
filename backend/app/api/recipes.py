@@ -517,12 +517,31 @@ def _apply_view(out: dict, recipe: Recipe, args):
             # Keep the original measure, append the weight in parentheses.
             line = units.annotate_weight(line, learned=learned)
         ing["display"] = line
+        # Re-split the rewritten line so the amount column and the food text stay
+        # consistent with it — including in the weight view, where the "(120 g)"
+        # annotation lives in `display` and must travel with the food text.
+        ing["restText"] = units.parse_line(line)["rest"]
         # Scale the STRUCTURED quantity by the same factor. Without this the
         # response carried a scaled string next to an unscaled number, and every
         # consumer that reads `quantity` (shopping list, MCP, HA, the SPA) used
         # the un-scaled one.
         if factor != 1.0 and isinstance(ing.get("quantity"), (int, float)):
             ing["quantity"] = round(ing["quantity"] * factor, 4)
+            # Rebuild the display-ready amount from the SCALED number. Without
+            # this the two disagree: the reader would see the pre-scale "2" in
+            # the quantity column beside a scaled "4 cups" line, and a raw
+            # 0.6667 would surface the moment a factor isn't a whole number.
+            ing["amountText"] = units.format_qty(ing["quantity"]) if ing["quantity"] else ""
+            if ing.get("unitText"):
+                ing["unitText"] = units.pluralize_unit(
+                    ing["unit"]["name"] if ing.get("unit") else "", ing["quantity"])
+        # Whether this line's amount actually moved. A line with no parseable
+        # quantity is returned byte-identical and sits in the same list as the
+        # scaled ones, so a mid-cook glance can't tell them apart — the reader
+        # has to be told which numbers are still the original recipe's.
+        if factor != 1.0:
+            ing["scaled"] = bool(ing.get("quantity")) or units.parse_line(
+                ing.get("display", ""))["qty"] is not None
 
 
 @bp.put("/recipes/<recipe_id>")
