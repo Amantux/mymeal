@@ -895,7 +895,13 @@ const imageSrc = computed(() =>
 </template>
 
 <style scoped>
+/* These are pressed with a wet finger, mid-cook, on a phone. They were
+   inheriting generic `button.sm` at ~31px — under the 44px touch guidance and
+   only 8px apart. Sized here rather than by changing `.sm`, which is doing its
+   job in dense desktop toolbars elsewhere. */
 .ing-tools { display: flex; align-items: center; gap: 8px; }
+.ing-tools button { min-height: 40px; min-width: 40px; padding: 8px 14px; font-size: 0.9rem; }
+@media (max-width: 620px) { .ing-tools button { min-height: 44px; min-width: 44px; } }
 .ing-tools .active { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 /* The ingredient list is the one surface people read mid-cook, at arm's length,
@@ -937,7 +943,7 @@ const imageSrc = computed(() =>
      reads far better than a two-line quantity. */
   .ing-amt { flex: 0 0 auto; min-width: 5ch; white-space: nowrap; }
 }
-.ing-link { color: var(--accent); font-weight: 600; text-decoration: none; }
+.ing-link { color: var(--accent-text); font-weight: 600; text-decoration: none; }
 .ing-link:hover { text-decoration: underline; }
 .components { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
 .components-h { font-size: 0.95rem; margin: 0 0 6px; }

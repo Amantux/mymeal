@@ -4,6 +4,13 @@
   --accent-fg: #ffffff;
   --accent-soft: rgba(226, 84, 42, 0.12);
   --accent-hover: #c2410c;
+  /* Accent-COLOURED TEXT on a light surface. --accent itself is only safe as a
+     background (with --accent-fg on top) or as a border: as text it measures
+     3.79:1 on --surface and 3.26:1 on the composited --accent-soft tint, both
+     below the 4.5:1 AA floor, and font-weight 600 doesn't earn the large-text
+     exemption. This value clears 4.5:1 on --surface, --surface-2 AND the tint.
+     Use it for any accent-coloured label, link or chip text. */
+  --accent-text: #b8401f;
 
   --bg: #f6f4f1;
   --surface: #ffffff;
@@ -31,6 +38,9 @@
   --text: #f0ebe5;
   --muted: #a8a29e;
   --accent-soft: rgba(226, 84, 42, 0.18);
+  /* Lighter, not darker, against the dark surfaces — and still needed here:
+     --accent on the dark tint is 3.58:1, which also fails. */
+  --accent-text: #f07a52;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 20px rgba(0, 0, 0, 0.35);
   --shadow-lg: 0 16px 50px rgba(0, 0, 0, 0.55);
 }

@@ -310,7 +310,7 @@ function addComponent(r) {
   border: 1px solid var(--border); background: var(--surface);
   border-radius: 6px; font-size: 1rem; cursor: pointer;
 }
-.bstep:hover { border-color: var(--accent); color: var(--accent); }
+.bstep:hover { border-color: var(--accent); color: var(--accent-text); }
 .bval { min-width: 2.2ch; text-align: center; font-weight: 700; }
 .bunit { color: var(--muted); font-size: 0.85rem; }
 
@@ -318,7 +318,7 @@ function addComponent(r) {
   display: flex; align-items: center; gap: 6px; min-width: 0;
   padding: 8px 10px; font-weight: 600;
   background: var(--accent-soft); border: 1px solid var(--accent);
-  color: var(--accent); border-radius: var(--radius-sm);
+  color: var(--accent-text); border-radius: var(--radius-sm);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .food-ref .link-ico { flex-shrink: 0; }
