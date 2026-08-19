@@ -153,3 +153,103 @@ def test_parsing_never_rewrites_the_humans_line():
 
     assert units.parse_line(line)["rest"] == "milk"
     assert units.scale_line(line, 1) is not None   # never raises on the original
+
+
+# A pasted blog / YouTube ingredient list is bulleted far more often than not,
+# and the quantity match is anchored at the start of the line — so every one of
+# these used to parse to nothing at all: no quantity, no unit, and the marker
+# itself dumped into the food name.
+
+@pytest.mark.parametrize("line", [
+    "- 2 cups flour",
+    "– 2 cups flour",       # en dash
+    "— 2 cups flour",       # em dash
+    "* 2 cups flour",
+    "• 2 cups flour",
+    "▢ 2 cups flour",       # the checkbox glyph several recipe plugins emit
+    "‣ 2 cups flour",
+    "◦ 2 cups flour",
+    "1. 2 cups flour",      # numbered marker
+    "2) 2 cups flour",
+    "•2 cups flour",        # bullet hugging the text
+])
+def test_list_markers_are_stripped_before_parsing(line):
+    got = units.parse_line(line)
+
+    assert got["qty"] == 2.0
+    assert got["unit"] == "cup"
+    assert got["rest"] == "flour"
+
+
+@pytest.mark.parametrize("line,qty,unit,rest", [
+    # A decimal must never be mistaken for a numbered list marker: the numbered
+    # form requires trailing whitespace precisely so this keeps working.
+    ("1.5 cups flour", 1.5, "cup", "flour"),
+    ("2 cups flour", 2.0, "cup", "flour"),
+    # A hyphenated food name is not a bullet either.
+    ("all-purpose flour", None, None, "all-purpose flour"),
+])
+def test_marker_stripping_does_not_eat_real_content(line, qty, unit, rest):
+    got = units.parse_line(line)
+
+    assert (got["qty"], got["unit"], got["rest"]) == (qty, unit, rest)
+
+
+def test_leading_bracket_no_longer_blocks_the_quantity():
+    """"(optional) 1 tbsp x" used to parse to nothing because the quantity match
+    is anchored. The bracket stays in the food text, where a cook reads it."""
+    got = units.parse_line("(optional) 1 tbsp chili flakes")
+
+    assert got["qty"] == 1.0
+    assert got["unit"] == "tbsp"
+    assert got["rest"] == "(optional) chili flakes"
+
+
+def test_a_bracket_with_no_quantity_after_it_is_left_alone():
+    """No silent rewriting when looking past the bracket doesn't actually help."""
+    line = "(about 2 cups) chopped kale"
+
+    assert units.parse_line(line) == {
+        "qty": None, "unit": None, "rest": line, "range_hi": None,
+    }
+
+
+@pytest.mark.parametrize("line,hi", [
+    ("2-3 cloves garlic", 3.0),
+    ("2 to 3 tbsp olive oil", 3.0),
+    ("1–2 cups stock", 2.0),        # en dash
+    ("2 cups flour", None),         # not a range
+])
+def test_parse_line_reports_the_range_high_end(line, hi):
+    assert units.parse_line(line)["range_hi"] == hi
+
+
+def test_parse_line_keeps_the_low_end_authoritative_for_a_range():
+    """range_hi is additive: the structured quantity every other consumer reads
+    (shopping consolidation, weight conversion, MCP/HA) is unchanged."""
+    got = units.parse_line("2-3 cloves garlic")
+
+    assert got["qty"] == 2.0
+    assert got["unit"] == "clove"
+    assert got["rest"] == "garlic"
+
+
+@pytest.mark.parametrize("line,factor,expected", [
+    # Both ends scale. This used to silently destroy the high end: the regex
+    # consumed "-3" and never captured it, so "2-3 cloves" doubled to "4 cloves".
+    ("2-3 cloves garlic", 2, "4-6 cloves garlic"),
+    ("2 to 3 tbsp olive oil", 2, "4-6 tbsp olive oil"),
+    ("1-2 cups stock", 0.5, "1/2-1 cup stock"),
+])
+def test_scale_line_keeps_both_ends_of_a_range(line, factor, expected):
+    assert units.scale_line(line, factor) == expected
+
+
+def test_scale_line_keeps_the_approximator():
+    """A scaled amount is still approximate. Dropping "About" made the new line
+    read more precise than the recipe actually is."""
+    assert units.scale_line("About 2 cups milk", 2) == "About 4 cups milk"
+
+
+def test_scale_line_drops_a_list_marker_rather_than_stranding_it():
+    assert units.scale_line("- 2 cups flour", 2) == "4 cups flour"

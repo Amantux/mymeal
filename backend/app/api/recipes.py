@@ -688,12 +688,20 @@ def parse_ingredient_lines():
         if not display:
             continue
         p = units.parse_line(display)
+        # A range keeps only its low end as the structured quantity. Say so in
+        # the note instead of dropping it: "2-3 cloves" became a flat 2 with the
+        # "3" gone for good, and nothing in the row hinted that it ever existed.
+        # The phrasing is deliberately readable, since the note is appended to
+        # the ingredient's display text and the user can edit or clear it.
+        note = ""
+        if p.get("range_hi") is not None:
+            note = f"or up to {units.format_qty(p['range_hi'])}"
         rows.append({
             "display": display,
             "quantity": p["qty"] or 0,
             "unit": p["unit"] or "",
             "food": p["rest"],
-            "note": "",
+            "note": note,
         })
     return jsonify({"ingredients": rows})
 

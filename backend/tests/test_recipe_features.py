@@ -126,7 +126,9 @@ def test_recipe_scaling_and_weight_view(auth_client):
 
     scaled = auth_client.get(f"/api/v1/recipes/{rid}?servings=4").get_json()
     assert scaled["scaledServings"] == 4
-    assert [i["display"] for i in scaled["ingredients"]] == ["4 cup flour", "4 eggs"]
+    # The unit agrees with the scaled quantity: this asserted "4 cup flour" for
+    # as long as scale_line emitted the singular canonical unit.
+    assert [i["display"] for i in scaled["ingredients"]] == ["4 cups flour", "4 eggs"]
 
     weight = auth_client.get(f"/api/v1/recipes/{rid}?units=weight").get_json()
     dishes = [i["display"] for i in weight["ingredients"]]

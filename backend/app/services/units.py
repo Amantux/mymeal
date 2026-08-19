@@ -161,19 +161,43 @@ _NUM = (r"\d+\s*[" + "".join(_UNICODE_FRACTIONS) + r"]"      # "1½" / "1 ½"
         r"|[" + "".join(_UNICODE_FRACTIONS) + r"]")
 _QTY_RE = re.compile(
     r"^\s*(?P<qty>" + _NUM + r")"
-    # Optional range ("2-3", "2 to 3") — we keep the low end and ignore the rest.
-    r"(?:\s*(?:-|–|to)\s*(?:" + _NUM + r"))?"
+    # Optional range ("2-3", "2 to 3"). The low end stays authoritative for the
+    # structured quantity; the high end is captured so display text can keep it
+    # instead of silently dropping the "-3".
+    r"(?:\s*(?:-|–|to)\s*(?P<qty_hi>" + _NUM + r"))?"
     r"\s*(?P<rest>.*)$",
     re.IGNORECASE,
 )
 
+# One leading bullet or numbered marker, as pasted straight out of a blog or a
+# YouTube description. Symbol bullets may hug the text; a numbered marker must
+# be followed by whitespace so "1.5 cups" is never mistaken for item 1.
+_LIST_MARKER_RE = re.compile(r"^\s*(?:[-–—*•▪▢‣◦·]\s*|\d+[.)]\s+)")
 
-def _strip_approximator(s: str) -> str:
+
+def _strip_list_marker(s: str) -> str:
+    """Drop one leading list marker. A bullet carries no information and, left
+    in place, blocked the anchored quantity match and then landed in the food
+    name ("- 2 cups flour" -> food "- 2 cups flour")."""
+    return _LIST_MARKER_RE.sub("", s, count=1)
+
+
+def _split_approximator(s: str) -> tuple[str, str]:
+    """(approximator, remainder) — e.g. ("About", "2 cups milk").
+
+    Returned rather than just discarded so a caller that REWRITES the line
+    (scale_line) can put it back: a scaled amount is still approximate, and
+    dropping the hedge made the new line read more precise than it is.
+    """
     low = s.lower()
     for word in _APPROXIMATORS:
         if low.startswith(word + " "):
-            return s[len(word):].lstrip()
-    return s
+            return s[:len(word)], s[len(word):].lstrip()
+    return "", s
+
+
+def _strip_approximator(s: str) -> str:
+    return _split_approximator(s)[1]
 
 
 def _match_unit(rest: str):
@@ -199,15 +223,34 @@ def _match_unit(rest: str):
 
 
 def parse_line(text: str) -> dict:
-    """Parse a free-text ingredient line into {qty, unit(canonical), rest}.
-    Any part may be None/'' when it isn't present. Never raises."""
-    s = _strip_approximator((text or "").strip())
+    """Parse a free-text ingredient line into
+    {qty, unit(canonical), rest, range_hi}. Any part may be None/'' when it
+    isn't present. Never raises.
+
+    ``range_hi`` is the high end of "2-3 cloves" — the low end remains the
+    authoritative structured quantity, so every existing consumer is unaffected;
+    it exists so display text can keep the range instead of losing it.
+    """
+    s = _strip_approximator(_strip_list_marker((text or "").strip()))
     m = _QTY_RE.match(s)
     if not m or not m.group("qty"):
-        return {"qty": None, "unit": None, "rest": s}
+        # A leading "(optional)" / "(or more to taste)" bracket defeats the
+        # anchored quantity match. Look past ONE such group; if the remainder
+        # carries a quantity, keep the bracket in the food text, where a cook
+        # expects to read it (the same convention _match_unit already uses for
+        # a mid-line pack size).
+        lead = _LEADING_PAREN_RE.match(s)
+        if lead:
+            inner = parse_line(s[lead.end():])
+            if inner["qty"] is not None:
+                bracket = s[:lead.end()].strip()
+                inner["rest"] = f"{bracket} {inner['rest']}".strip()
+                return inner
+        return {"qty": None, "unit": None, "rest": s, "range_hi": None}
     qty = _parse_number(m.group("qty"))
     unit, rest = _match_unit(m.group("rest").strip())
-    return {"qty": qty, "unit": unit, "rest": rest}
+    hi = _parse_number(m.group("qty_hi")) if m.group("qty_hi") else None
+    return {"qty": qty, "unit": unit, "rest": rest, "range_hi": hi}
 
 
 # Canonical unit -> plural spelling, for rendering a quantity back as text a
@@ -275,11 +318,24 @@ def scale_line(text: str, factor: float) -> str:
         return text
     scaled = parsed["qty"] * factor
     new_qty = format_qty(scaled)
+    # Scale BOTH ends of a range. Only the display text grows a range here — the
+    # structured quantity stays the low end (see parse_line), so shopping
+    # consolidation, weight conversion and the MCP/HA surfaces are untouched.
+    # Previously "2-3 cloves" doubled to "4 cloves": the "-3" was consumed by the
+    # regex and silently destroyed.
+    hi = parsed.get("range_hi")
+    if hi is not None:
+        new_qty = f"{new_qty}-{format_qty(hi * factor)}"
     # Pluralize for the NEW quantity, not the old one — doubling "1 cup" has to
-    # read "2 cups", and halving "2 cups" has to read back down to "1 cup".
-    unit_text = pluralize_unit(parsed["unit"], scaled)
+    # read "2 cups", and halving "2 cups" has to read back down to "1 cup". A
+    # range is plural whenever its high end is.
+    unit_text = pluralize_unit(parsed["unit"], hi * factor if hi is not None else scaled)
     tail = " ".join(p for p in (unit_text, parsed["rest"]) if p)
-    return f"{new_qty} {tail}".strip()
+    # Keep a leading "About"/"Roughly": the amount is still approximate after
+    # scaling, and dropping the hedge overstated the precision of the new line.
+    approx, _ = _split_approximator(_strip_list_marker((text or "").strip()))
+    head = f"{approx} " if approx else ""
+    return f"{head}{new_qty} {tail}".strip()
 
 
 _CANONICAL_DENSITIES: dict[str, float] | None = None

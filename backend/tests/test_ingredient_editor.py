@@ -22,6 +22,37 @@ def test_parse_lines_requires_lines(auth_client):
     assert auth_client.post("/api/v1/recipes/parse", json={"lines": 5}).status_code == 422
 
 
+def test_parse_lines_handles_bulleted_paste(auth_client):
+    """A pasted blog list is usually bulleted, and the quantity match is anchored
+    at the start of the line — so these used to parse to quantity 0 with the
+    marker itself stuck in the food name."""
+    res = auth_client.post("/api/v1/recipes/parse", json={
+        "lines": ["- 2 cups flour", "• 1 tsp salt", "1. 3 eggs"]})
+    rows = res.get_json()["ingredients"]
+
+    assert [r["quantity"] for r in rows] == [2, 1, 3]
+    assert [r["food"] for r in rows] == ["flour", "salt", "eggs"]
+
+
+def test_parse_lines_surfaces_a_dropped_range_in_the_note(auth_client):
+    """Only the low end can be the structured quantity, but the high end must
+    not vanish without trace."""
+    res = auth_client.post("/api/v1/recipes/parse", json={
+        "lines": ["2-3 cloves garlic", "2 cups flour"]})
+    rows = res.get_json()["ingredients"]
+
+    assert rows[0]["quantity"] == 2
+    assert rows[0]["note"] == "or up to 3"
+    assert rows[1]["note"] == ""      # no range → no note invented
+
+
+def test_parse_lines_keeps_the_original_line_for_review(auth_client):
+    """display is the user's ground truth for spotting a bad parse."""
+    res = auth_client.post("/api/v1/recipes/parse", json={"lines": ["- 2 cups flour"]})
+
+    assert res.get_json()["ingredients"][0]["display"] == "- 2 cups flour"
+
+
 def test_weight_view_annotates_in_parens_without_mutating(auth_client):
     rid = auth_client.post("/api/v1/recipes", json={
         "name": "Bread", "servings": 2,
