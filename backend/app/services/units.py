@@ -210,6 +210,46 @@ def parse_line(text: str) -> dict:
     return {"qty": qty, "unit": unit, "rest": rest}
 
 
+# Canonical unit -> plural spelling, for rendering a quantity back as text a
+# cook would actually write. canonical_unit() deliberately collapses every
+# spelling to ONE singular key ("cups" -> "cup"), which is right for arithmetic
+# and wrong for display the moment a quantity moves: "4 cup flour".
+#
+# Abbreviations (tsp, tbsp, g, kg, ml, l, oz, lb, fl oz, cc) are deliberately
+# ABSENT — "4 tsps" is not how anyone writes it — so anything not listed here
+# is returned unchanged. Only whole words pluralize.
+_PLURALS = {
+    # volume
+    "cup": "cups", "pint": "pints", "quart": "quarts", "gallon": "gallons",
+    "fluid ounce": "fluid ounces",
+    # weight
+    "gram": "grams", "kilogram": "kilograms", "ounce": "ounces", "pound": "pounds",
+    # counts (all of _COUNT_UNITS; -es where the singular ends in ch/sh/s/x/z)
+    "pinch": "pinches", "dash": "dashes", "handful": "handfuls",
+    "clove": "cloves", "slice": "slices", "can": "cans", "tin": "tins",
+    "package": "packages", "stick": "sticks", "sprig": "sprigs",
+    "bunch": "bunches", "head": "heads", "jar": "jars", "bottle": "bottles",
+    "packet": "packets",
+}
+
+
+def pluralize_unit(unit: str | None, qty: float | None) -> str:
+    """Render a canonical unit for display beside ``qty``.
+
+    Plural only above 1. Recipe English keeps the singular for fractions —
+    "1/2 cup flour", "3/4 teaspoon salt" — so pluralizing on "anything but
+    exactly 1" would be wrong in the direction people notice most. Whole words
+    pluralize; abbreviations are never touched. Never raises — an unknown unit
+    is returned as given.
+    """
+    u = (unit or "").strip()
+    if not u or qty is None:
+        return u
+    if qty <= 1:
+        return u
+    return _PLURALS.get(u, u)
+
+
 def format_qty(value: float) -> str:
     """Render a quantity for display: nearest common fraction for small values,
     otherwise a tidy decimal."""
@@ -233,8 +273,12 @@ def scale_line(text: str, factor: float) -> str:
     parsed = parse_line(text)
     if parsed["qty"] is None:
         return text
-    new_qty = format_qty(parsed["qty"] * factor)
-    tail = " ".join(p for p in (parsed["unit"], parsed["rest"]) if p)
+    scaled = parsed["qty"] * factor
+    new_qty = format_qty(scaled)
+    # Pluralize for the NEW quantity, not the old one — doubling "1 cup" has to
+    # read "2 cups", and halving "2 cups" has to read back down to "1 cup".
+    unit_text = pluralize_unit(parsed["unit"], scaled)
+    tail = " ".join(p for p in (unit_text, parsed["rest"]) if p)
     return f"{new_qty} {tail}".strip()
 
 

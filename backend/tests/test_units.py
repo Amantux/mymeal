@@ -28,14 +28,44 @@ def test_parse_line(line, qty, unit, rest):
 
 
 @pytest.mark.parametrize("line,factor,expected", [
-    ("2 cups flour", 2, "4 cup flour"),
-    ("1/2 tsp salt", 3, "1 1/2 tsp salt"),
+    # Word units agree with the SCALED quantity, not the original: this used to
+    # read "4 cup flour" for every normally-written recipe.
+    ("2 cups flour", 2, "4 cups flour"),
+    ("1 cup flour", 2, "2 cups flour"),
+    ("2 cups flour", 0.5, "1 cup flour"),       # back down to the singular
+    ("1/2 tsp salt", 3, "1 1/2 tsp salt"),      # abbreviation: never pluralized
+    ("3 tablespoons oil", 2, "6 tbsp oil"),     # canonicalizes TO an abbreviation
     ("200 g sugar", 0.5, "100 g sugar"),
-    ("salt to taste", 4, "salt to taste"),   # no quantity → unchanged
-    ("3 eggs", 2, "6 eggs"),
+    ("2 cloves garlic", 2, "4 cloves garlic"),
+    ("1 clove garlic", 3, "3 cloves garlic"),
+    ("2 pinches salt", 0.5, "1 pinch salt"),    # -es plural, singularized
+    ("salt to taste", 4, "salt to taste"),      # no quantity → unchanged
+    ("3 eggs", 2, "6 eggs"),                    # no unit → nothing to pluralize
 ])
 def test_scale_line(line, factor, expected):
     assert units.scale_line(line, factor) == expected
+
+
+@pytest.mark.parametrize("unit,qty,expected", [
+    ("cup", 1, "cup"),
+    ("cup", 2, "cups"),
+    # Recipe English: fractions under 1 keep the singular ("1/2 cup flour"),
+    # and so does 1.5's whole part being 1 — only above 1 goes plural.
+    ("cup", 0.5, "cup"),
+    ("cup", 0.75, "cup"),
+    ("cup", 1.5, "cups"),
+    ("clove", 4, "cloves"),
+    ("bunch", 2, "bunches"),
+    ("dash", 3, "dashes"),
+    ("tsp", 4, "tsp"),          # abbreviations stay put
+    ("g", 200, "g"),
+    ("fl oz", 8, "fl oz"),
+    ("", 2, ""),
+    (None, 2, ""),
+    ("cup", None, "cup"),       # unknown quantity → don't guess
+])
+def test_pluralize_unit(unit, qty, expected):
+    assert units.pluralize_unit(unit, qty) == expected
 
 
 def test_to_grams_weight_and_volume_with_density():
