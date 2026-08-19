@@ -89,7 +89,15 @@ onUnmounted(() => {
     <div class="cook-progress" v-if="total"><span :style="{ width: `${((i + 1) / total) * 100}%` }"></span></div>
 
     <div v-if="showIngredients" class="cook-ings card">
-      <ul><li v-for="ing in recipe.ingredients" :key="ing.id">{{ ing.display }}</li></ul>
+      <!-- Same amount/food split as the recipe page. This is the peek you open
+           mid-step with a wet hand to re-check one number, so it's the surface
+           that benefits most from the amount being its own scannable column. -->
+      <ul class="cook-ing-list">
+        <li v-for="ing in recipe.ingredients" :key="ing.id">
+          <span class="ci-amt tnum">{{ [ing.amountText, ing.unitText].filter(Boolean).join(' ') }}</span>
+          <span class="ci-food">{{ ing.restText ?? ing.display }}</span>
+        </li>
+      </ul>
     </div>
 
     <main class="cook-step">
@@ -114,7 +122,16 @@ onUnmounted(() => {
 .cook-progress { height: 6px; background: var(--surface-2); border-radius: 999px; overflow: hidden; margin: 12px 0; }
 .cook-progress span { display: block; height: 100%; background: var(--accent); transition: width 0.2s; }
 .cook-ings { max-height: 34vh; overflow: auto; margin-bottom: 12px; }
-.cook-ings ul { margin: 0; padding-left: 20px; }
+.cook-ing-list { list-style: none; margin: 0; padding: 0; }
+.cook-ing-list li {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 7px 0; border-bottom: 1px solid var(--border);
+}
+.cook-ing-list li:last-child { border-bottom: 0; }
+/* Sized to content, not a fixed track: cook mode is phone-first and full of
+   scaled fractions, which a fixed column would wrap. */
+.ci-amt { flex: 0 0 auto; min-width: 5ch; font-weight: 650; white-space: nowrap; }
+.ci-food { min-width: 0; }
 .cook-step { flex: 1; display: grid; place-items: center; text-align: center; overflow: auto; }
 .step-text { font-size: clamp(1.4rem, 4.5vw, 2.4rem); line-height: 1.4; max-width: 24ch; font-weight: 500; }
 .cook-nav { display: flex; gap: 12px; }
