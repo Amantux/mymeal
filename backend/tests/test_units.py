@@ -152,6 +152,7 @@ def test_parsing_never_rewrites_the_humans_line():
     line = "About 2 cups milk"
 
     assert units.parse_line(line)["rest"] == "milk"
+    assert units.parse_line(line)["prefix"] == "About"   # reported, not dropped
     assert units.scale_line(line, 1) is not None   # never raises on the original
 
 
@@ -197,12 +198,15 @@ def test_marker_stripping_does_not_eat_real_content(line, qty, unit, rest):
 
 def test_leading_bracket_no_longer_blocks_the_quantity():
     """"(optional) 1 tbsp x" used to parse to nothing because the quantity match
-    is anchored. The bracket stays in the food text, where a cook reads it."""
+    is anchored. The bracket is reported as a PREFIX, not folded into the food:
+    a caller rewriting the line has to put it back in front, or scaling emits
+    "2 tbsp (optional) chili flakes" — words in an order nobody wrote."""
     got = units.parse_line("(optional) 1 tbsp chili flakes")
 
     assert got["qty"] == 1.0
     assert got["unit"] == "tbsp"
-    assert got["rest"] == "(optional) chili flakes"
+    assert got["rest"] == "chili flakes"
+    assert got["prefix"] == "(optional)"
 
 
 def test_a_bracket_with_no_quantity_after_it_is_left_alone():
@@ -210,8 +214,71 @@ def test_a_bracket_with_no_quantity_after_it_is_left_alone():
     line = "(about 2 cups) chopped kale"
 
     assert units.parse_line(line) == {
-        "qty": None, "unit": None, "rest": line, "range_hi": None,
+        "qty": None, "unit": None, "rest": line, "range_hi": None, "prefix": "",
     }
+
+
+@pytest.mark.parametrize("line,qty,expected", [
+    # THE case that silently deleted the user's number: a row can legitimately
+    # store quantity=0 next to a numeric display (the AI structuring path writes
+    # exactly that, and a legacy NULL looks the same). Deriving the amount from
+    # `quantity` while stripping it from the text independently rendered
+    # "cup | flour" — the "2" gone from the page.
+    ("2 cups flour", 0, ("2", "cups", "flour")),
+    ("2 cups flour", None, ("2", "cups", "flour")),
+    ("2 cups flour", 2, ("2", "cups", "flour")),
+    # The structured quantity wins when it has one (that's what scaling updates).
+    ("1 cup milk", 1.5, ("1 1/2", "cups", "milk")),
+    # No leading amount -> nothing is lifted out, so nothing can go missing.
+    ("Juice of 1 lemon", 1, ("", "", "Juice of 1 lemon")),
+    ("Salt to taste", 0, ("", "", "Salt to taste")),
+    ("a good knob of butter", 0, ("", "", "a good knob of butter")),
+    # Text in FRONT of the amount can't sit in a numeric column and can't move
+    # behind it without garbling the line, so the row stays whole.
+    ("About 2 cups milk", 2, ("", "", "About 2 cups milk")),
+    ("(optional) 1 tbsp chili flakes", 1, ("", "", "(optional) 1 tbsp chili flakes")),
+    # The weight annotation travels with the food text.
+    ("1 cup flour (125 g)", 1, ("1", "cup", "flour (125 g)")),
+    # A raw float never reaches the reader.
+    ("2/3 cup granulated sugar", 0.6667, ("2/3", "cup", "granulated sugar")),
+])
+def test_split_amount_is_lossless(line, qty, expected):
+    assert units.split_amount(line, qty) == expected
+
+
+def test_split_amount_never_strips_without_showing():
+    """The invariant: if the amount was removed from the text, it MUST appear in
+    the amount column. Checked over every shape above rather than case by case."""
+    for line in ["2 cups flour", "1 1/2 lbs pork", "2-3 cloves garlic", "3 eggs",
+                 "Salt to taste", "About 2 cups milk", "1 cup flour (125 g)"]:
+        amount, unit, rest = units.split_amount(line, 0)
+        stripped = rest != line
+        assert bool(amount) == stripped, f"{line!r} -> {(amount, unit, rest)!r}"
+
+
+@pytest.mark.parametrize("line", [
+    # A leading asterisk on an ingredient is a FOOTNOTE reference; stripping it
+    # orphans the footnote. Only a bullet followed by whitespace is a bullet.
+    "*2 tbsp cornstarch",
+    "-1 cup cream",
+])
+def test_a_marker_hugging_the_text_is_not_treated_as_a_bullet(line):
+    assert units.parse_line(line)["rest"] == line
+    assert units.scale_line(line, 2) == line
+
+
+def test_scale_line_puts_a_leading_bracket_back_in_front():
+    """It used to land in the middle of the ingredient: "2 tbsp (optional) chili
+    flakes" — text the user never wrote."""
+    assert units.scale_line("(optional) 1 tbsp chili flakes", 2) \
+        == "(optional) 2 tbsp chili flakes"
+
+
+def test_pluralize_agrees_with_the_rendered_quantity_not_the_raw_one():
+    """format_qty rounds, so 1.0003 prints "1"; comparing the unrounded value
+    printed "1 cups" — the exact defect the plural map was added to fix."""
+    assert units.format_qty(1.0003) == "1"
+    assert units.pluralize_unit("cup", round(1.0003, 2)) == "cup"
 
 
 @pytest.mark.parametrize("line,hi", [

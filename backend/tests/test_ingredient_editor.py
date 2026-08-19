@@ -34,16 +34,20 @@ def test_parse_lines_handles_bulleted_paste(auth_client):
     assert [r["food"] for r in rows] == ["flour", "salt", "eggs"]
 
 
-def test_parse_lines_surfaces_a_dropped_range_in_the_note(auth_client):
-    """Only the low end can be the structured quantity, but the high end must
-    not vanish without trace."""
+def test_parse_lines_does_not_put_a_range_in_the_note(auth_client):
+    """The high end must NOT be written into `note`. The editor bakes the note
+    into `display` on save and nothing then scales it, so doubling produced
+    "4 cloves garlic, or up to 3" — a range whose ceiling is below its floor.
+    `note` is preparation; the range survives in `display`, where scale_line can
+    actually scale it, and the row's original line is shown in the editor."""
     res = auth_client.post("/api/v1/recipes/parse", json={
         "lines": ["2-3 cloves garlic", "2 cups flour"]})
     rows = res.get_json()["ingredients"]
 
     assert rows[0]["quantity"] == 2
-    assert rows[0]["note"] == "or up to 3"
-    assert rows[1]["note"] == ""      # no range → no note invented
+    assert rows[0]["note"] == ""
+    assert rows[0]["display"] == "2-3 cloves garlic"   # the range is still here
+    assert rows[1]["note"] == ""
 
 
 def test_parse_lines_keeps_the_original_line_for_review(auth_client):
@@ -128,6 +132,40 @@ def test_ingredient_exposes_a_lossless_amount_split(auth_client):
     assert got[1]["amountText"] == "" and got[1]["restText"] == "a good knob of butter"
 
 
+def test_a_zero_quantity_beside_a_numeric_display_still_shows_its_number(auth_client):
+    """The amount is stripped from restText, so it MUST appear in amountText.
+    Deriving the two independently rendered "cup | flour" for this row — the
+    user's own "2" deleted from the read view. Reachable for real: the AI
+    structuring path writes quantity 0 while never rewriting display."""
+    rid = auth_client.post("/api/v1/recipes", json={
+        "name": "ZeroQty",
+        "ingredients": [{"display": "2 cups flour", "quantity": 0, "unit": "cup",
+                         "food": "flour"}],
+    }).get_json()["id"]
+
+    got = auth_client.get(f"/api/v1/recipes/{rid}").get_json()["ingredients"][0]
+
+    assert got["quantity"] == 0
+    assert got["amountText"] == "2"
+    assert got["restText"] == "flour"
+
+
+def test_a_line_whose_amount_is_not_leading_is_not_given_a_phantom_amount(auth_client):
+    """scale_line rightly declines to rewrite "Juice of 1 lemon" (no leading
+    quantity). Rebuilding the amount column from the scaled number anyway put a
+    "3" beside unchanged text, and marked the row as scaled."""
+    rid = auth_client.post("/api/v1/recipes", json={
+        "name": "Phantom", "servings": 1,
+        "ingredients": [{"display": "Juice of 1 lemon", "quantity": 1, "food": "lemon"}],
+    }).get_json()["id"]
+
+    got = auth_client.get(f"/api/v1/recipes/{rid}?servings=3").get_json()["ingredients"][0]
+
+    assert got["display"] == "Juice of 1 lemon"   # text untouched...
+    assert got["amountText"] == ""                # ...so no amount is invented
+    assert got["scaled"] is False                 # ...and it says so
+
+
 def test_scaled_view_keeps_the_amount_split_consistent(auth_client):
     """A stale amountText beside a scaled display would show two different
     numbers for one ingredient, and a raw float would leak on a fractional
@@ -149,3 +187,16 @@ def test_scaled_view_keeps_the_amount_split_consistent(auth_client):
     # The line with no parseable amount is flagged, so the reader can tell it
     # apart from the scaled ones instead of trusting it silently.
     assert got[1]["scaled"] is False
+
+
+def test_parse_lines_keeps_leading_text_in_the_food(auth_client):
+    """A row has no field for text that sits in front of the amount, so it must
+    land in the food rather than being dropped — the editor rebuilds `display`
+    from these fields, so anything missing here is gone on the first save."""
+    res = auth_client.post("/api/v1/recipes/parse", json={
+        "lines": ["(optional) 1 tbsp chili flakes"]})
+    row = res.get_json()["ingredients"][0]
+
+    assert row["quantity"] == 1
+    assert row["unit"] == "tbsp"
+    assert row["food"] == "(optional) chili flakes"

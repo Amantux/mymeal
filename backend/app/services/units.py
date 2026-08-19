@@ -170,9 +170,15 @@ _QTY_RE = re.compile(
 )
 
 # One leading bullet or numbered marker, as pasted straight out of a blog or a
-# YouTube description. Symbol bullets may hug the text; a numbered marker must
-# be followed by whitespace so "1.5 cups" is never mistaken for item 1.
-_LIST_MARKER_RE = re.compile(r"^\s*(?:[-–—*•▪▢‣◦·]\s*|\d+[.)]\s+)")
+# YouTube description.
+#
+# Unambiguous bullet glyphs may hug the text ("•2 cups"). Characters that carry
+# meaning inside an ingredient line must be separated by whitespace:
+#   * "*2 tbsp cornstarch" is a FOOTNOTE reference, and stripping it orphans the
+#     footnote — only "* 2 tbsp" is a bullet.
+#   - a hyphen/dash can begin a compound or a negative, so likewise.
+#   N. must be followed by space, or "1.5 cups" reads as list item 1.
+_LIST_MARKER_RE = re.compile(r"^\s*(?:[•▪▢‣◦·]\s*|[-–—*]\s+|\d+[.)]\s+)")
 
 
 def _strip_list_marker(s: str) -> str:
@@ -224,33 +230,41 @@ def _match_unit(rest: str):
 
 def parse_line(text: str) -> dict:
     """Parse a free-text ingredient line into
-    {qty, unit(canonical), rest, range_hi}. Any part may be None/'' when it
-    isn't present. Never raises.
+    {qty, unit(canonical), rest, range_hi, prefix}. Any part may be None/''
+    when it isn't present. Never raises.
 
     ``range_hi`` is the high end of "2-3 cloves" — the low end remains the
     authoritative structured quantity, so every existing consumer is unaffected;
     it exists so display text can keep the range instead of losing it.
+
+    ``prefix`` is leading text that sat BEFORE the quantity and was lifted out to
+    reach it (an approximator, an "(optional)" bracket). A caller that rewrites
+    the line puts it back at the FRONT; appending it to ``rest`` instead moved it
+    into the middle of the ingredient ("2 tbsp (optional) chili flakes").
     """
-    s = _strip_approximator(_strip_list_marker((text or "").strip()))
-    m = _QTY_RE.match(s)
+    raw = _strip_list_marker((text or "").strip())
+    approx, body = _split_approximator(raw)
+    m = _QTY_RE.match(body)
     if not m or not m.group("qty"):
         # A leading "(optional)" / "(or more to taste)" bracket defeats the
         # anchored quantity match. Look past ONE such group; if the remainder
-        # carries a quantity, keep the bracket in the food text, where a cook
-        # expects to read it (the same convention _match_unit already uses for
-        # a mid-line pack size).
-        lead = _LEADING_PAREN_RE.match(s)
+        # carries a quantity, keep the bracket as a prefix.
+        lead = _LEADING_PAREN_RE.match(body)
         if lead:
-            inner = parse_line(s[lead.end():])
+            inner = parse_line(body[lead.end():])
             if inner["qty"] is not None:
-                bracket = s[:lead.end()].strip()
-                inner["rest"] = f"{bracket} {inner['rest']}".strip()
+                bracket = body[:lead.end()].strip()
+                inner["prefix"] = " ".join(
+                    p for p in (approx, bracket, inner["prefix"]) if p)
                 return inner
-        return {"qty": None, "unit": None, "rest": s, "range_hi": None}
+        # Nothing was lifted out, so nothing needs restoring: return the line
+        # with only the bullet gone. Stripping the approximator here would drop
+        # "About" with no prefix to carry it back.
+        return {"qty": None, "unit": None, "rest": raw, "range_hi": None, "prefix": ""}
     qty = _parse_number(m.group("qty"))
     unit, rest = _match_unit(m.group("rest").strip())
     hi = _parse_number(m.group("qty_hi")) if m.group("qty_hi") else None
-    return {"qty": qty, "unit": unit, "rest": rest, "range_hi": hi}
+    return {"qty": qty, "unit": unit, "rest": rest, "range_hi": hi, "prefix": approx}
 
 
 # Canonical unit -> plural spelling, for rendering a quantity back as text a
@@ -308,6 +322,36 @@ def format_qty(value: float) -> str:
     return str(int(rounded)) if rounded == int(rounded) else f"{rounded:g}"
 
 
+def split_amount(display: str, quantity: float | None = None) -> tuple[str, str, str]:
+    """Split an ingredient line into ``(amount, unit, rest)`` for a two-column
+    display. Lossless: the three parts together always account for every word of
+    ``display``, so a reader never sees less than was typed.
+
+    ONE decision drives both halves, deliberately. Deriving the amount from the
+    stored ``quantity`` while stripping it from the text independently meant a row
+    holding ``quantity=0`` next to a numeric display ("2 cups flour" — exactly
+    what the AI structuring path writes, and what a legacy NULL looks like) had
+    its amount removed from the text and blanked in the column: the user's own
+    number disappeared from the page.
+    """
+    display = display or ""
+    p = parse_line(display)
+    if p["qty"] is None or p["prefix"]:
+        # No leading amount to lift out — or text sits IN FRONT of it ("About 2
+        # cups milk", "(optional) 1 tbsp x"). A prefix can't go in a numeric
+        # column and can't move behind the amount without garbling the line
+        # ("2 cups About milk"), so leave the whole line as one string. It reads
+        # as an unstructured row, which is honest, rather than reordered.
+        return "", "", display
+    # There IS a leading amount, and `rest` has had it removed, so it MUST be
+    # rendered. Prefer the structured quantity (it's what scaling updates) but
+    # fall back to the parsed one rather than showing nothing.
+    qty = quantity if quantity else p["qty"]
+    # The unit comes from the TEXT, not the row: `rest` had exactly that word
+    # removed, so echoing anything else would inject or drop a word.
+    return format_qty(qty), pluralize_unit(p["unit"], round(qty, 2)), p["rest"]
+
+
 def scale_line(text: str, factor: float) -> str:
     """Return the ingredient line with its leading quantity multiplied by
     ``factor``. Lines with no parseable quantity are returned unchanged."""
@@ -326,15 +370,16 @@ def scale_line(text: str, factor: float) -> str:
     hi = parsed.get("range_hi")
     if hi is not None:
         new_qty = f"{new_qty}-{format_qty(hi * factor)}"
-    # Pluralize for the NEW quantity, not the old one — doubling "1 cup" has to
-    # read "2 cups", and halving "2 cups" has to read back down to "1 cup". A
-    # range is plural whenever its high end is.
-    unit_text = pluralize_unit(parsed["unit"], hi * factor if hi is not None else scaled)
+    # Pluralize on the value we actually RENDER, not the raw product: format_qty
+    # rounds, so 1.0003 prints "1" and an exact comparison would print "1 cups".
+    # A range is plural whenever its high end is.
+    shown = round(hi * factor if hi is not None else scaled, 2)
+    unit_text = pluralize_unit(parsed["unit"], shown)
     tail = " ".join(p for p in (unit_text, parsed["rest"]) if p)
-    # Keep a leading "About"/"Roughly": the amount is still approximate after
-    # scaling, and dropping the hedge overstated the precision of the new line.
-    approx, _ = _split_approximator(_strip_list_marker((text or "").strip()))
-    head = f"{approx} " if approx else ""
+    # Restore whatever sat in front of the quantity — "About" (the amount is
+    # still approximate after scaling) or a leading "(optional)" bracket. Goes
+    # back at the FRONT, where the user wrote it.
+    head = f"{parsed['prefix']} " if parsed.get("prefix") else ""
     return f"{head}{new_qty} {tail}".strip()
 
 

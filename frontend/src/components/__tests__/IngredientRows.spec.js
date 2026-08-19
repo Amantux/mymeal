@@ -145,7 +145,47 @@ describe('IngredientRows keyboard + undo', () => {
     })
     expect(w.get('.src-txt').text()).toBe('- 2 cups flour')
 
-    await w.get('.src-x').trigger('click')
+    await w.get('.src-hide').trigger('click')
     expect(w.find('.src-txt').exists()).toBe(false)
+  })
+})
+
+describe('IngredientRows undo + reorder safety', () => {
+  test('a pending undo is dropped when the parent replaces the whole list', async () => {
+    // "Tidy up with AI" and loading a version snapshot both replace the list. A
+    // stale Undo there spliced an ingredient from the OLD list into what the
+    // user then saved — a silent write of data they never entered.
+    const w = mount(IngredientRows, {
+      props: { modelValue: [{ food: 'flour' }, { food: 'salt' }] },
+    })
+    await w.findAll('button[aria-label="Remove"]')[1].trigger('click')
+    expect(w.find('p.undo').exists()).toBe(true)
+
+    await w.setProps({ modelValue: [{ food: 'butter' }, { food: 'eggs' }] })
+
+    expect(w.find('p.undo').exists()).toBe(false)
+  })
+
+  test('Alt+Down walks a row more than one place', async () => {
+    const w = mountIt([{ food: 'a' }, { food: 'b' }, { food: 'c' }])
+    await flushPromises()
+    const order = () => lastEmit(w).map((r) => r.food)
+    const rows = () => w.findAll('.ing-row')
+
+    await rows()[0].trigger('keydown', { key: 'ArrowDown', altKey: true })
+    expect(order()).toEqual(['b', 'a', 'c'])
+    // Second press must keep moving the SAME row, not undo the first.
+    await rows()[1].trigger('keydown', { key: 'ArrowDown', altKey: true })
+    expect(order()).toEqual(['b', 'c', 'a'])
+  })
+
+  test('Ctrl+Alt+Arrow does not reorder', async () => {
+    // A desktop workspace shortcut (and used by some screen readers) must not
+    // rearrange the user's ingredients as a side effect.
+    const w = mountIt([{ food: 'a' }, { food: 'b' }])
+    await flushPromises()
+    await w.findAll('.ing-row')[1].trigger('keydown', { key: 'ArrowUp', altKey: true, ctrlKey: true })
+
+    expect(w.emitted('update:modelValue')).toBeUndefined()
   })
 })

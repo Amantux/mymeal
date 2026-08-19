@@ -38,6 +38,10 @@ watch(() => props.modelValue, (v) => {
   const incoming = JSON.stringify(v || [])
   if (incoming !== JSON.stringify(rows.value)) {
     rows.value = v && v.length ? v.map((r) => ({ ...blank(), ...r })) : [blank()]
+    // The pending undo belongs to a list that no longer exists. "Tidy up with AI"
+    // and loading a version snapshot both replace the whole list, and a stale
+    // Undo there spliced a foreign ingredient into what the user went on to save.
+    lastRemoved.value = null
   }
 })
 
@@ -101,6 +105,34 @@ function move(i, delta) {
   if (j < 0 || j >= rows.value.length) return
   const [r] = rows.value.splice(i, 1)
   rows.value.splice(j, 0, r)
+}
+
+// Rows are keyed by index, so the focused DOM node stays put while its CONTENTS
+// move away — a second Alt+Up therefore moved the neighbour back and undid the
+// first, capping the shortcut at a one-place nudge. Follow the row: re-focus the
+// same field in its new position.
+const rowRefs = ref([])
+function setRowRef(el, i) {
+  if (el) rowRefs.value[i] = el
+  else delete rowRefs.value[i]
+}
+async function moveFocused(i, delta) {
+  const j = i + delta
+  if (j < 0 || j >= rows.value.length) return
+  const label = document.activeElement?.getAttribute?.('aria-label')
+  move(i, delta)
+  await nextTick()
+  const rowEl = rowRefs.value[j]
+  const same = label && rowEl ? rowEl.querySelector(`[aria-label="${label}"]`) : null
+  ;(same || qtyRefs.value[j])?.focus()
+}
+function onRowKey(e, i) {
+  // Vue's `.alt` modifier does NOT require the other modifiers to be absent, so
+  // Ctrl+Alt+Up — a desktop workspace shortcut, and used by some screen readers
+  // — was silently reordering the user's ingredients as a side effect.
+  if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+  if (e.key === 'ArrowUp') { e.preventDefault(); moveFocused(i, -1) }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); moveFocused(i, 1) }
 }
 
 // --- Paste-a-list ---
@@ -186,9 +218,10 @@ function addComponent(r) {
     <div class="col-heads">
       <span>Qty</span><span>Unit</span><span>Ingredient</span><span>Note</span><span></span>
     </div>
-    <div v-for="(r, i) in rows" :key="i" class="ing-row" :class="{ 'is-ref': r.refRecipeId }"
+    <div v-for="(r, i) in rows" :key="i" :ref="(el) => setRowRef(el, i)"
+         class="ing-row" :class="{ 'is-ref': r.refRecipeId }"
          role="group" :aria-label="`Ingredient ${i + 1} of ${rows.length}`"
-         @keydown.alt.up.prevent="move(i, -1)" @keydown.alt.down.prevent="move(i, 1)">
+         @keydown="onRowKey($event, i)">
       <template v-if="r.refRecipeId">
         <div class="batch">
           <button type="button" class="bstep" aria-label="Fewer batches" @click="stepBatch(r, -0.5)">−</button>
@@ -226,10 +259,8 @@ function addComponent(r) {
            ground truth. Must come AFTER the controls: it spans every column, so
            in DOM order before them it pushes them onto a grid row of their own. -->
       <p v-if="r.sourceText" class="src">
-        <span class="src-lbl">pasted</span>
         <span class="src-txt">{{ r.sourceText }}</span>
-        <button type="button" class="src-x" aria-label="Hide the original line"
-                @click="r.sourceText = ''">✕</button>
+        <button type="button" class="src-hide" @click="r.sourceText = ''">Hide original</button>
       </p>
     </div>
 
@@ -238,7 +269,7 @@ function addComponent(r) {
       <button type="button" class="ghost sm" @click="undoRemove">Undo</button>
     </p>
 
-    <div class="row" style="gap:14px;margin-top:4px">
+    <div class="actions">
       <button type="button" class="ghost add" @click="add">＋ Add ingredient</button>
       <button type="button" class="ghost add" @click="openPicker">🔗 Add recipe as component</button>
       <span class="kbd-hint">Enter adds a row · Alt+↑/↓ moves one</span>
@@ -277,24 +308,25 @@ function addComponent(r) {
 .col-heads { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding: 0 2px; }
 .ing-row input { width: 100%; }
 
-/* The line the paste parser was handed, under the row it produced. */
+/* The line the paste parser was handed, under the row it produced. Margin is
+   asymmetric on purpose: it belongs to the row ABOVE it, so it must sit closer to
+   that row than to the next one. Sized at 0.85rem because the whole job is
+   comparing it against 16px inputs — 10-12px text can't do that. There's
+   deliberately no "PASTED" eyebrow: it repeated one constant word on every row
+   and encoded nothing per row. */
 .src {
-  grid-column: 1 / -1; display: flex; align-items: baseline; gap: 6px;
-  margin: 0 0 2px; font-size: 0.78rem; color: var(--muted);
-}
-.src-lbl {
-  flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.04em;
-  font-size: 0.66rem; padding: 1px 5px;
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  grid-column: 1 / -1; display: flex; align-items: baseline; gap: 8px;
+  margin: 0 0 12px; font-size: 0.85rem; color: var(--muted);
 }
 .src-txt { min-width: 0; overflow-wrap: anywhere; }
-/* Next to the text it dismisses, not shoved to the far right where it reads as
-   belonging to the row's own controls. */
-.src-x {
-  flex-shrink: 0; border: 0; background: transparent;
-  color: var(--muted); cursor: pointer; padding: 0 4px; font-size: 0.8rem;
+/* A WORD, not a ✕. The row's destructive Remove is also a ✕ a few hundred px
+   away on the same band — reusing the glyph for "hide a hint" put a benign and a
+   destructive action behind identical affordances. */
+.src-hide {
+  flex-shrink: 0; border: 0; background: transparent; padding: 0;
+  font: inherit; color: var(--muted); cursor: pointer; text-decoration: underline;
 }
-.src-x:hover { color: var(--text); }
+.src-hide:hover { color: var(--text); }
 
 .undo {
   display: flex; align-items: center; gap: 8px; margin: 4px 0 0;
@@ -326,10 +358,12 @@ function addComponent(r) {
 .ctl { display: flex; gap: 2px; justify-content: flex-start; }
 .icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; background: transparent; color: var(--muted); border-radius: 6px; cursor: pointer; }
 .icon svg { width: 16px; height: 16px; }
-.icon:hover:not(:disabled) { background: var(--surface-2, rgba(0, 0, 0, 0.06)); color: var(--text); }
+.icon:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
 .icon.rm:hover:not(:disabled) { color: var(--danger); }
 .icon:disabled { opacity: 0.25; cursor: default; }
-.add { align-self: flex-start; margin-top: 4px; }
+/* Wraps: at 390px the three labels ran past the card edge and were clipped. */
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 4px; }
+.add { align-self: flex-start; }
 
 .picker { margin-top: 8px; background: var(--surface-2, var(--surface)); }
 .picker-list { list-style: none; margin: 10px 0 0; padding: 0; max-height: 240px; overflow: auto; }
@@ -339,9 +373,13 @@ function addComponent(r) {
 
 @media (max-width: 620px) {
   .col-heads { display: none; }
-  .ing-row { grid-template-columns: 1fr 1fr auto; gap: 6px; }
+  .ing-row { grid-template-columns: 1fr 1fr auto; gap: 8px; }
   .ing-row .food, .ing-row .food-ref, .ing-row .note { grid-column: 1 / -1; }
   .ctl { grid-column: 3; grid-row: 1; justify-content: flex-end; }
-  .ing-row + .ing-row { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 6px; }
+  .ing-row + .ing-row { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 8px; }
+  /* Reorder/remove are 28px targets 2px apart on a phone. The read surface's
+     controls were raised for exactly this reason; the editor's were missed. */
+  .icon { width: 40px; height: 40px; }
+  .ctl { gap: 4px; }
 }
 </style>

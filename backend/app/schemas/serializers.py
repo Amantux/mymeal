@@ -89,15 +89,13 @@ def ingredient_out(ing):
         # format_qty turns it back into "2/3". Kept alongside `display` rather
         # than replacing it — `display` stays the source of truth and is still
         # what unstructured/legacy rows and the weight annotation rely on.
-        "amountText": units.format_qty(ing.quantity) if ing.quantity else "",
-        "unitText": units.pluralize_unit(ing.unit.name, ing.quantity) if ing.unit else "",
-        # `display` with its leading amount removed — the other half of the split,
-        # so the SPA can show a scannable amount column WITHOUT rebuilding the
-        # ingredient from food.name. That rebuild is lossy: food names are
-        # canonicalized on save ("granulated sugar" -> the "sugar" Food), so a
-        # reader would have seen less than they typed. Splitting the authoritative
-        # string instead is lossless by construction.
-        "restText": units.parse_line(ing.display or "")["rest"],
+        # A lossless split of `display` into a scannable amount column plus the
+        # rest, so the SPA never rebuilds the ingredient from food.name — that
+        # rebuild drops whatever was canonicalized away on save ("granulated
+        # sugar" -> the "sugar" Food). See units.split_amount for why one function
+        # has to decide both halves.
+        **dict(zip(("amountText", "unitText", "restText"),
+                   units.split_amount(ing.display, ing.quantity))),
         "note": ing.note,
         # The variety, split off the food. Separate from `note`, which is
         # preparation.

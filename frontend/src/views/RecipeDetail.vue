@@ -66,6 +66,11 @@ const isScaledView = computed(() =>
 function amountOf(ing) {
   return [ing.amountText, ing.unitText].filter(Boolean).join(' ')
 }
+// Counted once for the scale note rather than tagged per row: a row with no
+// amount already shows an empty amount column, so a per-row chip restated it
+// while stealing width from the ingredient text at phone size.
+const unscaledCount = computed(() => plainIngredients.value.filter((i) => i.scaled === false).length)
+function resetServings() { viewServings.value = recipe.value?.servings || null }
 
 // Split the ingredient into what you scan (the amount) and what you read (the
 // rest), losing nothing. `restText` is `display` minus its leading amount, so
@@ -76,14 +81,35 @@ function amountOf(ing) {
 // The note is peeled off only when the string demonstrably ends with it, so it
 // can be styled as the aside it is instead of being comma-spliced into the
 // ingredient's name. Anything we can't attribute stays inline, untouched.
-function splitRest(ing) {
-  const rest = ing.restText ?? ing.display ?? ''
+function splitOne(ing) {
+  let rest = ing.restText ?? ing.display ?? ''
   const note = (ing.note || '').trim()
-  if (note && rest.toLowerCase().endsWith(`, ${note.toLowerCase()}`)) {
-    return { food: rest.slice(0, rest.length - note.length - 2), note }
+  // Weight mode appends " (1191 g)" to the line. Hold it aside BEFORE testing for
+  // the note, or the test fails and the note silently reverts to being
+  // comma-spliced — on exactly the rows a scale user is reading. Only peeled in
+  // weight mode, so a food that genuinely ends in brackets is untouched otherwise.
+  let weight = ''
+  if (useWeight.value) {
+    const m = rest.match(/\s*(\([^()]*\))\s*$/)
+    if (m) {
+      weight = m[1]
+      rest = rest.slice(0, m.index)
+    }
   }
-  return { food: rest, note: '' }
+  // Compare the tail at its ORIGINAL length. Slicing by note.length after a
+  // toLowerCase() match is wrong for characters whose lowercase is longer
+  // ('İ' -> 2 chars), which shifted the cut and ate a letter of the food name.
+  const tail = rest.slice(-(note.length + 2))
+  if (note && tail.toLowerCase() === `, ${note.toLowerCase()}`) {
+    return { amount: amountOf(ing), food: rest.slice(0, rest.length - tail.length), note, weight }
+  }
+  return { amount: amountOf(ing), food: rest, note: '', weight }
 }
+// Mapped once per render rather than calling the splitter twice per row in the
+// template (once for the food, once for the note).
+const shownRows = computed(() => plainIngredients.value.map((ing) => ({
+  id: ing.id, ...splitOne(ing),
+})))
 
 async function refreshView() {
   const r = recipe.value
@@ -685,20 +711,26 @@ const imageSrc = computed(() =>
           </div>
         </div>
         <p v-if="isScaledView" class="muted scale-note">
-          Amounts scaled from {{ recipe.servings }} to {{ viewServings }} servings.
+          Amounts scaled from
+          <button type="button" class="reset-link" @click="resetServings">
+            {{ recipe.servings }}
+          </button>
+          to {{ viewServings }} servings.
+          <template v-if="unscaledCount">
+            {{ unscaledCount }} {{ unscaledCount === 1 ? 'item has' : 'items have' }}
+            no amount and {{ unscaledCount === 1 ? 'is' : 'are' }} unchanged.
+          </template>
         </p>
         <ul v-if="plainIngredients.length" class="ing-list">
           <!-- Two zones: the amount as its own tabular column you can run your
                eye down, then what to actually get out of the cupboard. Every row
                uses the same grid, including ones with no amount, so the food text
                keeps one left edge the whole way down the list. -->
-          <li v-for="ing in plainIngredients" :key="ing.id">
-            <span class="ing-amt tnum">{{ amountOf(ing) }}</span>
-            <span class="ing-food">{{ splitRest(ing).food
-              }}<span v-if="splitRest(ing).note" class="ing-note">{{ splitRest(ing).note }}</span></span>
-            <span v-if="ing.scaled === false" class="ing-unscaled" title="No amount to scale">
-              not scaled
-            </span>
+          <li v-for="row in shownRows" :key="row.id">
+            <span class="ing-amt tnum">{{ row.amount }}</span>
+            <span class="ing-food">{{ row.food
+              }}<span v-if="row.weight" class="ing-weight">{{ row.weight }}</span
+              ><span v-if="row.note" class="ing-note">· {{ row.note }}</span></span>
           </li>
         </ul>
         <p v-else-if="!componentIngredients.length" class="muted">No ingredients listed.</p>
@@ -902,47 +934,60 @@ const imageSrc = computed(() =>
 .ing-tools { display: flex; align-items: center; gap: 8px; }
 .ing-tools button { min-height: 40px; min-width: 40px; padding: 8px 14px; font-size: 0.9rem; }
 @media (max-width: 620px) { .ing-tools button { min-height: 44px; min-width: 44px; } }
-.ing-tools .active { background: var(--accent); color: #fff; border-color: var(--accent); }
+/* A pressed VIEW TOGGLE, not a primary action: filled with the accent it won the
+   squint test against every amount on the page, on a work surface, which is
+   exactly what the "accent only on the primary action" rule exists to prevent.
+   It also turned the ⚖️ glyph muddy, since emoji ignore currentColor. */
+.ing-tools .active {
+  background: var(--surface-2); border-color: var(--text); font-weight: 600;
+}
 
 /* The ingredient list is the one surface people read mid-cook, at arm's length,
    often on a phone. Two zones: a fixed tabular amount column your eye can run
    down, then the food. A row divider instead of a bullet, so scanning is done by
    the grid rather than by reading whole sentences. */
-.ing-list { list-style: none; margin: 0; padding: 0; }
-.ing-list li {
-  display: flex; align-items: baseline; gap: 12px;
-  padding: 7px 0; border-bottom: 1px solid var(--border);
+/* The GRID LIVES ON THE LIST, not on each row: the amount column then sizes once
+   to the widest amount in the recipe, so every food name shares one left edge at
+   EVERY viewport. A per-row flex basis can't do that — a fixed `ch` value is a
+   guess that wraps "1 1/6 cups" on a phone, and sizing per row abandons the
+   column exactly where it's needed most. `display: contents` makes each li's
+   spans direct grid items, which is why the row rule is drawn on the cells.
+   Capped width because a divider running the full card width past text that ends
+   at 40% reads as a table missing its columns. */
+/* Cells STRETCH (the grid default) rather than baseline-align: each cell draws
+   its own half of the row divider, so unequal heights left a stepped, broken rule
+   under any row whose food text wrapped. Stretching also puts the amount level
+   with the FIRST line of a wrapped ingredient, which is where you look for it. */
+.ing-list {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr);
+  /* No column-gap: the divider is drawn per cell, so a gap punched a visible
+     break in every rule. The spacing lives in the amount cell's padding. */
+  column-gap: 0;
+  list-style: none; margin: 0; padding: 0; max-width: 62ch;
 }
-.ing-list li:last-child { border-bottom: 0; }
-/* A FIXED basis, not min-width: the whole point is that every food name starts
-   at the same x so the list reads as two columns. tabular-nums keeps the digits
-   uniform, so this holds for "1 1/2 lb" and "4 cloves" alike; anything longer
-   wraps inside its own column rather than shunting the food text sideways. */
-.ing-amt { flex: 0 0 8.5ch; font-weight: 650; overflow-wrap: break-word; }
+.ing-list li { display: contents; }
+.ing-amt, .ing-food { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.ing-list li:last-child .ing-amt,
+.ing-list li:last-child .ing-food { border-bottom: 0; }
+/* Right-aligned so the ragged edge falls on the OUTSIDE. Left-aligned, a short
+   "1" sat a whole column away from its ingredient while "3 1/2 cups" touched
+   its own — the gap varied inside the pair that has to be read together. */
+.ing-amt { font-weight: 650; text-align: right; white-space: nowrap; padding-right: 12px; }
 .ing-food { min-width: 0; }
 /* Preparation reads as an aside, not as part of the ingredient's name — it used
-   to be comma-spliced straight into it. */
-.ing-note { color: var(--muted); }
-.ing-note::before { content: ' · '; }
-/* Sits directly after the text it qualifies, NOT pushed to the far right: the
-   right edge is where the chat FAB lives, and a tag that means "this number is
-   still the original" has to read as part of the line it belongs to. */
-.ing-unscaled {
-  flex: 0 0 auto; font-size: 0.75rem; color: var(--muted); white-space: nowrap;
-  border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0 6px;
+   to be comma-spliced straight into it. The separator is a real character, not
+   generated content, so copying a row yields readable text. */
+.ing-note { color: var(--muted); margin-left: 6px; }
+.ing-weight { color: var(--muted); margin-left: 6px; }
+.scale-note { font-size: 0.875rem; margin: 0 0 12px; }
+/* A one-word way back to the authored amounts, mid-cook, without stepping down
+   one serving at a time. */
+.reset-link {
+  border: 0; background: transparent; padding: 0; font: inherit; cursor: pointer;
+  color: var(--accent-text); font-weight: 600; text-decoration: underline;
 }
-.scale-note { font-size: 0.8rem; margin: 0 0 8px; }
 
-@media (max-width: 620px) {
-  /* Keep both zones on one line at phone width — the amount column is the whole
-     point of the layout, so it must not wrap away from its food. */
-  .ing-list li { gap: 10px; padding: 9px 0; }
-  /* Phone width can't afford a fixed column wide enough for a scaled fraction
-     ("1 1/6 cups"): reserving that much wraps it AND squeezes the food text. Let
-     the amount size to its content and never wrap — a slightly ragged left edge
-     reads far better than a two-line quantity. */
-  .ing-amt { flex: 0 0 auto; min-width: 5ch; white-space: nowrap; }
-}
+@media (max-width: 620px) { .ing-amt { padding-right: 10px; } }
 .ing-link { color: var(--accent-text); font-weight: 600; text-decoration: none; }
 .ing-link:hover { text-decoration: underline; }
 .components { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }

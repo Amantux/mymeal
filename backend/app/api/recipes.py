@@ -512,36 +512,31 @@ def _apply_view(out: dict, recipe: Recipe, args):
         from ..services import conversions
         learned = conversions.resolver(recipe.group_id)
     for ing in out.get("ingredients", []):
-        line = units.scale_line(ing.get("display", ""), factor)
+        original = ing.get("display", "")
+        line = units.scale_line(original, factor)
+        # Whether this line's amount actually MOVED — which is exactly "did
+        # scale_line rewrite the text", not "does the row have a number".
+        # Asking the latter marked "Juice of 1 lemon" as scaled: scale_line
+        # rightly declined to rewrite it (no leading quantity), so the text was
+        # unchanged while a phantom scaled amount was rendered beside it.
+        if factor != 1.0:
+            ing["scaled"] = line != original
         if to_weight:
             # Keep the original measure, append the weight in parentheses.
             line = units.annotate_weight(line, learned=learned)
         ing["display"] = line
-        # Re-split the rewritten line so the amount column and the food text stay
-        # consistent with it — including in the weight view, where the "(120 g)"
-        # annotation lives in `display` and must travel with the food text.
-        ing["restText"] = units.parse_line(line)["rest"]
         # Scale the STRUCTURED quantity by the same factor. Without this the
         # response carried a scaled string next to an unscaled number, and every
         # consumer that reads `quantity` (shopping list, MCP, HA, the SPA) used
         # the un-scaled one.
         if factor != 1.0 and isinstance(ing.get("quantity"), (int, float)):
             ing["quantity"] = round(ing["quantity"] * factor, 4)
-            # Rebuild the display-ready amount from the SCALED number. Without
-            # this the two disagree: the reader would see the pre-scale "2" in
-            # the quantity column beside a scaled "4 cups" line, and a raw
-            # 0.6667 would surface the moment a factor isn't a whole number.
-            ing["amountText"] = units.format_qty(ing["quantity"]) if ing["quantity"] else ""
-            if ing.get("unitText"):
-                ing["unitText"] = units.pluralize_unit(
-                    ing["unit"]["name"] if ing.get("unit") else "", ing["quantity"])
-        # Whether this line's amount actually moved. A line with no parseable
-        # quantity is returned byte-identical and sits in the same list as the
-        # scaled ones, so a mid-cook glance can't tell them apart — the reader
-        # has to be told which numbers are still the original recipe's.
-        if factor != 1.0:
-            ing["scaled"] = bool(ing.get("quantity")) or units.parse_line(
-                ing.get("display", ""))["qty"] is not None
+        # Re-split the REWRITTEN line, from the same function the serializer used,
+        # so the amount column can never disagree with the text beside it — a raw
+        # 0.6667 must never surface, and the weight view's "(120 g)" has to travel
+        # with the food text.
+        ing["amountText"], ing["unitText"], ing["restText"] = units.split_amount(
+            line, ing.get("quantity"))
 
 
 @bp.put("/recipes/<recipe_id>")
@@ -707,20 +702,25 @@ def parse_ingredient_lines():
         if not display:
             continue
         p = units.parse_line(display)
-        # A range keeps only its low end as the structured quantity. Say so in
-        # the note instead of dropping it: "2-3 cloves" became a flat 2 with the
-        # "3" gone for good, and nothing in the row hinted that it ever existed.
-        # The phrasing is deliberately readable, since the note is appended to
-        # the ingredient's display text and the user can edit or clear it.
-        note = ""
-        if p.get("range_hi") is not None:
-            note = f"or up to {units.format_qty(p['range_hi'])}"
+        # NOTE stays empty. Writing the range's high end here ("or up to 3")
+        # looked like it preserved information, but the editor bakes the note
+        # into `display` on save and nothing then scales it — so doubling
+        # "2-3 cloves garlic" produced "4 cloves garlic, or up to 3", a range
+        # whose ceiling is below its floor. `note` is also documented as
+        # preparation ("finely chopped"), which the AI tidy step relies on.
+        # The range survives where it can actually be scaled — inside `display`,
+        # handled by units.scale_line — and the row's original line is shown in
+        # the editor beside the parsed fields, so the drop is visible and fixable.
         rows.append({
             "display": display,
             "quantity": p["qty"] or 0,
             "unit": p["unit"] or "",
-            "food": p["rest"],
-            "note": note,
+            # Any leading text ("(optional)", "About") goes back into the food,
+            # where it's visible and editable. The row has nowhere else to keep
+            # it, and dropping it would lose a word the user typed the moment
+            # they save.
+            "food": " ".join(x for x in (p["prefix"], p["rest"]) if x),
+            "note": "",
         })
     return jsonify({"ingredients": rows})
 
