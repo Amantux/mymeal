@@ -11,7 +11,10 @@ const props = defineProps({
   placeholder: { type: String, default: '' },
   ariaLabel: { type: String, default: '' },
 })
-const emit = defineEmits(['update:modelValue'])
+// `enter` fires only when Enter ISN'T being used to pick a suggestion, so a
+// parent can treat it as "I've finished this field" (add the next row) without
+// stealing the key from the dropdown.
+const emit = defineEmits(['update:modelValue', 'enter'])
 
 const open = ref(false)
 const active = ref(-1)
@@ -46,7 +49,11 @@ function onKeydown(e) {
       e.preventDefault()
       set(active.value < filtered.value.length ? filtered.value[active.value] : val.value)
     } else {
+      // Nothing highlighted: the keypress was "done with this field", not
+      // "choose this". Close and hand it up rather than swallowing it.
       open.value = false
+      e.preventDefault()
+      emit('enter')
     }
   } else if (e.key === 'Escape') {
     open.value = false

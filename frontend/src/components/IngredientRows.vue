@@ -6,7 +6,7 @@
 // another recipe as a component (refRecipeId) — inserted via the recipe picker,
 // rendered as a read-only link. v-model is an array of
 // { quantity, unit, food, note, refRecipeId, refRecipeName } rows.
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch, onMounted, nextTick } from 'vue'
 import { api } from '../api'
 import { useUI } from '../stores/ui'
 import ComboBox from './ComboBox.vue'
@@ -22,8 +22,11 @@ function blank() {
   // `qualifier` (the variety: "Vietnamese" in "Vietnamese cinnamon") must be in
   // the blank row: rows are built as { ...blank(), ...r }, so a key missing here
   // is dropped from every row the parent hands in.
+  // `sourceText` is the line the paste parser was given. It's UI-only (the
+  // backend ignores unknown row keys) and exists so a wrong parse is visible
+  // against its ground truth instead of silently landing in the wrong column.
   return { quantity: '', unit: '', food: '', note: '', qualifier: '',
-           refRecipeId: '', refRecipeName: '' }
+           sourceText: '', refRecipeId: '', refRecipeName: '' }
 }
 const rows = ref(props.modelValue.length ? props.modelValue.map((r) => ({ ...blank(), ...r })) : [blank()])
 
@@ -54,9 +57,44 @@ function fmtBatch(q) {
 }
 
 function add() { rows.value.push(blank()) }
+
+// --- Keyboard flow -----------------------------------------------------------
+// Adding a row used to cost a mouse trip to the button below the list, which at
+// 30 rows is a long way from where you're typing. Enter on any field in a row
+// opens a fresh one directly beneath and puts the caret in its Quantity box, so
+// a whole list can be typed without leaving the keyboard.
+const qtyRefs = ref([])
+function setQtyRef(el, i) {
+  if (el) qtyRefs.value[i] = el
+  else delete qtyRefs.value[i]
+}
+async function addAfter(i) {
+  rows.value.splice(i + 1, 0, blank())
+  await nextTick()
+  qtyRefs.value[i + 1]?.focus()
+}
+
+// Removal keeps the row so it can be put back: this is a destructive click with
+// no confirm, one tab-stop away from the fields you're editing.
+const lastRemoved = ref(null)
 function remove(i) {
-  rows.value.splice(i, 1)
+  const [row] = rows.value.splice(i, 1)
+  lastRemoved.value = { row, index: i }
   if (!rows.value.length) rows.value.push(blank())
+}
+function undoRemove() {
+  if (!lastRemoved.value) return
+  const { row, index } = lastRemoved.value
+  // A blank row auto-added by remove() would otherwise be left stranded above
+  // the restored one.
+  const onlyBlank = rows.value.length === 1 && !rows.value[0].food
+    && !rows.value[0].quantity && !rows.value[0].refRecipeId
+  if (onlyBlank) rows.value = []
+  rows.value.splice(Math.min(index, rows.value.length), 0, row)
+  lastRemoved.value = null
+}
+function removedLabel(row) {
+  return row.refRecipeName || row.food || row.sourceText || 'ingredient'
 }
 function move(i, delta) {
   const j = i + delta
@@ -77,6 +115,9 @@ async function parsePaste() {
     const res = await api.post('/recipes/parse', { lines })
     const parsed = res.ingredients.map((r) => ({
       ...blank(), quantity: r.quantity || '', unit: r.unit || '', food: r.food || '',
+      // Carry the note (the parser puts a dropped range high end there) and the
+      // original line, both of which used to be discarded on arrival.
+      note: r.note || '', sourceText: r.display || '',
     }))
     const onlyBlank = rows.value.length === 1 && !rows.value[0].food && !rows.value[0].quantity
     rows.value = onlyBlank ? parsed : rows.value.concat(parsed)
@@ -145,7 +186,9 @@ function addComponent(r) {
     <div class="col-heads">
       <span>Qty</span><span>Unit</span><span>Ingredient</span><span>Note</span><span></span>
     </div>
-    <div v-for="(r, i) in rows" :key="i" class="ing-row" :class="{ 'is-ref': r.refRecipeId }">
+    <div v-for="(r, i) in rows" :key="i" class="ing-row" :class="{ 'is-ref': r.refRecipeId }"
+         role="group" :aria-label="`Ingredient ${i + 1} of ${rows.length}`"
+         @keydown.alt.up.prevent="move(i, -1)" @keydown.alt.down.prevent="move(i, 1)">
       <template v-if="r.refRecipeId">
         <div class="batch">
           <button type="button" class="bstep" aria-label="Fewer batches" @click="stepBatch(r, -0.5)">−</button>
@@ -158,11 +201,16 @@ function addComponent(r) {
         </div>
       </template>
       <template v-else>
-        <input v-model="r.quantity" class="qty" inputmode="decimal" placeholder="Qty" aria-label="Quantity" />
-        <ComboBox v-model="r.unit" class="unit" :options="units" placeholder="Unit" aria-label="Unit" />
-        <ComboBox v-model="r.food" class="food" :options="foods" placeholder="e.g. flour" aria-label="Ingredient" />
+        <input :ref="(el) => setQtyRef(el, i)" v-model="r.quantity" class="qty"
+               inputmode="decimal" placeholder="Qty" aria-label="Quantity"
+               @keydown.enter.prevent="addAfter(i)" />
+        <ComboBox v-model="r.unit" class="unit" :options="units" placeholder="Unit"
+                  aria-label="Unit" @enter="addAfter(i)" />
+        <ComboBox v-model="r.food" class="food" :options="foods" placeholder="e.g. flour"
+                  aria-label="Ingredient" @enter="addAfter(i)" />
       </template>
-      <input v-model="r.note" class="note" placeholder="Note (optional)" aria-label="Note" />
+      <input v-model="r.note" class="note" placeholder="Note (optional)" aria-label="Note"
+             @keydown.enter.prevent="addAfter(i)" />
       <div class="ctl">
         <button type="button" class="icon" :disabled="i === 0" title="Move up" aria-label="Move up" @click="move(i, -1)">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10l4-4 4 4" /></svg>
@@ -174,11 +222,26 @@ function addComponent(r) {
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8" /></svg>
         </button>
       </div>
+      <!-- The line the parser was handed, so a wrong split is visible against its
+           ground truth. Must come AFTER the controls: it spans every column, so
+           in DOM order before them it pushes them onto a grid row of their own. -->
+      <p v-if="r.sourceText" class="src">
+        <span class="src-lbl">pasted</span>
+        <span class="src-txt">{{ r.sourceText }}</span>
+        <button type="button" class="src-x" aria-label="Hide the original line"
+                @click="r.sourceText = ''">✕</button>
+      </p>
     </div>
+
+    <p v-if="lastRemoved" class="undo">
+      Removed <strong>{{ removedLabel(lastRemoved.row) }}</strong>.
+      <button type="button" class="ghost sm" @click="undoRemove">Undo</button>
+    </p>
 
     <div class="row" style="gap:14px;margin-top:4px">
       <button type="button" class="ghost add" @click="add">＋ Add ingredient</button>
       <button type="button" class="ghost add" @click="openPicker">🔗 Add recipe as component</button>
+      <span class="kbd-hint">Enter adds a row · Alt+↑/↓ moves one</span>
     </div>
 
     <!-- Recipe picker -->
@@ -205,11 +268,40 @@ function addComponent(r) {
 .paste { background: var(--surface-2, var(--surface)); }
 .paste textarea { width: 100%; }
 
-/* qty | unit | food (widest) | note | controls */
+/* qty | unit | food (widest) | note | controls
+   The qty track was a hardcoded 64px — the only inflexible column in the row —
+   leaving ~38px of usable input for "1 1/2", a first-class supported format that
+   therefore scrolled inside its own box. It now flexes and grows with large text. */
 .col-heads,
-.ing-row { display: grid; grid-template-columns: 64px 92px minmax(0, 1.7fr) minmax(0, 1fr) 96px; gap: 8px; align-items: center; }
+.ing-row { display: grid; grid-template-columns: minmax(80px, 0.6fr) 92px minmax(0, 1.7fr) minmax(0, 1fr) 96px; gap: 8px; align-items: center; }
 .col-heads { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding: 0 2px; }
 .ing-row input { width: 100%; }
+
+/* The line the paste parser was handed, under the row it produced. */
+.src {
+  grid-column: 1 / -1; display: flex; align-items: baseline; gap: 6px;
+  margin: 0 0 2px; font-size: 0.78rem; color: var(--muted);
+}
+.src-lbl {
+  flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.04em;
+  font-size: 0.66rem; padding: 1px 5px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.src-txt { min-width: 0; overflow-wrap: anywhere; }
+/* Next to the text it dismisses, not shoved to the far right where it reads as
+   belonging to the row's own controls. */
+.src-x {
+  flex-shrink: 0; border: 0; background: transparent;
+  color: var(--muted); cursor: pointer; padding: 0 4px; font-size: 0.8rem;
+}
+.src-x:hover { color: var(--text); }
+
+.undo {
+  display: flex; align-items: center; gap: 8px; margin: 4px 0 0;
+  font-size: 0.85rem; color: var(--muted);
+}
+.kbd-hint { align-self: center; font-size: 0.76rem; color: var(--muted); }
+@media (max-width: 620px) { .kbd-hint { display: none; } }
 
 /* Batch stepper for a component row — spans the qty+unit columns. */
 .batch { grid-column: 1 / 3; display: flex; align-items: center; gap: 6px; }

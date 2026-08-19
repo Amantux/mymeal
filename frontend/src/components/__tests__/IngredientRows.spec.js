@@ -115,3 +115,37 @@ describe('qualifier round-trip', () => {
     wrapper.vm.rows.forEach((r) => expect(r).toHaveProperty('qualifier'))
   })
 })
+
+describe('IngredientRows keyboard + undo', () => {
+  test('Enter on a field inserts a row directly beneath, not at the end', async () => {
+    const w = mount(IngredientRows, {
+      props: { modelValue: [{ food: 'flour' }, { food: 'salt' }] },
+    })
+    await w.findAll('input[aria-label="Quantity"]')[0].trigger('keydown', { key: 'Enter' })
+
+    const foods = w.emitted('update:modelValue').at(-1)[0].map((r) => r.food)
+    expect(foods).toEqual(['flour', '', 'salt'])
+  })
+
+  test('a removed row can be put back where it was', async () => {
+    const w = mount(IngredientRows, {
+      props: { modelValue: [{ food: 'flour' }, { food: 'salt' }, { food: 'sugar' }] },
+    })
+    await w.findAll('button[aria-label="Remove"]')[1].trigger('click')
+    expect(w.emitted('update:modelValue').at(-1)[0].map((r) => r.food)).toEqual(['flour', 'sugar'])
+
+    await w.get('p.undo button').trigger('click')
+    expect(w.emitted('update:modelValue').at(-1)[0].map((r) => r.food))
+      .toEqual(['flour', 'salt', 'sugar'])
+  })
+
+  test('the pasted source line is shown and is dismissible', async () => {
+    const w = mount(IngredientRows, {
+      props: { modelValue: [{ food: 'flour', sourceText: '- 2 cups flour' }] },
+    })
+    expect(w.get('.src-txt').text()).toBe('- 2 cups flour')
+
+    await w.get('.src-x').trigger('click')
+    expect(w.find('.src-txt').exists()).toBe(false)
+  })
+})

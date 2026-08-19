@@ -33,3 +33,28 @@ describe('ComboBox', () => {
     expect(w.emitted('update:modelValue').at(-1)).toEqual(['pinch'])
   })
 })
+
+describe('ComboBox Enter handling', () => {
+  test('Enter with a highlighted suggestion picks it and does NOT bubble up', async () => {
+    // The parent uses `enter` to add the next ingredient row. If picking a
+    // suggestion also fired it, choosing "cup" from the dropdown would add a
+    // spurious row every time.
+    const w = mount(ComboBox, { props: { modelValue: 'cu', options: OPTS } })
+    await w.get('input').trigger('focus')
+    await w.get('input').trigger('keydown', { key: 'ArrowDown' })
+    await w.get('input').trigger('keydown', { key: 'Enter' })
+
+    expect(w.emitted('update:modelValue').at(-1)).toEqual(['cup'])
+    expect(w.emitted('enter')).toBeUndefined()
+  })
+
+  test('Enter with nothing highlighted emits enter so the parent can advance', async () => {
+    const w = mount(ComboBox, { props: { modelValue: 'cup', options: OPTS } })
+    await w.get('input').trigger('focus')
+    await w.get('input').trigger('keydown', { key: 'Enter' })
+
+    expect(w.emitted('enter')).toHaveLength(1)
+    // ...and it doesn't silently rewrite the field on the way out.
+    expect(w.emitted('update:modelValue')).toBeUndefined()
+  })
+})
