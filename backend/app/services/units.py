@@ -181,7 +181,7 @@ _QTY_RE = re.compile(
 _LIST_MARKER_RE = re.compile(r"^\s*(?:[•▪▢‣◦·]\s*|[-–—*]\s+|\d+[.)]\s+)")
 
 
-def _strip_list_marker(s: str) -> str:
+def strip_list_marker(s: str) -> str:
     """Drop one leading list marker. A bullet carries no information and, left
     in place, blocked the anchored quantity match and then landed in the food
     name ("- 2 cups flour" -> food "- 2 cups flour")."""
@@ -242,7 +242,7 @@ def parse_line(text: str) -> dict:
     the line puts it back at the FRONT; appending it to ``rest`` instead moved it
     into the middle of the ingredient ("2 tbsp (optional) chili flakes").
     """
-    raw = _strip_list_marker((text or "").strip())
+    raw = strip_list_marker((text or "").strip())
     approx, body = _split_approximator(raw)
     m = _QTY_RE.match(body)
     if not m or not m.group("qty"):

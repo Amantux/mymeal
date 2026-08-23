@@ -337,12 +337,11 @@ def lint_payload(payload: dict) -> list[str]:
 
 
 def _visible_text(html: str) -> str:
-    soup = BeautifulSoup(html, "html.parser")
-    for junk in soup(["script", "style", "nav", "footer", "header"]):
-        junk.decompose()
-    text = soup.get_text("\n")
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    return "\n".join(lines)[:12000]  # cap to keep token cost bounded
+    """Page text for the model prompt. One implementation, shared with the
+    deterministic parser — two HTML flatteners would drift, and the model should
+    see exactly the text the parser already failed to read."""
+    from ..recipe_parse import html_to_lines
+    return html_to_lines(html, limit=12000)  # cap to keep token cost bounded
 
 
 def _normalize_ai(payload: dict) -> dict:
@@ -618,11 +617,16 @@ def import_recipe(
     input first tries deterministic JSON-LD extraction and only falls back to
     the provider when no structured markup is found.
     """
+    from ..recipe_parse import extract_microdata_recipe, parse_pasted
+
     source_url = url.strip()
     html = ""
     if source_url:
         html = _fetch(source_url)
-        node = extract_jsonld_recipe(html)
+        # Microdata as well as JSON-LD: plenty of recipe sites still publish only
+        # itemprop markup, and it is every bit as exact — sending those to the
+        # model was spending a call to re-derive what the page already stated.
+        node = extract_jsonld_recipe(html) or extract_microdata_recipe(html)
         if node:
             payload = normalize_jsonld(node, source_url)
             if not payload.get("imageUrl"):
@@ -644,6 +648,25 @@ def import_recipe(
             # It was JSON, just not a recipe. Say so, rather than reporting the
             # generic "no AI provider" — the provider was never the problem.
             raise UnsupportedPasteError(why)
+        # Not structured data, but still readable: microdata that survived a
+        # browser copy, a styled HTML fragment, or a plain blob with headings.
+        # Tried BEFORE the model for the same reason as the JSON-LD path above —
+        # it is exact, instant, free, and works with no provider configured.
+        got = parse_pasted(text)
+        if got:
+            if source_url:
+                got["sourceUrl"] = source_url
+            return got
+
+    # Same last resort for a fetched page with no usable markup: read its
+    # structure before paying for a model call.
+    if html:
+        got = parse_pasted(html)
+        if got:
+            if not got.get("imageUrl"):
+                got["imageUrl"] = _og_image(html, source_url)
+            got["sourceUrl"] = source_url
+            return got
 
     # AI path: raw text, or a page with no usable markup.
     if provider is None:

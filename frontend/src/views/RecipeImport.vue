@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, streamPost } from '../api'
 import { useUI } from '../stores/ui'
@@ -13,6 +13,26 @@ const url = ref('')
 const text = ref('')
 const photoFile = ref(null)
 const busy = ref(false)
+
+// A textarea only ever receives the clipboard's PLAIN-TEXT flavour, but a page
+// copied from a browser also carries a `text/html` flavour — and that is where
+// the recipe's own markup lives (itemprop attributes, `class="ingredients"`).
+// The plain flavour has already thrown all of it away. Keeping the HTML lets the
+// importer read the page's own labels instead of inferring them from prose.
+const richHtml = ref('')
+let pastedPlain = ''
+
+async function onPaste(e) {
+  const html = (e.clipboardData?.getData('text/html') || '').trim()
+  // Let the default paste run first so the textarea shows the readable text; the
+  // markup is carried alongside it, not instead of it.
+  await nextTick()
+  richHtml.value = html
+  pastedPlain = text.value
+}
+// Typing after a paste means the user is correcting what they can SEE, so the
+// stashed markup is stale and must not silently win over their edit.
+watch(text, (v) => { if (v !== pastedPlain) richHtml.value = '' })
 
 // The whole plan is drawn up front, not appended stage by stage. Showing one
 // line at a time is indistinguishable from a spinner, teaches nothing about how
@@ -113,7 +133,8 @@ async function run() {
     }
 
     const body = mode.value === 'search' ? { query: query.value }
-      : mode.value === 'url' ? { url: url.value } : { text: text.value }
+      : mode.value === 'url' ? { url: url.value }
+        : { text: richHtml.value || text.value }
 
     let failure = null
     let recipe = null
@@ -303,14 +324,19 @@ async function applyReview() {
     <template v-else-if="mode === 'text'">
       <label class="field">
         <span>Recipe text</span>
-        <textarea v-model="text" rows="12" placeholder="Paste a full recipe here…"></textarea>
+        <textarea v-model="text" rows="12" @paste="onPaste"
+          placeholder="Paste a whole recipe — copy it straight off a web page, or type it out:&#10;&#10;Lemon Drizzle Cake&#10;Serves 8 | Prep 20 min | Bake 45 min&#10;&#10;Ingredients&#10;225g butter, softened&#10;4 large eggs&#10;&#10;Method&#10;1. Heat the oven to 180C.&#10;2. Bake for 45 minutes."></textarea>
       </label>
+      <p v-if="richHtml" class="rich-note">
+        ✓ Pasted with formatting — the page’s own recipe markup came with it and
+        will be used.
+        <button type="button" class="linky" @click="richHtml = ''">Use plain text instead</button>
+      </p>
       <p class="muted" style="font-size:0.85rem">
-        Paste a recipe’s <strong>schema.org JSON-LD</strong> (a
-        <code>{"@type": "Recipe", …}</code> block, a <code>@graph</code>, or the
-        whole <code>&lt;script type="application/ld+json"&gt;</code> tag) and it is
-        read directly — <strong>no AI provider needed</strong>. Anything else is
-        parsed by your configured AI provider.
+        Copied from a web page, typed out, or a <strong>schema.org JSON-LD</strong>
+        block — all read directly, <strong>no AI provider needed</strong>.
+        Sub-headings like “For the sauce:” become ingredient groups; styling is
+        ignored. Your AI provider is only used if none of it can be read.
       </p>
     </template>
 
@@ -334,6 +360,17 @@ async function applyReview() {
 </template>
 
 <style scoped>
+/* Confirms that the markup came along, since the textarea can only show the
+   plain text — without this the richer import would be invisible magic. */
+.rich-note {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+  margin: 8px 0 0; font-size: 0.85rem; color: var(--muted);
+}
+.linky {
+  border: 0; background: transparent; padding: 0; font: inherit;
+  color: var(--accent-text); text-decoration: underline; cursor: pointer;
+}
+
 .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
 /* Active tab is a neutral raised fill (not the accent) so the page's primary
    action stays the only terracotta element. */
