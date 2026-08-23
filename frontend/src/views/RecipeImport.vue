@@ -49,6 +49,7 @@ const STAGE_LABELS = {
   searching: 'Search the web for the recipe',
   fetching: 'Fetch the page',
   parsing: 'Read the recipe',
+  completing: 'Fill in what the text didn’t spell out',
   structuring: 'Work out the tricky ingredient lines',
   converting: 'Look up weights it doesn’t know',
 }
@@ -57,7 +58,7 @@ const stages = ref([])
 function planStages() {
   const keys = mode.value === 'search'
     ? ['searching', 'fetching', 'parsing', 'structuring', 'converting']
-    : ['fetching', 'parsing', 'structuring', 'converting']
+    : ['fetching', 'parsing', 'completing', 'structuring', 'converting']
   // 'skipped' is a real outcome, not a failure: a tidy recipe never needs the
   // model, and saying so is more honest than quietly dropping the row.
   stages.value = keys.map((key) => ({ key, label: STAGE_LABELS[key], state: 'pending' }))

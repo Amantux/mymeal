@@ -405,8 +405,15 @@ def _parse_headed(lines, ing_idx, step_idx):
     name = next((ln for ln in head_lines if len(ln) <= 120), "")
 
     if ing_idx is None:
-        ing_body, step_body = [], lines[step_idx + 1:]
-    elif step_idx is None:
+        # A "Method" heading with no "Ingredients" heading — a very common shape
+        # (title, times, the list, then "Method"). Everything above the heading is
+        # title + meta + the ingredients, so classify it. Treating it as header
+        # and returning no ingredients threw the whole list away.
+        head_lines, ing_body = _split_head_from_ingredients(lines[:step_idx])
+        name = next((ln for ln in head_lines if len(ln) <= 120), "")
+        return name, _ingredient_rows(ing_body), _step_rows(lines[step_idx + 1:]), \
+            head_lines
+    if step_idx is None:
         ing_body, step_body = lines[ing_idx + 1:], []
     elif ing_idx < step_idx:
         ing_body, step_body = lines[ing_idx + 1:step_idx], lines[step_idx + 1:]
@@ -415,6 +422,18 @@ def _parse_headed(lines, ing_idx, step_idx):
         step_body, ing_body = lines[step_idx + 1:ing_idx], lines[ing_idx + 1:]
 
     return name, _ingredient_rows(ing_body), _step_rows(step_body), head_lines
+
+
+def _split_head_from_ingredients(lines: list[str]) -> tuple[list[str], list[str]]:
+    """Split "title + servings + times" from the ingredient list below it.
+
+    The boundary is the first line that reads as an amount. Used when the source
+    labelled its method but not its ingredients.
+    """
+    for i, ln in enumerate(lines):
+        if _looks_like_ingredient(ln) and units.parse_line(ln)["qty"] is not None:
+            return lines[:i], lines[i:]
+    return lines, []
 
 
 def _parse_unheaded(lines):

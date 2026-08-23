@@ -12,7 +12,7 @@ from flask import Blueprint, request, jsonify, current_app, stream_with_context
 
 from ..extensions import db, limiter
 from ..logsafe import scrub
-from ..services import conversions, ingredient_ai
+from ..services import conversions, ingredient_ai, recipe_complete
 from ..models import Recipe, MealPlanEntry
 from ..auth import login_required, owner_required, current_group
 from ..schemas.serializers import recipe_out, mealplan_entry_out
@@ -308,6 +308,24 @@ def _import_events(data, group_id):
         return
 
     yield "stage", {"stage": "parsing"}
+
+    # Recipe-level gaps, filled only when the deterministic read left one AND a
+    # provider exists. A paste can be read exactly for its ingredients and still
+    # arrive with no title or no method (an "Ingredients"-only paste; JSON-LD
+    # with no recipeInstructions, which is common), and handing the user that
+    # while a perfectly good model sits unused is a waste. Additive and
+    # fail-open, exactly like the ingredient pass below: nothing already read is
+    # overwritten, and every proposal is checked against the source text.
+    # Pasted text only: that is the text we have here. A URL import either read
+    # exact markup or already handed the whole page to the model, so there is
+    # nothing this could add without threading the fetched HTML back out of
+    # import_recipe — worth doing if JSON-LD-without-instructions turns out to
+    # be common, but not worth changing that contract on speculation.
+    gaps = recipe_complete.missing_fields(payload)
+    if gaps and provider is not None and text.strip():
+        yield "stage", {"stage": "completing", "fields": gaps}
+        payload = recipe_complete.complete(payload, text.strip(), provider=provider)
+
     displays = [str(row.get("display") or "")
                 for row in (payload.get("ingredients") or [])]
 
