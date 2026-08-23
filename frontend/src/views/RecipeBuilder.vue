@@ -4,15 +4,36 @@
 // via IngredientRows; "Tidy up with AI" refines free-text rows into clean
 // food/note. Everything stays editable before saving — the model drafts, the
 // human decides.
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, watch, onMounted, nextTick } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
 import { useUI } from '../stores/ui'
 import IngredientRows from '../components/IngredientRows.vue'
 import StepRows from '../components/StepRows.vue'
+import InputMethods from '../components/InputMethods.vue'
 
 const router = useRouter()
+const route = useRoute()
 const ui = useUI()
+
+// Which input method is in use here. Both of this page's methods edit the SAME
+// form — "draft" just fills it from an idea first — so this only drives which
+// affordance is highlighted, never what is rendered. Arriving with ?mode=draft
+// (from the selector on the Import page) puts the caret in the idea box.
+const modeFromUrl = () => (route.query.mode === 'draft' ? 'draft' : 'type')
+const method = ref(modeFromUrl())
+const ideaInput = ref(null)
+async function focusIdea() {
+  await nextTick()
+  ideaInput.value?.focus()
+}
+onMounted(() => { if (method.value === 'draft') focusIdea() })
+watch(method, (m) => { if (m === 'draft') focusIdea() })
+// <router-view> is keyed on the PATH, so arriving at /recipes/new with a
+// different ?mode reuses this component and setup() never runs again. Re-read it
+// here or ?mode=draft silently does nothing when you're already on this page.
+// Deliberately does NOT remount: whatever is half-typed in the form must survive.
+watch(() => route.query.mode, () => { method.value = modeFromUrl() })
 
 const form = ref({ name: '', description: '', servings: '', prepMinutes: '', cookMinutes: '', tags: '' })
 const ingredients = ref([]) // [{quantity, unit, food, note}]
@@ -127,13 +148,18 @@ async function save() {
     </div>
   </div>
 
+  <!-- All six ways in, not just the two that happen to live on this page. The
+       form below stays visible behind it, so the common case — typing it out —
+       costs no extra click. -->
+  <InputMethods v-model="method" />
+
   <!-- LLM draft: describe a dish, get a full editable recipe. -->
-  <div class="card draft">
+  <div class="card draft" :class="{ picked: method === 'draft' }">
     <label class="field" style="margin:0">
       <span class="lbl">✨ Draft with AI</span>
       <div class="row">
-        <input v-model="idea" class="fill" placeholder="e.g. a cozy vegetarian chili for 4"
-          @keyup.enter="draft" />
+        <input ref="ideaInput" v-model="idea" class="fill"
+          placeholder="e.g. a cozy vegetarian chili for 4" @keyup.enter="draft" />
         <button class="secondary" :disabled="drafting || !idea.trim()" @click="draft">
           {{ drafting ? 'Drafting…' : 'Draft' }}
         </button>
@@ -141,17 +167,6 @@ async function save() {
       <span class="help">Fills everything below from your idea — edit before saving.</span>
     </label>
   </div>
-
-  <!-- The no-AI sibling of the card above, and the reason it sits next to it:
-       typing a recipe out by hand was the only visible option here, so someone
-       who already HAS the text had no idea the app could read it. -->
-  <p class="alt-start">
-    Already have it written down?
-    <button type="button" class="linky" @click="router.push('/import')">
-      Paste the whole recipe
-    </button>
-    — plain text or copied from a web page. No AI needed.
-  </p>
 
   <div class="card">
     <h2>Details</h2>
@@ -190,13 +205,9 @@ async function save() {
 /* Neutral card: the terracotta accent stays reserved for the one primary
    action (Save recipe). The ✨ label is enough to signal the AI affordance. */
 .draft { background: var(--surface-2); }
-/* Quiet by design: a signpost, not a competing call to action. Save recipe is
-   still the only primary button on the page. */
-.alt-start { margin: -4px 0 16px; font-size: 0.85rem; color: var(--muted); }
-.linky {
-  border: 0; background: transparent; padding: 0; font: inherit;
-  color: var(--accent-text); text-decoration: underline; cursor: pointer;
-}
+/* Highlighted when the selector points at it, so picking "Draft with AI" has a
+   visible destination rather than only moving the caret. */
+.draft.picked { border-color: var(--text); }
 .row3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .hint { font-size: 0.78rem; color: var(--muted); font-weight: 500; }
 /* Keep the header action buttons together as a pair (they wrap as a unit

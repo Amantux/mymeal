@@ -233,9 +233,12 @@ function askAssistant() {
         v-else-if="!recipes.length"
         icon="🍳"
         title="No recipes yet"
-        hint="Add your first recipe — or paste a link and let the assistant import it for you."
+        hint="Type one out, paste it in, or import it from a link or a photo — pick whichever you have to hand."
       >
-        <button @click="router.push('/import')">Import a recipe</button>
+        <!-- Both empty states now lead to the same door: New recipe offers all six
+             input methods, where this used to send people to Import and the
+             Recipes page sent them to the builder. -->
+        <button @click="router.push('/recipes/new')">Add your first recipe</button>
       </EmptyState>
       <div v-else class="card-grid">
         <div

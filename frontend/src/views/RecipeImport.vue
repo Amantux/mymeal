@@ -1,13 +1,32 @@
 <script setup>
 import { ref, computed, watch, nextTick } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { api, streamPost } from '../api'
 import { useUI } from '../stores/ui'
+import InputMethods from '../components/InputMethods.vue'
 
 const router = useRouter()
+const route = useRoute()
 const ui = useUI()
 
-const mode = ref('search')
+// Seeded from the URL so arriving from the New recipe page lands on the method
+// that was picked, and so refresh / back / a bookmark all keep it. An unknown
+// value falls back rather than rendering a tab that matches nothing.
+const MODES = ['search', 'url', 'text', 'photo']
+const mode = ref(MODES.includes(String(route.query.mode)) ? String(route.query.mode) : 'search')
+// Keep the URL in step with the tabs, without stacking history entries for what
+// is a change of input, not a change of page.
+watch(mode, (m) => {
+  if (String(route.query.mode || '') !== m) router.replace({ path: '/import', query: { mode: m } })
+})
+// ...and the tabs in step with the URL. This is not optional: <router-view> is
+// keyed on the PATH, so arriving at /import with a different ?mode reuses this
+// component and setup() never runs again — without this, coming from the New
+// recipe page would land on whatever tab was open last.
+watch(() => route.query.mode, (m) => {
+  const next = MODES.includes(String(m)) ? String(m) : 'search'   // same rule as the seed
+  if (next !== mode.value) mode.value = next
+})
 const query = ref('')
 const url = ref('')
 const text = ref('')
@@ -306,12 +325,10 @@ async function applyReview() {
 
   <!-- Step 1a: the form. -->
   <div v-else class="card">
-    <div class="tabs">
-      <button class="secondary" :class="{ active: mode === 'search' }" @click="mode = 'search'">By name</button>
-      <button class="secondary" :class="{ active: mode === 'url' }" @click="mode = 'url'">From a link</button>
-      <button class="secondary" :class="{ active: mode === 'text' }" @click="mode = 'text'">Paste text</button>
-      <button class="secondary" :class="{ active: mode === 'photo' }" @click="mode = 'photo'">From a photo</button>
-    </div>
+    <!-- The same six-method selector as the New recipe page, so the choice looks
+         identical wherever you are — and so there is a way BACK to typing it out,
+         which this page never offered. -->
+    <InputMethods v-model="mode" />
 
     <template v-if="mode === 'search'">
       <label class="field">
@@ -385,10 +402,6 @@ async function applyReview() {
   color: var(--accent-text); text-decoration: underline; cursor: pointer;
 }
 
-.tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
-/* Active tab is a neutral raised fill (not the accent) so the page's primary
-   action stays the only terracotta element. */
-.tabs button.active { background: var(--surface-2); color: var(--text); border-color: var(--border); font-weight: 700; }
 
 /* --- progress ---
    Every stage is on screen from the first frame, so the card never changes
