@@ -117,15 +117,22 @@ class OllamaProvider(AIProvider):
             # return a different (blocked) address. Connecting to the exact
             # address already checked closes that TOCTOU window.
             pinned, host_hdr, ext = llm_pinned_get_args(f"{self.host}/api/chat")
-            r = httpx.post(pinned, json=payload,
-                           headers={**self._headers(), **host_hdr}, extensions=ext,
-                           timeout=self.timeout)
-            r.raise_for_status()
+            # Through a Client, NOT httpx.post(): the module-level shortcut has no
+            # `extensions` parameter (verified against httpx 0.28.1 — it raises
+            # TypeError), and `extensions` is what carries the connect-to-this-
+            # exact-IP pin above. Dropping it to make the call compile would
+            # silently reopen the DNS-rebinding window it exists to close.
+            with httpx.Client(timeout=self.timeout) as client:
+                r = client.post(pinned, json=payload,
+                                headers={**self._headers(), **host_hdr},
+                                extensions=ext)
+                r.raise_for_status()
+                # Read inside the client's lifetime rather than after it closes.
+                return r.json()
         except UnsafeHostError as exc:
             raise ProviderError(f"{self._where()} is not allowed.") from exc
         except httpx.HTTPError as exc:
             raise ProviderError(self._explain(exc)) from exc
-        return r.json()
 
     def _complete(self, system: str, prompt: str, max_tokens: int) -> str:
         data = self._post(
@@ -219,9 +226,14 @@ class OllamaProvider(AIProvider):
         except UnsafeHostError as exc:
             raise ProviderError(f"{self._where()} is not allowed.") from exc
         try:
-            with httpx.stream("POST", pinned, json=payload,
-                              headers={**self._headers(), **host_hdr}, extensions=ext,
-                              timeout=self.timeout) as r:
+            # Through a Client for the same reason as _post: httpx.stream() has no
+            # `extensions` parameter either, and that is where the pinned-IP
+            # connection lives. The client must stay open for the whole stream, so
+            # both context managers are entered together.
+            with httpx.Client(timeout=self.timeout) as client, \
+                    client.stream("POST", pinned, json=payload,
+                                  headers={**self._headers(), **host_hdr},
+                                  extensions=ext) as r:
                 r.raise_for_status()
                 for line in r.iter_lines():
                     if not line:
