@@ -84,14 +84,16 @@ def test_only_the_missing_fields_are_asked_for():
 # --- Nothing already read is overwritten -------------------------------------
 
 def test_a_field_that_was_read_is_never_replaced():
+    read_steps = [{"title": "", "text": "Beat the butter and sugar until pale."}]
     provider = FakeProvider({"name": "Model's Title", "servings": 99,
-                             "steps": [{"text": "Model's step."}]})
+                             "steps": [{"text": "Heat the oven to 180C."}]})
 
-    got = complete(_payload(name="Deterministic Title", servings=4), SOURCE,
-                   provider=provider)
+    got = complete(_payload(name="Deterministic Title", servings=4,
+                            steps=read_steps), SOURCE, provider=provider)
 
     assert got["name"] == "Deterministic Title"
     assert got["servings"] == 4
+    assert got["steps"] == read_steps      # even a grounded proposal cannot win
 
 
 def test_the_ingredients_are_never_touched():
@@ -130,6 +132,101 @@ def test_an_invented_method_is_rejected():
     got = complete(_payload(), SOURCE, provider=provider)
 
     assert got["steps"] == []
+
+
+# The dangerous class: fabrications built ENTIRELY from the source's own
+# vocabulary. Recipe prose reuses a small set of words, so a bag-of-words check
+# passed every one of these — including the inversion.
+
+COOKING_SOURCE = """Chicken and Rice
+Ingredients
+2 chicken thighs
+200g rice
+Heat the oil in a pan and brown the garlic for 2 minutes.
+Add the rice and stock, then simmer the chicken for 20 minutes until tender.
+Rest for 5 minutes, then serve.
+"""
+
+
+@pytest.mark.parametrize("fabricated", [
+    "Serve the chicken thighs raw in the hot stock.",
+    "Do not cook the chicken; rest until softened.",
+    "Pour the hot oil into the rice, then brown the garlic for 20 minutes.",
+    "Rest the raw chicken in the pan for 5 minutes, then serve.",
+])
+def test_a_fabrication_built_from_the_sources_own_words_is_rejected(fabricated):
+    got = complete(_payload(), COOKING_SOURCE,
+                   provider=FakeProvider({"steps": [{"text": fabricated}]}))
+
+    assert got["steps"] == []
+
+
+@pytest.mark.parametrize("tampered", [
+    "Rest for 50 minutes, then serve.",              # 5 -> 50
+    "Heat the oil in a pan and brown the garlic for 9 minutes.",
+])
+def test_a_changed_time_or_temperature_is_rejected(tampered):
+    """The most dangerous thing this module could do. Words alone cannot see
+    digits, so "45 minutes" and "5 minutes" were indistinguishable — a silently
+    halved cook time on chicken, or an oven moved from 180C to 240C."""
+    got = complete(_payload(), COOKING_SOURCE,
+                   provider=FakeProvider({"steps": [{"text": tampered}]}))
+
+    assert got["steps"] == []
+
+
+def test_the_real_method_is_still_accepted_verbatim():
+    """The guard has to admit the truth as readily as it refuses invention."""
+    real = ["Heat the oil in a pan and brown the garlic for 2 minutes.",
+            "Add the rice and stock, then simmer the chicken for 20 minutes until tender."]
+    got = complete(_payload(), COOKING_SOURCE,
+                   provider=FakeProvider({"steps": [{"text": t} for t in real]}))
+
+    assert [s["text"] for s in got["steps"]] == real
+
+
+def test_a_step_that_kept_its_numbering_is_still_accepted():
+    """A model that ignores "drop any 1. numbering" adds a digit that isn't in
+    the source, which the numeric gate would otherwise reject."""
+    got = complete(_payload(), COOKING_SOURCE, provider=FakeProvider(
+        {"steps": [{"text": "1. Rest for 5 minutes, then serve."}]}))
+
+    assert [s["text"] for s in got["steps"]] == ["Rest for 5 minutes, then serve."]
+
+
+def test_the_grounding_threshold_is_load_bearing():
+    """Pins the constant. Without this, every value from 0.3 to 1.0 kept the
+    suite green and a refactor could accept almost any cooking sentence.
+
+    Only the LOWER bound is pinned, deliberately. Measured: a step that merges
+    two source lines, or drops a trailing clause, still scores 1.00 — shingles
+    are taken over the whole source token stream, so a line boundary is not a
+    barrier. Raising the threshold therefore makes the guard stricter without
+    rejecting anything genuinely from the source, which
+    test_the_real_method_is_still_accepted_verbatim already covers. 0.7 is a
+    small deliberate margin, not a measured requirement.
+    """
+    from app.services import recipe_complete as rc
+
+    # A real sentence must pass at the configured threshold...
+    real = "Add the rice and stock, then simmer the chicken for 20 minutes until tender."
+    kept = complete(_payload(), COOKING_SOURCE,
+                    provider=FakeProvider({"steps": [{"text": real}]}))
+    assert kept["steps"], "the configured threshold rejects a verbatim step"
+
+    # ...and a fabrication must fail at it. Raising the bar to 1.0 must not be
+    # needed for that, and lowering it to 0.3 must not be enough to let it in.
+    fake = "Rest the raw chicken in the pan, then brown the garlic and serve."
+    assert complete(_payload(), COOKING_SOURCE,
+                    provider=FakeProvider({"steps": [{"text": fake}]}))["steps"] == []
+    assert rc._GROUNDING > 0.5, "a threshold this low admits any cooking sentence"
+    assert rc._SHINGLE >= 3, "shorter n-grams stop encoding word order"
+
+    # An embellishment — one word the source never used — is invention, however
+    # small, and must not slip through on the strength of the surrounding words.
+    embellished = "Heat the extra-virgin oil in a pan and brown the garlic for 2 minutes."
+    assert complete(_payload(), COOKING_SOURCE,
+                    provider=FakeProvider({"steps": [{"text": embellished}]}))["steps"] == []
 
 
 def test_a_padded_step_loses_only_itself():
@@ -263,3 +360,45 @@ def test_a_clean_paste_still_imports_with_no_provider_at_all(auth_client, monkey
     r = auth_client.post("/api/v1/ai/import", json={"text": SOURCE + "\nMethod\n1. Bake.\n"})
 
     assert r.status_code == 201
+
+
+def test_a_step_under_an_unexpected_key_does_not_become_the_word_None():
+    """str(None) is "None", which then passed grounding on any source containing
+    that word — two literal "None" steps for a model that answered with
+    {"instruction": ...}."""
+    got = complete(_payload(), "Nut allergens: none\n200g flour\nBake it well.\n",
+                   provider=FakeProvider({"steps": [{"instruction": "Mix"},
+                                                    {"instruction": "Bake"}]}))
+
+    assert got["steps"] == []
+
+
+def test_filling_the_method_also_recovers_the_oven_temperature():
+    """cookTemperatureC is derived from the steps at PARSE time, so a recipe
+    whose method arrives here stored no temperature at all — the one field with
+    its own column and converter."""
+    got = complete(_payload(cookTemperatureC=None), SOURCE, provider=FakeProvider(
+        {"steps": [{"text": "Heat the oven to 180C."}]}))
+
+    assert got["cookTemperatureC"] == 180
+
+
+def test_an_ai_derived_payload_does_not_pay_for_a_second_call(auth_client, monkeypatch):
+    """import_recipe already handed this exact text to the model. Asking again is
+    a second call and a second wait for the same answer."""
+    import app.api.ai as ai_api
+
+    calls = []
+
+    class Counting:
+        def complete_json(self, prompt, system=""):
+            calls.append(prompt)
+            return {"name": "Chatty Soup", "ingredients": [{"display": "1 onion"}],
+                    "steps": [{"text": "Simmer."}], "servings": 0}
+
+    monkeypatch.setattr(ai_api, "get_provider", lambda: Counting())
+    # Prose the deterministic parser refuses, so the AI path runs.
+    auth_client.post("/api/v1/ai/import",
+                     json={"text": "some rambling prose about a soup my aunt made"})
+
+    assert len(calls) == 1, f"paid for {len(calls)} model calls"

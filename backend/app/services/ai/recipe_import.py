@@ -612,14 +612,25 @@ def recipe_from_image(image_b64: str, media_type: str, provider: AIProvider) -> 
 
 
 def import_recipe(
-    *, url: str = "", text: str = "", provider: AIProvider | None = None
+    *, url: str = "", text: str = "", provider: AIProvider | None = None,
+    meta_out: dict | None = None,
 ) -> dict:
     """Return a normalized recipe payload from a URL or raw text.
 
     ``provider`` is required for the AI fallback (and for text-only input). URL
     input first tries deterministic JSON-LD extraction and only falls back to
     the provider when no structured markup is found.
+
+    ``meta_out``, when given, records which path produced the payload under
+    ``"source"``. Reported out-of-band rather than as a payload key because the
+    payload is applied to the model and serialized to clients — a caller needs to
+    know the model already saw this text (so it does not pay to ask again), and
+    that is not a property of the recipe.
     """
+    def _tag(source: str) -> None:
+        if meta_out is not None:
+            meta_out["source"] = source
+
     from ..recipe_parse import extract_microdata_recipe, parse_pasted
 
     source_url = url.strip()
@@ -635,6 +646,7 @@ def import_recipe(
             if not payload.get("imageUrl"):
                 payload["imageUrl"] = _og_image(html, source_url)
             payload["sourceUrl"] = source_url
+            _tag("markup")
             return payload
 
     # Pasted structured markup: already the shape we want, so parse it here and
@@ -646,6 +658,7 @@ def import_recipe(
             payload = normalize_jsonld(node, source_url)
             if source_url:
                 payload["sourceUrl"] = source_url
+            _tag("markup")
             return payload
         if why and provider is None:
             # It was JSON, just not a recipe. Say so, rather than reporting the
@@ -659,6 +672,7 @@ def import_recipe(
         if got:
             if source_url:
                 got["sourceUrl"] = source_url
+            _tag("parsed")
             return got
 
     # NOT applied to a fetched page. A paste is a deliberate selection — the user
@@ -675,6 +689,7 @@ def import_recipe(
     body = text.strip() or _visible_text(html)
     prompt = f"{_SCHEMA_HINT}\n\nSource text:\n\n{body}"
     payload = _normalize_ai(provider.complete_json(prompt, system=_IMPORT_SYSTEM))
+    _tag("ai")
     # The model can't see images; recover one from the fetched page's OG tags.
     if html and not payload.get("imageUrl"):
         payload["imageUrl"] = _og_image(html, source_url)

@@ -15,27 +15,41 @@ lines, and it follows the same three rules for the same reasons:
 Rule 3 is doing real work here. Asking a language model for a recipe's METHOD
 when the text has none is an open invitation to write one, and a plausible
 invented method is far worse than an empty one — the user would have no way to
-know it wasn't in what they pasted. So every proposal is required to be
-*grounded*: its words have to actually appear in the source.
+know it wasn't in what they pasted. So every proposal must be *grounded*: it has
+to appear in the source, as written, numbers included.
+
+What grounding does NOT protect against, and is not meant to: text the user
+pasted telling the model what to say. An injected instruction is *in the source*,
+so anything echoing it is grounded by construction. The limits there are the
+field bounds, not the grounding check — a name is clamped to 200 chars, steps to
+40 x 2000, and servings to 1..100, so the worst case is prose the user already
+pasted appearing in their own recipe. Vue escapes it on render.
 """
 from __future__ import annotations
 
 import logging
 import re
 
+from ..logsafe import scrub
+from .ai.base import safe_upstream_detail
+from .recipe_parse import strip_step_number
+
 _LOGGER = logging.getLogger("mymeal.recipe_complete")
 
-# The fields worth a model call when missing. Times are deliberately absent:
-# a wrong prep time is a small annoyance, whereas a missing method or serving
-# count makes the recipe unusable (scaling is driven by servings).
-_FIELDS = ("name", "steps", "servings")
-
+# Times are deliberately not asked for: a wrong prep time is a small annoyance,
+# whereas a missing method or serving count makes the recipe unusable (scaling is
+# driven by servings).
 PLACEHOLDER_NAME = "Imported Recipe"
 MAX_SOURCE_CHARS = 8000
 MAX_STEPS = 40
-# Share of a proposal's words that must appear in the source for it to count as
-# read-from-the-text rather than written-by-the-model.
+# Share of a proposal's word n-grams that must appear in the source for it to
+# count as read-from-the-text rather than written-by-the-model. Not 1.0: a model
+# legitimately drops a "1." prefix or joins a hard-wrapped line, and those shift
+# a few shingles at the edges.
 _GROUNDING = 0.7
+# n-gram width. 4 is long enough that a fabricated sentence cannot hit it by
+# reusing common cooking words, and short enough to survive minor rewording.
+_SHINGLE = 4
 
 _SYSTEM = (
     "You extract recipe fields from text the user pasted. Return ONLY what the "
@@ -78,22 +92,51 @@ def missing_fields(payload: dict) -> list[str]:
     return out
 
 
-def _words(text: str) -> set[str]:
-    return {w for w in re.findall(r"[^\W\d_]+", (text or "").lower()) if len(w) > 2}
+def _tokens(text: str) -> list[str]:
+    """Lower-cased words AND numbers, in order. Whitespace is normalised so a
+    hard-wrapped source line still matches the joined sentence a model returns."""
+    return re.findall(r"[^\W_]+", (text or "").lower())
 
 
-def _grounded(candidate: str, source_words: set[str]) -> bool:
-    """Whether a proposal's words actually occur in the source text.
+def _shingles(tokens: list[str], n: int = _SHINGLE) -> set[tuple]:
+    return {tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1)}
 
-    The anti-invention check. A model asked for a method it cannot find will
-    happily produce a fluent one; those sentences are made of words that are not
-    in the source, so they fail here and are dropped.
+
+def _numbers(text: str) -> set[str]:
+    """Numeric tokens, kept as written ("180", "45", "1.5")."""
+    return set(re.findall(r"\d+(?:[.,]\d+)?", text or ""))
+
+
+def _grounded(candidate: str, source_tokens: list[str], source_numbers: set[str],
+              source_shingles: set[tuple]) -> bool:
+    """Whether a proposal was actually READ FROM the source, not merely built
+    from its vocabulary.
+
+    Two gates, because the obvious one is not enough:
+
+    1. **Every number must appear in the source.** A bag-of-words check cannot
+       see digits at all, so "Bake for 45 minutes" and "Bake for 5 minutes" were
+       indistinguishable — a model could silently halve a cook time or move an
+       oven from 180C to 240C and pass. In a cooking app that is the most
+       dangerous thing this module could do, so it is a hard gate, not a ratio.
+    2. **Word ORDER must match**, checked as overlapping n-grams rather than a
+       set. Recipe prose has a small, repetitive vocabulary ("heat", "add",
+       "until", "minutes", "pan"), so a set test passes almost any fluent
+       cooking sentence built from it — including inversions like "Do not cook
+       the chicken" and fabrications like "Serve the chicken raw in the stock".
+       Shingles require the words to appear together, in sequence, as written.
     """
-    words = _words(candidate)
-    if not words:
+    if not _numbers(candidate) <= source_numbers:
         return False
-    hits = len(words & source_words)
-    return hits / len(words) >= _GROUNDING
+    tokens = _tokens(candidate)
+    if not tokens:
+        return False
+    if len(tokens) < _SHINGLE:
+        # Too short to shingle (a two-word title): require it verbatim, in order.
+        return any(tokens == source_tokens[i:i + len(tokens)]
+                   for i in range(len(source_tokens) - len(tokens) + 1))
+    mine = _shingles(tokens)
+    return len(mine & source_shingles) / len(mine) >= _GROUNDING
 
 
 def complete(payload: dict, source_text: str, provider=None) -> dict:
@@ -112,24 +155,32 @@ def complete(payload: dict, source_text: str, provider=None) -> dict:
             from .ai.registry import get_provider
             provider = get_provider()
         except Exception as exc:  # noqa: BLE001 - no provider is a normal state
-            _LOGGER.info("recipe completion skipped: %s", exc)
+            _LOGGER.info("recipe completion skipped: %s", scrub(str(exc)))
             return payload
 
     try:
         raw = provider.complete_json(_prompt(source, missing), system=_SYSTEM)
     except Exception as exc:  # noqa: BLE001 - never fail an import for this
-        _LOGGER.warning("recipe completion failed: %s", exc)
+        # scrub: an upstream provider body can carry CR/LF and forge a log
+        # entry (CWE-117). api/ai.py does the same at its provider boundaries.
+        _LOGGER.warning("recipe completion failed: %s",
+                        scrub(safe_upstream_detail(exc)))
         return payload
     if not isinstance(raw, dict):
         return payload
 
-    source_words = _words(source)
+    source_tokens = _tokens(source)
+    source_numbers = _numbers(source)
+    source_shingles = _shingles(source_tokens)
+    def grounded(candidate: str) -> bool:
+        return _grounded(candidate, source_tokens, source_numbers, source_shingles)
+
     out = dict(payload)
     filled = []
 
     if "name" in missing:
         name = str(raw.get("name") or "").strip()[:200]
-        if name and _grounded(name, source_words):
+        if name and grounded(name):
             out["name"] = name
             filled.append("name")
 
@@ -138,15 +189,28 @@ def complete(payload: dict, source_text: str, provider=None) -> dict:
         if isinstance(steps, list):
             kept = []
             for item in steps[:MAX_STEPS]:
-                text = str(item.get("text") if isinstance(item, dict) else item or "")
-                text = text.strip()
+                # `or ""` INSIDE the get: a model answering with a different key
+                # ({"instruction": ...}) made str(None) the literal step "None",
+                # which then passed grounding on any source containing that word.
+                raw_text = item.get("text") or "" if isinstance(item, dict) else item
+                # Strip "1." / "Step 2:" before grounding as well as before
+                # storing: the prefix adds a number that isn't in the source, so
+                # the numeric gate would reject an otherwise genuine step.
+                text = strip_step_number(str(raw_text or "").strip())
                 # Every step is checked individually: a model that read three real
                 # steps and then padded with a fourth loses only the fourth.
-                if text and _grounded(text, source_words):
+                if text and grounded(text):
                     kept.append({"title": "", "text": text[:2000]})
             if kept:
                 out["steps"] = kept
                 filled.append("steps")
+                # The oven temperature is derived from the steps at PARSE time,
+                # so a recipe whose method arrives here stored no temperature at
+                # all — the one field with its own column and converter.
+                if not out.get("cookTemperatureC"):
+                    from .cooking import parse_temperature
+                    out["cookTemperatureC"] = parse_temperature(
+                        " ".join(s["text"] for s in kept))
 
     if "servings" in missing:
         try:

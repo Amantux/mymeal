@@ -275,7 +275,9 @@ def _import_events(data, group_id):
 
     yield "stage", {"stage": "fetching", "detail": url or "pasted text"}
     try:
-        payload = import_recipe(url=url, text=text, provider=provider)
+        import_meta: dict = {}
+        payload = import_recipe(url=url, text=text, provider=provider,
+                                meta_out=import_meta)
     except UnsupportedPasteError as exc:
         # Before ValueError (it subclasses it): pasted structured data that is
         # not a Recipe. A curated message, and NOT the "no AI provider" 503 —
@@ -321,8 +323,12 @@ def _import_events(data, group_id):
     # nothing this could add without threading the fetched HTML back out of
     # import_recipe — worth doing if JSON-LD-without-instructions turns out to
     # be common, but not worth changing that contract on speculation.
+    # Skipped when the payload CAME from the model: it already read this exact
+    # text and answered with everything it could find, so asking again is a
+    # second call and a second wait for the same answer.
     gaps = recipe_complete.missing_fields(payload)
-    if gaps and provider is not None and text.strip():
+    if (gaps and provider is not None and text.strip()
+            and import_meta.get("source") != "ai"):
         yield "stage", {"stage": "completing", "fields": gaps}
         payload = recipe_complete.complete(payload, text.strip(), provider=provider)
 

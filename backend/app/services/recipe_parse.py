@@ -284,7 +284,9 @@ def _reads_as_prose(line: str) -> bool:
     return s.endswith((".", "!", "?")) and len(s.split()) >= 5
 
 
-def _strip_step_number(line: str) -> str:
+def strip_step_number(line: str) -> str:
+    """Drop a leading "1." / "2)" / "Step 3:" prefix. Public because the AI
+    completion pass needs the same rule — two copies would drift."""
     return _STEP_NUMBER.sub("", line, count=1).strip()
 
 
@@ -424,14 +426,35 @@ def _parse_headed(lines, ing_idx, step_idx):
     return name, _ingredient_rows(ing_body), _step_rows(step_body), head_lines
 
 
+def _is_meta_line(line: str) -> bool:
+    """A header line that states servings, a time, or a rating — not an amount of
+    something. These carry numbers, which is exactly why they were being mistaken
+    for the start of the ingredient list ("4.5 stars from 230 reviews")."""
+    if _SERVES.search(line):
+        return True
+    low = line.lower()
+    if any(w in low for w in ("star", "rating", "review", "vote", "comment")):
+        return True
+    return any(re.search(rf"\b{re.escape(w)}\b", low)
+               for words in _DURATION_LABEL.values() for w in words)
+
+
 def _split_head_from_ingredients(lines: list[str]) -> tuple[list[str], list[str]]:
     """Split "title + servings + times" from the ingredient list below it.
 
-    The boundary is the first line that reads as an amount. Used when the source
-    labelled its method but not its ingredients.
+    Used when the source labelled its method but not its ingredients. The
+    boundary is the start of a RUN of at least two amount-bearing lines that
+    aren't metadata — cutting at the first line with a number in it swallowed the
+    header, so a rating line became an ingredient and the servings and prep time
+    it stated were lost.
     """
-    for i, ln in enumerate(lines):
-        if _looks_like_ingredient(ln) and units.parse_line(ln)["qty"] is not None:
+    def is_item(ln: str) -> bool:
+        return (_looks_like_ingredient(ln)
+                and units.parse_line(ln)["qty"] is not None
+                and not _is_meta_line(ln))
+
+    for i in range(len(lines) - 1):
+        if is_item(lines[i]) and is_item(lines[i + 1]):
             return lines[:i], lines[i:]
     return lines, []
 
@@ -516,7 +539,7 @@ def _step_rows(body: list[str]) -> list[dict]:
         if _is_main_heading(ln):
             continue
         numbered = bool(_STEP_NUMBER.match(ln))
-        text = _strip_step_number(ln)
+        text = strip_step_number(ln)
         if not text:
             continue
         cont = (steps and not numbered and text[:1].islower())

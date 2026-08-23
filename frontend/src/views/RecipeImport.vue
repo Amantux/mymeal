@@ -56,9 +56,14 @@ const STAGE_LABELS = {
 const stages = ref([])
 
 function planStages() {
+  // 'completing' only exists for a paste: the backend cannot emit it for a URL
+  // or a search, where the model has already seen the whole page. Listing it
+  // there would render a permanently-skipped row on every import.
   const keys = mode.value === 'search'
     ? ['searching', 'fetching', 'parsing', 'structuring', 'converting']
-    : ['fetching', 'parsing', 'completing', 'structuring', 'converting']
+    : mode.value === 'text'
+      ? ['fetching', 'parsing', 'completing', 'structuring', 'converting']
+      : ['fetching', 'parsing', 'structuring', 'converting']
   // 'skipped' is a real outcome, not a failure: a tidy recipe never needs the
   // model, and saying so is more honest than quietly dropping the row.
   stages.value = keys.map((key) => ({ key, label: STAGE_LABELS[key], state: 'pending' }))
