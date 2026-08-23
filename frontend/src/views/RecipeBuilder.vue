@@ -142,6 +142,17 @@ async function save() {
     </label>
   </div>
 
+  <!-- The no-AI sibling of the card above, and the reason it sits next to it:
+       typing a recipe out by hand was the only visible option here, so someone
+       who already HAS the text had no idea the app could read it. -->
+  <p class="alt-start">
+    Already have it written down?
+    <button type="button" class="linky" @click="router.push('/import')">
+      Paste the whole recipe
+    </button>
+    — plain text or copied from a web page. No AI needed.
+  </p>
+
   <div class="card">
     <h2>Details</h2>
     <label class="field"><span class="lbl">Name</span>
@@ -179,6 +190,13 @@ async function save() {
 /* Neutral card: the terracotta accent stays reserved for the one primary
    action (Save recipe). The ✨ label is enough to signal the AI affordance. */
 .draft { background: var(--surface-2); }
+/* Quiet by design: a signpost, not a competing call to action. Save recipe is
+   still the only primary button on the page. */
+.alt-start { margin: -4px 0 16px; font-size: 0.85rem; color: var(--muted); }
+.linky {
+  border: 0; background: transparent; padding: 0; font: inherit;
+  color: var(--accent-text); text-decoration: underline; cursor: pointer;
+}
 .row3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .hint { font-size: 0.78rem; color: var(--muted); font-weight: 500; }
 /* Keep the header action buttons together as a pair (they wrap as a unit
