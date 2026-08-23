@@ -133,6 +133,15 @@ class OllamaProvider(AIProvider):
             raise ProviderError(f"{self._where()} is not allowed.") from exc
         except httpx.HTTPError as exc:
             raise ProviderError(self._explain(exc)) from exc
+        except ValueError as exc:
+            # A 200 carrying a non-JSON body — an HTML error page from a reverse
+            # proxy in front of Ollama is the ordinary case. json() raises
+            # JSONDecodeError (a ValueError), which httpx.HTTPError does not
+            # cover, so this escaped as an unhandled 500 instead of naming the
+            # provider. The body is not echoed back (CWE-209).
+            raise ProviderError(
+                f"{self._where()} returned a non-JSON response. Check that the "
+                "URL points at Ollama and not at a proxy or login page.") from exc
 
     def _complete(self, system: str, prompt: str, max_tokens: int) -> str:
         data = self._post(

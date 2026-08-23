@@ -387,26 +387,36 @@ def test_ollama_chat_post_is_also_pinned_not_just_model_listing():
 
     captured = {}
 
-    def fake_post(url, **kwargs):
-        captured["url"] = url
-        captured["headers"] = kwargs.get("headers")
-        return httpx.Response(200, json={"message": {"content": "hi"}},
-                              request=httpx.Request("POST", url))
+    def handler(request):
+        captured["url"] = str(request.url)
+        captured["host"] = request.headers.get("Host")
+        return httpx.Response(200, json={"message": {"content": "hi"}})
+
+    # Intercept at the TRANSPORT, not by replacing httpx.post: the request now
+    # goes through a Client (httpx's module-level post() has no `extensions`
+    # parameter and raises TypeError), and a test that patches the function the
+    # code no longer calls would silently stop guarding anything.
+    real_client = httpx.Client
+
+    def fake_client(*args, **kwargs):
+        kwargs.pop("transport", None)
+        return real_client(*args, transport=httpx.MockTransport(handler), **kwargs)
 
     p = OllamaProvider.__new__(OllamaProvider)
-    p.host, p.model, p.timeout, p.api_key = "http://127.0.0.1:11434", "m", 30, ""
-    monkeypatch_target = httpx.post
-    httpx.post = fake_post
+    # "localhost", NOT "127.0.0.1": an IP pins to itself, so the URL looks
+    # identical whether or not the pin ran and the assertion below could not tell
+    # the two apart. A hostname makes the difference observable — pinned means the
+    # URL carries the resolved IP while the hostname travels only in Host.
+    p.host, p.model, p.timeout, p.api_key = "http://localhost:11434", "m", 30, ""
+    httpx.Client = fake_client
     try:
         p._post({"model": "m", "messages": []})
     finally:
-        httpx.post = monkeypatch_target
+        httpx.Client = real_client
 
-    # 127.0.0.1 pins to itself, so the URL is unchanged — but the Host header
-    # (what a real DNS-rebind attack would need to differ from) is present,
-    # proving the pinned path was taken rather than the raw f-string URL.
-    assert captured["url"] == "http://127.0.0.1:11434/api/chat"
-    assert captured["headers"]["Host"] == "127.0.0.1:11434"
+    assert "127.0.0.1" in captured["url"] or "[::1]" in captured["url"], \
+        "the chat POST connected to the hostname, not the address that was validated"
+    assert captured["host"] == "localhost:11434"
 
 
 def test_ollama_chat_post_refuses_a_link_local_host():

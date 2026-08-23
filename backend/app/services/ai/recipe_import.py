@@ -341,7 +341,10 @@ def _visible_text(html: str) -> str:
     deterministic parser — two HTML flatteners would drift, and the model should
     see exactly the text the parser already failed to read."""
     from ..recipe_parse import html_to_lines
-    return html_to_lines(html, limit=12000)  # cap to keep token cost bounded
+    # No synthetic section markers: those exist for the deterministic parser, and
+    # feeding the model headings the page never printed is putting words in the
+    # source's mouth (and spending tokens on them).
+    return html_to_lines(html, limit=12000, mark_sections=False)  # cap token cost
 
 
 def _normalize_ai(payload: dict) -> dict:
@@ -658,15 +661,13 @@ def import_recipe(
                 got["sourceUrl"] = source_url
             return got
 
-    # Same last resort for a fetched page with no usable markup: read its
-    # structure before paying for a model call.
-    if html:
-        got = parse_pasted(html)
-        if got:
-            if not got.get("imageUrl"):
-                got["imageUrl"] = _og_image(html, source_url)
-            got["sourceUrl"] = source_url
-            return got
+    # NOT applied to a fetched page. A paste is a deliberate selection — the user
+    # copied the recipe — but a full page is nav, comments, related links and ads,
+    # and guessing structure out of that produced confidently wrong recipes
+    # ("Home" as the title, "Great list!" as an ingredient) on a path that
+    # previously handed the whole page to the model and got a sane answer. The
+    # exact extractors above (JSON-LD, microdata) still run on URLs; only the
+    # heuristics are paste-only.
 
     # AI path: raw text, or a page with no usable markup.
     if provider is None:

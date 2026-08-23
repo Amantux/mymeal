@@ -271,6 +271,16 @@ def test_payload_shapes_match():
     mine = parse_recipe_text(BLOB)
 
     assert set(mine) == set(theirs)
+    # Types too, not only key names: a matching key holding a str where the other
+    # holds an int is exactly the drift this guard exists to catch, and comparing
+    # names alone passed straight through it. None is skipped rather than compared
+    # — cookTemperatureC is legitimately nullable, and only one of these two
+    # inputs mentions an oven temperature.
+    for key in theirs:
+        a, b = mine[key], theirs[key]
+        if a is None or b is None:
+            continue
+        assert type(a) is type(b), f"{key}: {type(a).__name__} vs {type(b).__name__}"
 
 
 # --- Through the endpoint ---------------------------------------------------
@@ -302,3 +312,196 @@ def test_pasting_copied_html_through_the_endpoint_keeps_the_sections(auth_client
 
     # The section survives the round-trip to the database, not just the parse.
     assert [i["section"] for i in got][-2:] == ["For the drizzle", "For the drizzle"]
+
+
+# --- Refusing pages that are not recipes -------------------------------------
+#
+# Every one of these was PROVEN to import as a recipe before the acceptance gate
+# was tightened: the run-end rule ("stop after two consecutive misses") let the
+# ingredient list swallow whole documents, because prose alternates short and
+# long lines and the counter never reached two.
+
+KNIFE_REVIEW = """10 Best Kitchen Knives of 2026
+Home
+Reviews
+By Jane Doe
+Price: $150
+We tested 30 knives over six months in a busy test kitchen.
+The Global G-2 remains our top pick for most cooks.
+Great list!
+I love my Global.
+Price: $89
+"""
+
+
+def test_an_article_with_a_few_numbers_in_it_is_not_a_recipe():
+    """It imported as a 16-ingredient recipe — "Home", "By Jane Doe",
+    "Price: $150", "Great list!" — with a 201 and no steps."""
+    assert parse_pasted(KNIFE_REVIEW) is None
+
+
+def test_the_unheaded_path_demands_a_method():
+    """A list of amounts with no instructions is a shopping list, not a recipe,
+    and accepting it is how prose with two prices in it became an import."""
+    assert parse_recipe_text("Stuff\n2 cups flour\n1 cup milk\n3 eggs\n") is None
+
+
+def test_the_unheaded_path_demands_mostly_measurements():
+    got = parse_recipe_text(
+        "Thing\n2 cups flour\nsome nice words\nmore nice words\n"
+        "another line entirely\nWhisk it all together and cook.\n")
+
+    assert got is None
+
+
+# --- Section markers must not become recipe content --------------------------
+
+WPRM = """<div class="wprm-recipe-ingredients-container"><h3>Ingredients</h3>
+<ul class="wprm-recipe-ingredients"><li>225g butter</li><li>4 eggs</li><li>200g flour</li></ul></div>
+<div class="wprm-recipe-instructions-container"><h3>Instructions</h3>
+<ol class="wprm-recipe-instructions"><li>Heat oven.</li><li>Bake.</li></ol></div>"""
+
+
+def test_nested_containers_do_not_emit_a_heading_twice():
+    """The WP-Recipe-Maker DOM nests *-ingredients-container around
+    ul.*-ingredients AND prints its own <h3>Ingredients</h3>. Marking both, next
+    to a heading the page already had, put "Ingredients" in the list twice — as
+    ingredients."""
+    got = parse_pasted(WPRM)
+
+    assert [i["display"] for i in got["ingredients"]] == [
+        "225g butter", "4 eggs", "200g flour"]
+    assert [s["text"] for s in got["steps"]] == ["Heat oven.", "Bake."]
+
+
+def test_a_per_item_element_is_not_labelled():
+    """One <div itemprop="recipeInstructions"> PER STEP emitted one heading per
+    step."""
+    got = parse_pasted(
+        '<ul class="ingredients"><li>2 cups flour</li><li>1 cup milk</li></ul>'
+        '<div itemprop="recipeInstructions">Mix.</div>'
+        '<div itemprop="recipeInstructions">Bake.</div>')
+
+    assert [s["text"] for s in got["steps"]] == ["Mix.", "Bake."]
+
+
+def test_a_class_that_merely_contains_an_ingredient_word_is_not_a_list():
+    lines = html_to_lines('<div class="no-ingredients-needed">Nothing to buy.</div>')
+
+    assert "Ingredients" not in lines.splitlines()
+
+
+# --- Where the recipe ends ---------------------------------------------------
+
+def test_a_trailing_notes_section_does_not_become_method_steps():
+    got = parse_recipe_text(
+        "Banana Bread\nIngredients\n3 ripe bananas\n200g flour\n"
+        "Method\n1. Mash the bananas.\n2. Bake for 50 minutes.\n"
+        "Notes\nBest eaten within two days.\nTips\nUse very ripe bananas.\n")
+
+    assert [s["text"] for s in got["steps"]] == [
+        "Mash the bananas.", "Bake for 50 minutes."]
+
+
+def test_comments_copied_along_with_a_recipe_are_dropped():
+    got = parse_recipe_text(
+        "Chili\nIngredients\n1 tbsp olive oil\n2 tins tomatoes\n"
+        "Method\n1. Fry the onion.\n2. Simmer.\n"
+        "Comments\nMade this twice!\nAdded chipotle, delicious.\n")
+
+    assert [s["text"] for s in got["steps"]] == ["Fry the onion.", "Simmer."]
+
+
+# --- Headings in other languages ---------------------------------------------
+
+def test_a_german_recipe_does_not_import_its_headings_as_ingredients():
+    """Before, "Zutaten" and "Zubereitung" became ingredient rows — worse than
+    the old behaviour, where the model handled it correctly."""
+    got = parse_recipe_text(
+        "Pfannkuchen\nZutaten\n250 g Mehl\n500 ml Milch\n3 Eier\n"
+        "Zubereitung\n1. Alles verruehren.\n2. Braten.\n")
+
+    assert [i["display"] for i in got["ingredients"]] == [
+        "250 g Mehl", "500 ml Milch", "3 Eier"]
+    assert [s["text"] for s in got["steps"]] == ["Alles verruehren.", "Braten."]
+
+
+# --- Titles ------------------------------------------------------------------
+
+def test_a_short_title_is_not_eaten_as_an_ingredient():
+    got = parse_recipe_text(
+        "Pancakes\n2 cups flour\n1 cup milk\n2 eggs\nWhisk and fry until golden.\n")
+
+    assert got["name"] == "Pancakes"
+    assert [i["display"] for i in got["ingredients"]] == [
+        "2 cups flour", "1 cup milk", "2 eggs"]
+
+
+def test_a_blob_that_starts_with_an_ingredient_keeps_it():
+    """Consuming line 1 as the title unconditionally invented a name AND deleted
+    an ingredient."""
+    got = parse_recipe_text(
+        "2 cups flour\n1 cup milk\n2 eggs\nWhisk and fry until golden brown.\n")
+
+    assert [i["display"] for i in got["ingredients"]] == [
+        "2 cups flour", "1 cup milk", "2 eggs"]
+
+
+# --- The AI prompt must not lose content -------------------------------------
+
+def test_ingredients_inside_a_form_survive_for_the_model():
+    """Sites wrap ingredient lists in a form for "add to shopping list"
+    checkboxes. Decomposing <form> deleted them before the model ever saw them —
+    a silent quality drop on a path that used to work."""
+    from app.services.ai.recipe_import import _visible_text
+
+    out = _visible_text('<h1>Soup</h1><form class="ing-form"><ul><li>2 carrots</li>'
+                        '<li>1 onion</li></ul></form><h2>Method</h2><p>Simmer.</p>')
+
+    assert "2 carrots" in out and "1 onion" in out
+
+
+def test_the_model_is_not_fed_synthetic_headings():
+    """Markers exist for the deterministic parser; showing the model headings the
+    page never printed puts words in the source's mouth."""
+    from app.services.ai.recipe_import import _visible_text
+
+    out = _visible_text('<ul class="recipe-ingredients"><li>2 cups flour</li></ul>')
+
+    assert "Ingredients" not in out.splitlines()
+
+
+def test_a_url_import_does_not_guess_structure_out_of_a_whole_page(monkeypatch):
+    """Heuristics are paste-only. A paste is a deliberate selection; a fetched
+    page is nav + comments + ads, and guessing there produced "Home" as the
+    recipe title on a path that previously handed the page to the model and got
+    a sane answer. With no provider it must now decline, not invent."""
+    import app.services.ai.recipe_import as ri
+
+    page = ("<html><body><nav><a>Home</a><a>Reviews</a></nav>"
+            "<h1>Best Knives</h1><p>Price: $150</p>"
+            "<p>We tested 30 knives over six months in a busy kitchen.</p>"
+            "<p>The Global G-2 is our top pick for most cooks.</p>"
+            "<p>Price: $89</p></body></html>")
+    monkeypatch.setattr(ri, "_fetch", lambda url: page)
+
+    with pytest.raises(ValueError, match="no AI provider"):
+        ri.import_recipe(url="https://example.com/knives", provider=None)
+
+
+def test_a_url_import_still_reads_microdata_without_a_provider(monkeypatch):
+    """Only the GUESSING is paste-only — exact markup on a URL still skips the
+    model, which is the behaviour this whole path exists for."""
+    import app.services.ai.recipe_import as ri
+    monkeypatch.setattr(ri, "_fetch", lambda url: MICRODATA)
+
+    got = ri.import_recipe(url="https://example.com/muffins", provider=None)
+
+    assert got["name"] == "Microdata Muffins"
+    assert got["sourceUrl"] == "https://example.com/muffins"
+
+
+def test_a_huge_paste_is_capped():
+    got = parse_recipe_text("Thing\nIngredients\n" + "1 cup flour\n" * 50000)
+
+    assert got is None or len(got["ingredients"]) < 2000

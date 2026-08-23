@@ -34,10 +34,21 @@ from . import units
 # happens to begin "Method: warm the milk" isn't mistaken for a heading.
 _ING_HEAD = re.compile(
     r"^(?:ingredients?|you(?:'?ll)?\s+(?:will\s+)?need|what\s+you(?:'?ll)?\s+need"
-    r"|shopping\s+list)\b\s*:?\s*$", re.I)
+    r"|shopping\s+list"
+    # The commonest non-English headings. Cheap to recognise, and without them a
+    # German or French recipe had its headings imported AS ingredients — worse
+    # than the old behaviour, where it went to the model and came back correct.
+    r"|zutaten|ingr(?:e|é)dients?|ingredienti|ingredientes)\b\s*:?\s*$", re.I)
 _STEP_HEAD = re.compile(
     r"^(?:method|instructions?|directions?|steps?|preparation|procedure"
-    r"|how\s+to\s+make(?:\s+it)?|to\s+make)\b\s*:?\s*$", re.I)
+    r"|how\s+to\s+make(?:\s+it)?|to\s+make"
+    r"|zubereitung|pr(?:e|é)paration|preparazione|preparaci(?:o|ó)n)\b\s*:?\s*$", re.I)
+# Headings that END the recipe body. A trailing "Notes"/"Tips" section was being
+# imported as further method steps, because nothing terminated the step body.
+_TAIL_HEAD = re.compile(
+    r"^(?:notes?|tips?|tip[s]?\s*&\s*tricks|variations?|storage|to\s+store"
+    r"|make\s+ahead|nutrition(?:\s+information)?|equipment|comments?|reviews?"
+    r"|related|you\s+might\s+also\s+like)\b\s*:?\s*$", re.I)
 # A sub-heading inside the ingredient list: "For the sauce:", "Topping:", or a
 # bare "For the topping" with no colon. schema.org has no field for these but
 # RecipeIngredient.section does, so they're captured rather than flattened away.
@@ -61,7 +72,7 @@ _DURATION_LABEL = {
 }
 
 
-def html_to_lines(html: str, limit: int = 12000) -> str:
+def html_to_lines(html: str, limit: int = 12000, *, mark_sections: bool = True) -> str:
     """Visible text, one line per element, with the junk removed.
 
     Block structure is what makes the text parseable — every ``<li>`` on its own
@@ -69,12 +80,20 @@ def html_to_lines(html: str, limit: int = 12000) -> str:
     so this deliberately keeps newlines rather than collapsing to a paragraph.
     ``<style>`` goes with the other junk, which is what makes pasted CSS a no-op
     instead of garbage ingredients.
+
+    ``<form>`` is NOT removed, only its controls: plenty of sites wrap the
+    ingredient list in a form for "add to shopping list" checkboxes, and
+    decomposing the form deleted the ingredients outright.
+
+    ``mark_sections=False`` for the AI prompt — the model should see the page,
+    not headings this module synthesized for its own parser.
     """
     soup = BeautifulSoup(html or "", "html.parser")
     for junk in soup(["script", "style", "nav", "footer", "header", "noscript",
-                      "form", "button", "select", "svg"]):
+                      "button", "select", "input", "textarea", "svg"]):
         junk.decompose()
-    _mark_sections(soup)
+    if mark_sections:
+        _mark_sections(soup)
     lines = [ln.strip() for ln in soup.get_text("\n").splitlines() if ln.strip()]
     return "\n".join(lines)[:limit]
 
@@ -83,34 +102,53 @@ def html_to_lines(html: str, limit: int = 12000) -> str:
 # throws away JSON-LD but keeps these attributes, and they are a far stronger
 # signal than guessing from the prose — a list of "a handful of parsley" style
 # ingredients is otherwise indistinguishable from a list of short steps.
-_CLASS_ING = re.compile(r"(?:^|[-_ ])(?:recipe)?ingredients?(?:[-_ ]|$)|recipeingredient", re.I)
+_CLASS_ING = re.compile(r"(?:^|[-_ ])(?:recipe[-_ ]?)?ingredients?(?:[-_ ]|$)", re.I)
 _CLASS_STEP = re.compile(
-    r"(?:^|[-_ ])(?:recipe)?(?:instructions?|directions?|method|steps)(?:[-_ ]|$)"
-    r"|recipeinstructions?", re.I)
+    r"(?:^|[-_ ])(?:recipe[-_ ]?)?(?:instructions?|directions?|method|steps)(?:[-_ ]|$)",
+    re.I)
+# Classes that CONTAIN an ingredient word but don't label an ingredient list.
+_CLASS_NOT = re.compile(r"no[-_ ]ingredients|ingredients?[-_ ](?:method|instructions?)", re.I)
+_HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 
 
 def _mark_sections(soup) -> None:
     """Insert a heading line before a list the markup itself labels.
 
     Emits the literal words the text parser already recognises, so there is one
-    heading-detection rule rather than a second parallel mechanism. A duplicate
-    heading is harmless — consecutive sections of the same kind are merged.
+    heading-detection rule rather than a second parallel mechanism.
+
+    Three things stop it emitting spurious headings, all of which produced real
+    junk rows before: nested containers (the WP-Recipe-Maker DOM nests
+    ``*-ingredients-container`` around ``ul.*-ingredients``, which marked twice),
+    a container whose own heading already says "Ingredients" (marking it again
+    duplicated it), and per-item elements (a ``<div itemprop=recipeInstructions>``
+    per step emitted one heading per step).
     """
-    for el in soup.find_all(attrs={"class": True}) + soup.find_all(attrs={"id": True}) \
-            + soup.find_all(attrs={"itemprop": True}):
+    marked: list = []
+    # Document order, outermost first, so an ancestor is always seen before its
+    # descendants and the descendant can be skipped.
+    for el in soup.find_all(True):
         token = " ".join(filter(None, [
             " ".join(el.get("class") or []), el.get("id") or "", el.get("itemprop") or "",
         ]))
-        if not token:
+        if not token or _CLASS_NOT.search(token):
             continue
-        # Only label a container, never an individual item: marking every <li>
-        # would emit a heading per ingredient.
-        if el.name in ("li", "span", "a", "strong", "em", "td"):
+        # Never label an individual item — only a container of them.
+        if el.name in ("li", "span", "a", "strong", "em", "td", "p", "meta", "img"):
             continue
-        word = "Ingredients" if _CLASS_ING.search(token) else (
-            "Instructions" if _CLASS_STEP.search(token) else "")
-        if word:
-            el.insert_before(f"\n{word}\n")
+        word = ("Ingredients" if _CLASS_ING.search(token)
+                else "Instructions" if _CLASS_STEP.search(token) else "")
+        if not word:
+            continue
+        if any(m in el.parents for m in marked):
+            continue          # an ancestor already labelled this region
+        if any(_ING_HEAD.match(h.get_text(" ").strip())
+               or _STEP_HEAD.match(h.get_text(" ").strip())
+               for h in el.find_all(_HEADING_TAGS)):
+            marked.append(el)
+            continue          # the page prints its own heading; don't double it
+        el.insert_before(f"\n{word}\n")
+        marked.append(el)
 
 
 def _itemprop_values(root, name: str) -> list[str]:
@@ -165,12 +203,17 @@ def extract_microdata_recipe(html: str) -> dict | None:
     return node
 
 
-def _enough(ingredients, steps) -> bool:
+def _enough(ingredients, steps, *, require_step: bool = False) -> bool:
     """Whether we found enough to call this a recipe rather than guessing.
 
-    Two ingredients, or one plus a step. A lone line is never enough — falling
-    through to the model is better than inventing a one-ingredient recipe.
+    ``require_step`` is set on the unheaded path, where nothing in the source
+    said "these are the ingredients" and the only evidence is that some lines
+    look like amounts. A page of prose with a couple of prices in it cleared the
+    old two-ingredients-and-no-method bar and imported as a recipe; a recipe with
+    no method at all is not a recipe, so demand one when we are guessing.
     """
+    if require_step:
+        return len(ingredients) >= 2 and len(steps) >= 1
     return len(ingredients) >= 2 or (len(ingredients) >= 1 and len(steps) >= 1)
 
 
@@ -210,6 +253,35 @@ def _is_sub_heading(line: str) -> bool:
     # "1 cup sugar:" is not a heading. Anything with an amount in it is an
     # ingredient that happens to be punctuated oddly.
     return units.parse_line(s.rstrip(":"))["qty"] is None
+
+
+def _is_main_heading(line: str) -> bool:
+    s = line.strip()
+    return len(s) <= _HEADING_MAX and bool(_ING_HEAD.match(s) or _STEP_HEAD.match(s))
+
+
+def _until_tail(body: list[str]) -> list[str]:
+    """``body`` up to the first "Notes"/"Tips"/"Comments" style heading.
+
+    Everything after one belongs to the article, not the recipe: a trailing Notes
+    block was importing as extra method steps, and on a copied page the comments
+    became steps too.
+    """
+    for i, ln in enumerate(body):
+        if len(ln) <= _HEADING_MAX and _TAIL_HEAD.match(ln.strip()):
+            return body[:i]
+    return body
+
+
+def _reads_as_prose(line: str) -> bool:
+    """A sentence, i.e. the method has started (or this was never a recipe).
+
+    Deliberately narrow: ends in a full stop AND is long enough to be a clause.
+    "Salt and pepper" and "For the sauce:" must not match, or the ingredient list
+    ends at the first line without a number in it.
+    """
+    s = line.strip()
+    return s.endswith((".", "!", "?")) and len(s.split()) >= 5
 
 
 def _strip_step_number(line: str) -> str:
@@ -294,7 +366,10 @@ def parse_recipe_text(text: str) -> dict | None:
       cluster at the top of a recipe, so the first run of amount-like lines is
       the ingredient list and the prose after it is the method.
     """
-    raw = [ln.strip() for ln in (text or "").replace("\r\n", "\n").splitlines()]
+    # Same cap as the HTML path. A recipe is not 3 MB, and without this a huge
+    # paste built 100,000 ingredient dicts before the endpoint truncated them.
+    raw = [ln.strip()
+           for ln in (text or "")[:12000].replace("\r\n", "\n").splitlines()]
     lines = [ln for ln in raw if ln]
     if len(lines) < 3:
         return None
@@ -304,15 +379,21 @@ def parse_recipe_text(text: str) -> dict | None:
     step_idx = next((i for i, ln in enumerate(lines)
                      if len(ln) <= _HEADING_MAX and _STEP_HEAD.match(ln)), None)
 
-    if ing_idx is not None or step_idx is not None:
-        got = _parse_headed(lines, ing_idx, step_idx)
-    else:
-        got = _parse_unheaded(lines)
+    headed = ing_idx is not None or step_idx is not None
+    got = _parse_headed(lines, ing_idx, step_idx) if headed else _parse_unheaded(lines)
     if got is None:
         return None
     name, ingredients, steps, head_lines = got
-    if not _enough(ingredients, steps):
+    if not _enough(ingredients, steps, require_step=not headed):
         return None
+    if not headed:
+        # Guessing, so demand that the list is mostly measurements rather than a
+        # couple of stray numbers in an article. A review page with two prices in
+        # it otherwise imported as a recipe.
+        measured = sum(units.parse_line(r["display"])["qty"] is not None
+                       for r in ingredients)
+        if measured < 2 or measured < len(ingredients) / 2:
+            return None
     return _payload(name=name, ingredients=ingredients, steps=steps,
                     meta=_parse_meta(head_lines))
 
@@ -338,21 +419,33 @@ def _parse_headed(lines, ing_idx, step_idx):
 
 def _parse_unheaded(lines):
     """No headings: classify. Returns None when no ingredient run is found."""
-    name = lines[0] if len(lines[0]) <= 120 else ""
-    body = lines[1:]
+    # Line 1 is the title unless it carries a MEASUREMENT — an unheaded blob
+    # often starts straight into the list, and consuming "2 cups flour" as the
+    # name both invented a title and deleted an ingredient. Keyed on a quantity
+    # rather than _looks_like_ingredient because a short title ("Pancakes") reads
+    # as ingredient-ish to that heuristic, and eating it is the worse error.
+    has_title = units.parse_line(lines[0])["qty"] is None and len(lines[0]) <= 120
+    name = lines[0] if has_title else ""
+    body = lines[1:] if has_title else lines
     flags = [_looks_like_ingredient(ln) for ln in body]
     try:
         start = flags.index(True)
     except ValueError:
         return None
-    # The ingredient run ends at the second consecutive non-ingredient line, so a
-    # single wrapped ingredient or a "For the sauce:" sub-heading doesn't end it.
+    # The run ends at the FIRST line that reads as prose (a sentence), and
+    # otherwise tolerates one stray line so a wrapped ingredient or a
+    # "For the sauce:" sub-heading doesn't end it. Ending only on two consecutive
+    # misses let the run swallow whole documents, because prose alternates short
+    # and long lines and the counter never reached two.
     end = len(body)
     misses = 0
     for i in range(start, len(body)):
         if flags[i]:
             misses = 0
             continue
+        if _reads_as_prose(body[i]):
+            end = i
+            break
         misses += 1
         if misses >= 2:
             end = i - 1
@@ -373,7 +466,12 @@ def _ingredient_rows(body: list[str]) -> list[dict]:
     """Ingredient lines -> rows, carrying any sub-heading as ``section``."""
     rows: list[dict] = []
     section = ""
-    for ln in body:
+    for ln in _until_tail(body):
+        # Belt and braces: a main heading must never become a row, whichever way
+        # it got into the body (a second "Ingredients" further down the page, or
+        # a marker injected next to one the page already printed).
+        if _is_main_heading(ln):
+            continue
         if _is_sub_heading(ln):
             section = ln.rstrip(":").strip()
             continue
@@ -395,7 +493,9 @@ def _step_rows(body: list[str]) -> list[dict]:
     continuation, not a step of its own.
     """
     steps: list[dict] = []
-    for ln in body:
+    for ln in _until_tail(body):
+        if _is_main_heading(ln):
+            continue
         numbered = bool(_STEP_NUMBER.match(ln))
         text = _strip_step_number(ln)
         if not text:

@@ -24,11 +24,19 @@ let pastedPlain = ''
 
 async function onPaste(e) {
   const html = (e.clipboardData?.getData('text/html') || '').trim()
+  const replacing = !text.value.trim() || _selectionCoversAll(e.target)
   // Let the default paste run first so the textarea shows the readable text; the
   // markup is carried alongside it, not instead of it.
   await nextTick()
-  richHtml.value = html
+  // Only ONE fragment's markup can be sent, so keep it only when this paste is
+  // the whole field. Pasting a second recipe on top of a first used to send just
+  // the second fragment while the textarea visibly showed both — half the recipe
+  // imported, with a tick saying formatting was preserved.
+  richHtml.value = replacing ? html : ''
   pastedPlain = text.value
+}
+function _selectionCoversAll(el) {
+  return el && el.selectionStart === 0 && el.selectionEnd === el.value.length
 }
 // Typing after a paste means the user is correcting what they can SEE, so the
 // stashed markup is stale and must not silently win over their edit.
