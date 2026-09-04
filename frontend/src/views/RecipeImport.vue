@@ -12,7 +12,7 @@ const ui = useUI()
 // Seeded from the URL so arriving from the New recipe page lands on the method
 // that was picked, and so refresh / back / a bookmark all keep it. An unknown
 // value falls back rather than rendering a tab that matches nothing.
-const MODES = ['search', 'url', 'text', 'photo']
+const MODES = ['search', 'url', 'text', 'photo', 'archive']
 const mode = ref(MODES.includes(String(route.query.mode)) ? String(route.query.mode) : 'search')
 // Keep the URL in step with the tabs, without stacking history entries for what
 // is a change of input, not a change of page.
@@ -31,6 +31,10 @@ const query = ref('')
 const url = ref('')
 const text = ref('')
 const photoFile = ref(null)
+const archiveFile = ref(null)
+// The bulk result: {createdCount, created[], skippedCount, skipped[]} — its own
+// terminal screen, since a migration's outcome is a tally, not a single recipe.
+const bulk = ref(null)
 const busy = ref(false)
 
 // A textarea only ever receives the clipboard's PLAIN-TEXT flavour, but a page
@@ -99,8 +103,13 @@ const canRun = computed(() => {
   if (mode.value === 'search') return !!query.value
   if (mode.value === 'url') return !!url.value
   if (mode.value === 'text') return !!text.value
+  if (mode.value === 'archive') return !!archiveFile.value
   return !!photoFile.value
 })
+
+function onArchive(e) {
+  archiveFile.value = e.target.files[0] || null
+}
 
 function onPhoto(e) {
   photoFile.value = e.target.files[0] || null
@@ -153,9 +162,16 @@ function beginReview(recipe) {
 async function run() {
   if (!canRun.value) return
   busy.value = true
-  planStages()
+  if (mode.value !== 'archive') planStages()
   imported.value = null
+  bulk.value = null
   try {
+    if (mode.value === 'archive') {
+      const fd = new FormData()
+      fd.append('archive', archiveFile.value)
+      bulk.value = await api.uploadPost('/ai/import/archive', fd)
+      return    // terminal: the result screen shows the tally
+    }
     if (mode.value === 'photo') {
       const fd = new FormData()
       fd.append('image', photoFile.value)
@@ -246,7 +262,25 @@ async function applyReview() {
 
   <!-- Step 2: confirm what the model worked out. Only shown when it proposed
        something; most imports never see this. -->
-  <div v-if="imported" class="card">
+  <!-- Migration result: a tally, not a single recipe. Errors persist on screen
+       (the skip list) rather than vanishing in a toast, per the house rule. -->
+  <div v-if="bulk" class="card">
+    <h2>{{ bulk.createdCount }} recipe{{ bulk.createdCount === 1 ? '' : 's' }} imported</h2>
+    <p v-if="bulk.skippedCount" class="muted" style="margin-top:4px">
+      {{ bulk.skippedCount }} {{ bulk.skippedCount === 1 ? 'entry' : 'entries' }} skipped:
+    </p>
+    <ul v-if="bulk.skippedCount" class="notes">
+      <li v-for="s in bulk.skipped" :key="s.entry">
+        <strong>{{ s.entry }}</strong> — {{ s.reason }}
+      </li>
+    </ul>
+    <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px">
+      <button class="secondary" @click="bulk = null; archiveFile = null">Import another file</button>
+      <button @click="router.push('/recipes')">Go to recipes</button>
+    </div>
+  </div>
+
+  <div v-else-if="imported" class="card">
     <h2 style="margin-top:0">
       {{ proposals.length ? 'A few lines needed interpreting' : 'Imported, with notes' }}
     </h2>
@@ -372,6 +406,21 @@ async function applyReview() {
       </p>
     </template>
 
+    <template v-else-if="mode === 'archive'">
+      <label class="field">
+        <span>Export file</span>
+        <input type="file"
+               accept=".zip,.paprikarecipes,.paprikarecipe,.json,.txt,.md,application/zip,application/json"
+               @change="onArchive" />
+      </label>
+      <p class="muted" style="font-size:0.85rem">
+        Bring your whole collection from <strong>Mealie</strong>,
+        <strong>Tandoor</strong> or <strong>Paprika</strong> — upload the app’s
+        export file and every recipe in it is imported. Works completely offline:
+        no key, no AI. Broken entries are skipped and listed, never fatal.
+      </p>
+    </template>
+
     <template v-else>
       <label class="field">
         <span>Recipe photo</span>
@@ -385,7 +434,8 @@ async function applyReview() {
 
     <div class="row" style="justify-content:flex-end;margin-top:8px">
       <button :disabled="busy || !canRun" @click="run">
-        {{ busy ? (mode === 'photo' ? 'Scanning…' : 'Importing…') : (mode === 'photo' ? 'Scan photo' : 'Import') }}
+        {{ busy ? (mode === 'photo' ? 'Scanning…' : 'Importing…')
+          : (mode === 'photo' ? 'Scan photo' : mode === 'archive' ? 'Import everything' : 'Import') }}
       </button>
     </div>
   </div>

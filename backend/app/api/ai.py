@@ -530,6 +530,54 @@ _PHOTO_MEDIA = {"image/jpeg", "image/png", "image/webp"}
 _MAX_PHOTO_BYTES = 10 * 1024 * 1024
 
 
+@bp.post("/ai/import/archive")
+@limiter.limit("5 per minute")   # a single call can create hundreds of rows
+@login_required
+def import_archive_endpoint():
+    """Bulk-import an export file from another recipe manager (Paprika
+    ``.paprikarecipes``, a Tandoor or Mealie zip, or bare JSON/text files).
+
+    Entirely offline — no keys, no model, no network. Each entry succeeds or is
+    skipped with a reason; one broken entry never aborts a migration. The AI
+    structuring/completion passes are deliberately NOT run here: a 300-recipe
+    archive would mean hundreds of model calls, and the per-recipe "Tidy up with
+    AI" button exists for the ones that need it.
+    """
+    from ..services import recipe_archive
+
+    file = request.files.get("archive") or request.files.get("file")
+    if not file:
+        return jsonify({"error": "no file uploaded"}), 422
+    blob = file.read()
+    if not blob:
+        return jsonify({"error": "empty file"}), 422
+
+    payloads, skipped = recipe_archive.extract_payloads(file.filename or "", blob)
+    if not payloads:
+        return jsonify({"error": "no recipes found in that file",
+                        "skipped": skipped[:50]}), 422
+
+    group_id = current_group().id
+    created = []
+    for payload in payloads:
+        entry = payload.pop("_entry", "")
+        try:
+            name = payload.get("name") or "Imported Recipe"
+            recipe = Recipe(name=name, slug=unique_slug(Recipe, group_id, name),
+                            group_id=group_id)
+            db.session.add(recipe)
+            _apply(recipe, {k: v for k, v in payload.items() if k != "name"})
+            db.session.commit()
+            created.append({"id": recipe.id, "name": recipe.name})
+        except Exception:  # noqa: BLE001 - one bad entry must not kill the batch
+            db.session.rollback()
+            _LOGGER.exception("archive entry failed: %s", scrub(entry))
+            skipped.append({"entry": entry, "reason": "could not be saved — see "
+                                                      "the add-on log"})
+    return jsonify({"created": created, "createdCount": len(created),
+                    "skipped": skipped[:50], "skippedCount": len(skipped)}), 201
+
+
 @bp.post("/ai/photo")
 @limiter.limit("20 per minute")
 @login_required

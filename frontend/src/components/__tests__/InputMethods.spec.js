@@ -28,7 +28,7 @@ describe('InputMethods', () => {
     // The whole point: neither page may show a subset. "New recipe" used to hide
     // the four import methods, and Import had no way back to typing it out.
     const expected = ['Type it out', 'Draft with AI', 'Paste', 'From a link',
-                      'From a photo', 'By name']
+                      'From a photo', 'By name', 'From another app']
     at('/recipes/new')
     expect(labels(mount(InputMethods))).toEqual(expected)
     at('/import')
