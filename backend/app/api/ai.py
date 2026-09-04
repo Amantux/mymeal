@@ -249,21 +249,31 @@ def _import_events(data, group_id):
                         "status": 422}
         return
 
-    # Import by name: web-search the recipe, then import the best hit's URL.
+    # Import by name. TheMealDB first: free, structured, needs no key — before
+    # it, this whole branch was a dead end without an Ollama search key, and a
+    # fresh install's "By name" tab errored out of the box. A hit is already a
+    # complete payload, so it skips fetching, parsing, and the model entirely.
+    payload = None
     if query and not url and not text:
-        from ..services import websearch
-        if not websearch.enabled():
-            yield "error", {"error": "Web search isn't configured — add an Ollama "
-                                     "search key in Settings to import by name.",
-                            "status": 503}
-            return
+        from ..services import mealdb, websearch
         yield "stage", {"stage": "searching", "detail": query}
-        results = websearch.web_search(f"{query} recipe")
-        url = next((str(r.get("url") or "") for r in results if r.get("url")), "")
-        if not url:
-            yield "error", {"error": f"No recipe found online for “{query}”.",
+        payload = mealdb.search(query)
+        if payload is not None:
+            pass  # already the complete import shape; no fetch, no model
+        elif not websearch.enabled():
+            yield "error", {"error": f"“{query}” isn't in the free recipe "
+                                     "database, and web search isn't configured — "
+                                     "add an Ollama search key in Settings to "
+                                     "search the wider web.",
                             "status": 404}
             return
+        else:
+            results = websearch.web_search(f"{query} recipe")
+            url = next((str(r.get("url") or "") for r in results if r.get("url")), "")
+            if not url:
+                yield "error", {"error": f"No recipe found online for “{query}”.",
+                                "status": 404}
+                return
 
     # A provider is only needed for the AI fallback; resolve leniently so a
     # JSON-LD URL import still works without one.
@@ -273,11 +283,12 @@ def _import_events(data, group_id):
     except ProviderError:
         provider = None
 
-    yield "stage", {"stage": "fetching", "detail": url or "pasted text"}
+    import_meta: dict = {}
     try:
-        import_meta: dict = {}
-        payload = import_recipe(url=url, text=text, provider=provider,
-                                meta_out=import_meta)
+        if payload is None:
+            yield "stage", {"stage": "fetching", "detail": url or "pasted text"}
+            payload = import_recipe(url=url, text=text, provider=provider,
+                                    meta_out=import_meta)
     except UnsupportedPasteError as exc:
         # Before ValueError (it subclasses it): pasted structured data that is
         # not a Recipe. A curated message, and NOT the "no AI provider" 503 —

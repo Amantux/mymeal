@@ -336,8 +336,9 @@ async function applyReview() {
         <input v-model="query" placeholder="e.g. chicken tikka masala" @keyup.enter="run" />
       </label>
       <p class="muted" style="font-size:0.85rem">
-        Searches the web (Ollama web search) for the recipe and imports the best match.
-        Needs an Ollama search key — set it in Settings.
+        Looks the dish up in TheMealDB’s free recipe database — no key, no AI
+        needed. If it isn’t there, an Ollama search key (Settings) lets it search
+        the wider web instead.
       </p>
     </template>
 

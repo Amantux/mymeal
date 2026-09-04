@@ -48,6 +48,7 @@ options:
   ollama_model: ""
   ollama_api_key: ""
   ollama_search_key: ""
+  mealdb_key: ""
   claude_model: ""
   openai_model: ""
   openai_base_url: ""
@@ -82,6 +83,9 @@ schema:
   ollama_model: "str?"
   ollama_api_key: "password?"
   ollama_search_key: "password?"
+  # TheMealDB supporter key for import-by-name. Leaving it blank uses the public
+  # test key, which works for home use — nothing breaks if you forget this.
+  mealdb_key: "password?"
   claude_model: "str?"
   openai_model: "str?"
   # Point at any OpenAI-compatible server (a local SLM: LM Studio, vLLM, llama.cpp).

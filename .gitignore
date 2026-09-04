@@ -19,3 +19,6 @@ frontend/dist/
 # Env
 .env
 *.local
+
+# Claude worker worktrees (session-local, never source)
+.claude/
