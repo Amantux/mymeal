@@ -283,18 +283,13 @@ async function buildList() {
 </template>
 
 <style scoped>
-/* Segmented view toggle. */
-.seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
-.seg button { border: 0; border-radius: 0; background: var(--surface); color: var(--muted); padding: 6px 14px; font-weight: 600; }
-.seg button + button { border-left: 1px solid var(--border); }
-/* Active = neutral raised fill, not accent — the accent stays on the primary. */
-.seg button.active { background: var(--surface-2); color: var(--text); }
+/* .seg (segmented view toggle) is the shared control in style.css. */
 .mp-nav { display: flex; align-items: center; gap: 8px; }
 .mp-title { min-width: 8ch; text-align: center; }
 .plan-opts { margin-bottom: 16px; }
 /* Pressed toggle: accent text + border only — the sole orange FILL stays on the
    view's primary action (Build shopping list), keeping the accent scarce. */
-button.secondary.active { color: var(--accent); border-color: var(--accent); }
+button.secondary.active { color: var(--accent-text); border-color: var(--accent); }
 
 /* Week: 7 equal-width day columns (no uneven/stretched box). Day: one focused card. */
 /* stretch (default) → every day box is identical width AND height, regardless of
@@ -322,7 +317,7 @@ button.secondary.active { color: var(--accent); border-color: var(--accent); }
 .mp-cell.today { border-color: var(--accent); }
 .mp-cell .num { font-size: 0.8rem; font-weight: 650; margin-bottom: 2px; }
 .mp-cell .chip-sm {
-  font-size: 0.68rem; background: var(--accent-soft); color: var(--accent);
+  font-size: 0.68rem; background: var(--accent-soft); color: var(--accent-text);
   border-radius: 4px; padding: 1px 4px; margin-top: 2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }

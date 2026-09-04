@@ -5,6 +5,7 @@ import { api, apiUrl, mediaUrl } from '../api'
 import { useUI } from '../stores/ui'
 import IngredientRows from '../components/IngredientRows.vue'
 import StepRows from '../components/StepRows.vue'
+import { rowToDisplay, ingredientToRow, rowToPayload } from '../utils/ingredientEdit'
 
 const route = useRoute()
 const router = useRouter()
@@ -63,6 +64,15 @@ const isScaledView = computed(() =>
   !!scaled.value && !!viewServings.value
   && viewServings.value !== recipe.value?.servings)
 
+// Cook mode opens at the servings the reader is LOOKING at, not the recipe's
+// base — walking into the kitchen must not silently revert the numbers they
+// just scaled. Only passed when the view is actually scaled (isScaledView), so
+// a failed scale request can never send cook mode a count the reader never saw.
+function openCookMode() {
+  const q = isScaledView.value ? `?servings=${viewServings.value}` : ''
+  router.push(`/recipes/${recipe.value.id}/cook${q}`)
+}
+
 function amountOf(ing) {
   return [ing.amountText, ing.unitText].filter(Boolean).join(' ')
 }
@@ -108,8 +118,21 @@ function splitOne(ing) {
 // Mapped once per render rather than calling the splitter twice per row in the
 // template (once for the food, once for the note).
 const shownRows = computed(() => plainIngredients.value.map((ing) => ({
-  id: ing.id, ...splitOne(ing),
+  id: ing.id, section: ing.section || '', ...splitOne(ing),
 })))
+// Consecutive rows sharing a section render under one sub-heading. Grouping is
+// by adjacency, never by sorting: the author's order is the recipe's order.
+// When no row has a section (most recipes) this is a single unheaded group and
+// the list renders exactly as before.
+const shownGroups = computed(() => {
+  const groups = []
+  for (const row of shownRows.value) {
+    const last = groups[groups.length - 1]
+    if (last && last.section === row.section) last.rows.push(row)
+    else groups.push({ section: row.section, rows: [row] })
+  }
+  return groups
+})
 
 async function refreshView() {
   const r = recipe.value
@@ -135,48 +158,29 @@ const form = ref({})
 const editIngredients = ref([]) // structured rows for the edit-mode editor
 const structuring = ref(false)
 
-function rowToDisplay(r) {
-  // The variety belongs in front of the food, the way a person writes it:
-  // "2 tsp Vietnamese cinnamon", not "2 tsp cinnamon, Vietnamese".
-  const food = [(r.qualifier || '').trim(), (r.food || '').trim()].filter(Boolean).join(' ')
-  const parts = [String(r.quantity ?? '').trim(), (r.unit || '').trim(), food].filter(Boolean)
-  let d = parts.join(' ')
-  const note = (r.note || '').trim()
-  if (note) d = d ? `${d}, ${note}` : note
-  return d
-}
 const filledRows = () => editIngredients.value.filter(
   (r) => (r.food || '').trim() || String(r.quantity ?? '').trim() || r.refRecipeId,
 )
 
-// Turn stored ingredients into editor rows. Structured ones (with a food)
-// round-trip exactly; legacy free-text lines drop their whole display into the
-// food field so nothing is lost and the row can be restructured or AI-tidied.
-// The editor rebuilds `display` from these fields on every save, so anything
-// missing here is DESTROYED the first time someone edits an unrelated field.
-// That is why the qualifier has to round-trip before anything starts writing it.
-function ingredientToRow(i) {
-  if (i.refRecipe) {
-    return { quantity: i.quantity || '', unit: i.unit?.name || '', food: i.refRecipe.name,
-             note: i.note || '', qualifier: i.qualifier || '',
-             refRecipeId: i.refRecipe.id, refRecipeName: i.refRecipe.name }
-  }
-  if (i.food) {
-    return { quantity: i.quantity || '', unit: i.unit?.name || '', food: i.food.name,
-             note: i.note || '', qualifier: i.qualifier || '' }
-  }
-  return { quantity: '', unit: '', food: i.display || '', note: '', qualifier: i.qualifier || '' }
-}
+// ingredientToRow / rowToDisplay / rowToPayload live in utils/ingredientEdit.js:
+// the editor rebuilds every ingredient from these rows on save, so a serialized
+// field the pair doesn't carry is DESTROYED by any unrelated edit. The module's
+// tests are the regression guard (qualifier nearly shipped that way; section did).
 
 async function tidyIngredients() {
-  const ls = filledRows().map(rowToDisplay).filter(Boolean)
+  const src = filledRows()
+  const ls = src.map(rowToDisplay).filter(Boolean)
   if (!ls.length || structuring.value) return
   structuring.value = true
   try {
     const res = await api.post('/ai/parse-ingredients', { lines: ls })
-    editIngredients.value = res.ingredients.map((r) => ({
+    editIngredients.value = res.ingredients.map((r, idx) => ({
       quantity: r.quantity || '', unit: r.unit || '', food: r.food || '',
       note: r.note || '', qualifier: r.qualifier || '',
+      // The parser never sees the section (it isn't part of the line), so it
+      // must be carried across from the row that produced the line, or Tidy
+      // becomes another way to silently wipe every grouping.
+      section: src[idx]?.section || '',
     }))
     ui.toast('Tidied ingredients')
   } catch (e) {
@@ -263,12 +267,7 @@ async function save() {
     ...form.value,
     categoryIds: selectedCategoryIds.value,
     nutrition: nutritionForm.value,
-    ingredients: filledRows().map((r, position) => ({
-      display: rowToDisplay(r), quantity: Number(r.quantity) || 0,
-      unit: r.unit || '', food: r.food || '', note: r.note || '',
-      qualifier: r.qualifier || '', position,
-      refRecipeId: r.refRecipeId || undefined,
-    })),
+    ingredients: filledRows().map((r, position) => rowToPayload(r, position)),
     steps: editSteps.value
       .map((s) => (s.text || '').trim())
       .filter(Boolean)
@@ -317,10 +316,10 @@ function loadBuffersFrom(snap) {
   editIngredients.value = (snap.ingredients || []).map((i) =>
     i.refRecipeId
       ? { quantity: i.quantity || '', unit: i.unit || '', food: i.food || i.display || 'component',
-          note: i.note || '', qualifier: i.qualifier || '',
+          note: i.note || '', qualifier: i.qualifier || '', section: i.section || '',
           refRecipeId: i.refRecipeId, refRecipeName: i.food || i.display || 'recipe' }
       : { quantity: i.quantity || '', unit: i.unit || '', food: i.food || i.display || '',
-          note: i.note || '', qualifier: i.qualifier || '' })
+          note: i.note || '', qualifier: i.qualifier || '', section: i.section || '' })
   editSteps.value = (snap.steps || []).map((s) => ({ text: s.text }))
 }
 
@@ -599,7 +598,7 @@ const imageSrc = computed(() =>
       <button class="ghost" @click="router.push('/recipes')">← Recipes</button>
       <div class="grow"></div>
       <template v-if="!editing">
-        <button v-if="recipe.steps.length" @click="router.push(`/recipes/${recipe.id}/cook`)">
+        <button v-if="recipe.steps.length" @click="openCookMode">
           👨‍🍳 Cook
         </button>
         <button v-if="recipe.ingredients.length" class="secondary" :disabled="shoppingBusy"
@@ -726,12 +725,18 @@ const imageSrc = computed(() =>
                eye down, then what to actually get out of the cupboard. Every row
                uses the same grid, including ones with no amount, so the food text
                keeps one left edge the whole way down the list. -->
-          <li v-for="row in shownRows" :key="row.id">
-            <span class="ing-amt tnum">{{ row.amount }}</span>
-            <span class="ing-food">{{ row.food
-              }}<span v-if="row.weight" class="ing-weight">{{ row.weight }}</span
-              ><span v-if="row.note" class="ing-note">· {{ row.note }}</span></span>
-          </li>
+          <!-- Sub-headings stay INSIDE the one grid (a full-width item), so the
+               amount column keeps a single shared width across every section
+               instead of re-sizing per group. -->
+          <template v-for="(g, gi) in shownGroups" :key="`g${gi}`">
+            <li v-if="g.section" class="ing-sec">{{ g.section }}</li>
+            <li v-for="row in g.rows" :key="row.id">
+              <span class="ing-amt tnum">{{ row.amount }}</span>
+              <span class="ing-food">{{ row.food
+                }}<span v-if="row.weight" class="ing-weight">{{ row.weight }}</span
+                ><span v-if="row.note" class="ing-note">· {{ row.note }}</span></span>
+            </li>
+          </template>
         </ul>
         <p v-else-if="!componentIngredients.length" class="muted">No ingredients listed.</p>
 
@@ -966,6 +971,16 @@ const imageSrc = computed(() =>
   list-style: none; margin: 0; padding: 0; max-width: 62ch;
 }
 .ing-list li { display: contents; }
+/* A section sub-heading is a full-width grid item, not a cell pair: it must not
+   consume an amount-column slot or the rows below it shift a column over. No
+   border — the rows draw their own rules — and quiet by design: it's wayfinding
+   inside a work surface, not a card heading. */
+.ing-list li.ing-sec {
+  display: block; grid-column: 1 / -1; padding: 14px 0 2px;
+  font-size: 0.72rem; font-weight: 650; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--muted);
+}
+.ing-list li.ing-sec:first-child { padding-top: 2px; }
 .ing-amt, .ing-food { padding: 8px 0; border-bottom: 1px solid var(--border); }
 .ing-list li:last-child .ing-amt,
 .ing-list li:last-child .ing-food { border-bottom: 0; }

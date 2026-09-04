@@ -294,9 +294,9 @@ async function send(text) {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
-.linkish { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 0.8rem; }
+.linkish { background: none; border: none; color: var(--accent-text); cursor: pointer; font-size: 0.8rem; }
 .ai-tag { font-size: 0.66rem; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); white-space: nowrap; }
-.ai-tag.on { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.ai-tag.on { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; }
 .ai-tag.off { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
 
 .pbody { flex: 1; overflow-y: auto; padding: 16px; }
@@ -324,7 +324,9 @@ async function send(text) {
   white-space: pre-wrap;
   font-size: 0.88rem;
 }
-.turn.user .bubble { background: var(--accent-soft); color: var(--accent); }
+/* accent-text: --accent on the soft tint is 3.26:1 light / 3.58:1 dark — below
+   AA for the one bubble that holds the user's own words. */
+.turn.user .bubble { background: var(--accent-soft); color: var(--accent-text); }
 .turn.assistant .bubble { background: var(--surface-2); }
 .bubble.err { background: var(--danger-soft); color: var(--danger); }
 
@@ -335,7 +337,7 @@ async function send(text) {
   gap: 6px;
   font-size: 0.74rem;
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
   border-radius: 999px;
   padding: 3px 4px 3px 9px;
 }

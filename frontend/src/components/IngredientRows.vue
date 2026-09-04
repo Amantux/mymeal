@@ -25,7 +25,10 @@ function blank() {
   // `sourceText` is the line the paste parser was given. It's UI-only (the
   // backend ignores unknown row keys) and exists so a wrong parse is visible
   // against its ground truth instead of silently landing in the wrong column.
-  return { quantity: '', unit: '', food: '', note: '', qualifier: '',
+  // `section` ("For the drizzle") likewise: it isn't editable here, but a key
+  // missing from blank() is what let the save path rebuild rows without it and
+  // wipe every grouping the first time an imported recipe was edited.
+  return { quantity: '', unit: '', food: '', note: '', qualifier: '', section: '',
            sourceText: '', refRecipeId: '', refRecipeName: '' }
 }
 const rows = ref(props.modelValue.length ? props.modelValue.map((r) => ({ ...blank(), ...r })) : [blank()])
@@ -218,7 +221,15 @@ function addComponent(r) {
     <div class="col-heads">
       <span>Qty</span><span>Unit</span><span>Ingredient</span><span>Note</span><span></span>
     </div>
-    <div v-for="(r, i) in rows" :key="i" :ref="(el) => setRowRef(el, i)"
+    <template v-for="(r, i) in rows" :key="i">
+      <!-- The row's section ("For the drizzle"), shown where it changes so the
+           editor mirrors the read view's grouping. Display-only; editing
+           sections is deliberately not built — this label exists so a preserved
+           grouping is VISIBLE, not invisible-but-intact. A SIBLING of the row,
+           not a child: inside the row grid it collided with the phone layout's
+           explicit `.ctl { grid-row: 1 }` placement and orphaned the controls. -->
+      <p v-if="r.section && r.section !== rows[i - 1]?.section" class="sec-lbl">{{ r.section }}</p>
+      <div :ref="(el) => setRowRef(el, i)"
          class="ing-row" :class="{ 'is-ref': r.refRecipeId }"
          role="group" :aria-label="`Ingredient ${i + 1} of ${rows.length}`"
          @keydown="onRowKey($event, i)">
@@ -262,7 +273,8 @@ function addComponent(r) {
         <span class="src-txt">{{ r.sourceText }}</span>
         <button type="button" class="src-hide" @click="r.sourceText = ''">Hide original</button>
       </p>
-    </div>
+      </div>
+    </template>
 
     <p v-if="lastRemoved" class="undo">
       Removed <strong>{{ removedLabel(lastRemoved.row) }}</strong>.
@@ -327,6 +339,14 @@ function addComponent(r) {
   font: inherit; color: var(--muted); cursor: pointer; text-decoration: underline;
 }
 .src-hide:hover { color: var(--text); }
+
+/* Section label: a quiet line between rows, styled like the read view's
+   sub-heading. */
+.sec-lbl {
+  margin: 6px 0 0;
+  font-size: 0.72rem; font-weight: 650; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--muted);
+}
 
 .undo {
   display: flex; align-items: center; gap: 8px; margin: 4px 0 0;
