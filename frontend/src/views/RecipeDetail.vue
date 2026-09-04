@@ -64,6 +64,15 @@ const isScaledView = computed(() =>
   !!scaled.value && !!viewServings.value
   && viewServings.value !== recipe.value?.servings)
 
+// Cook mode opens at the servings the reader is LOOKING at, not the recipe's
+// base — walking into the kitchen must not silently revert the numbers they
+// just scaled. Only passed when the view is actually scaled (isScaledView), so
+// a failed scale request can never send cook mode a count the reader never saw.
+function openCookMode() {
+  const q = isScaledView.value ? `?servings=${viewServings.value}` : ''
+  router.push(`/recipes/${recipe.value.id}/cook${q}`)
+}
+
 function amountOf(ing) {
   return [ing.amountText, ing.unitText].filter(Boolean).join(' ')
 }
@@ -589,7 +598,7 @@ const imageSrc = computed(() =>
       <button class="ghost" @click="router.push('/recipes')">← Recipes</button>
       <div class="grow"></div>
       <template v-if="!editing">
-        <button v-if="recipe.steps.length" @click="router.push(`/recipes/${recipe.id}/cook`)">
+        <button v-if="recipe.steps.length" @click="openCookMode">
           👨‍🍳 Cook
         </button>
         <button v-if="recipe.ingredients.length" class="secondary" :disabled="shoppingBusy"
