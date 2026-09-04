@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watch, nextTick } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { api, streamPost } from '../api'
 import { useUI } from '../stores/ui'
 import InputMethods from '../components/InputMethods.vue'
@@ -94,6 +94,10 @@ const imported = ref(null)
 const proposals = ref([])
 const warnings = ref([])   // non-fatal notes about the source (lint)
 const saving = ref(false)
+// Whether the review was deliberately settled (applied or skipped). Both exits
+// go through finishReview(), so the leave guard below and the buttons can never
+// disagree about what counts as "done".
+const reviewResolved = ref(false)
 
 const canRun = computed(() => {
   if (mode.value === 'search') return !!query.value
@@ -141,6 +145,7 @@ function sureness(confidence) {
 
 function beginReview(recipe) {
   imported.value = recipe
+  reviewResolved.value = false
   warnings.value = recipe.warnings || []
   proposals.value = (recipe.ingredientProposals || []).map((p) => ({
     ...p,
@@ -199,10 +204,35 @@ async function run() {
   }
 }
 
-function skipReview() {
-  ui.toast('Recipe imported')
+// The one way OUT of the review. Every deliberate exit lands here, which is
+// what lets the leave guard treat "not resolved" as "the user is walking away".
+function finishReview(message) {
+  reviewResolved.value = true
+  ui.toast(message)
   router.push(`/recipes/${imported.value.id}`)
 }
+
+function skipReview() {
+  finishReview('Recipe imported')
+}
+
+// The recipe is saved BEFORE this screen (deliberate — a browser crash must not
+// lose an import), so navigating away used to be indistinguishable from
+// "Leave them as written": the proposals just silently vanished. Ask first.
+// Closing the tab is knowingly not covered — a beforeunload dialog would tax
+// every exit to protect a recipe that is already safe.
+onBeforeRouteLeave(() => {
+  if (!imported.value || reviewResolved.value || !proposals.value.length) return true
+  const n = proposals.value.length
+  const ok = confirm(
+    `Keep “${imported.value.name}” as imported? `
+    + `${n} suggested ingredient fix${n === 1 ? '' : 'es'} will be discarded.`,
+  )
+  // Confirming IS a resolution (an explicit "keep as imported"), so a redirect
+  // chain re-running the guard must not ask twice.
+  if (ok) reviewResolved.value = true
+  return ok
+})
 
 async function applyReview() {
   const kept = proposals.value.filter((p) => p.keep)
@@ -231,8 +261,7 @@ async function applyReview() {
       }
     })
     await api.put(`/recipes/${imported.value.id}`, { ingredients: rows })
-    ui.toast(`Recipe imported — ${kept.length} line${kept.length === 1 ? '' : 's'} tidied up`)
-    router.push(`/recipes/${imported.value.id}`)
+    finishReview(`Recipe imported — ${kept.length} line${kept.length === 1 ? '' : 's'} tidied up`)
   } catch (e) {
     ui.error(e.message)
   } finally {
