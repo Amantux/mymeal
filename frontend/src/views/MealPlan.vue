@@ -283,12 +283,7 @@ async function buildList() {
 </template>
 
 <style scoped>
-/* Segmented view toggle. */
-.seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
-.seg button { border: 0; border-radius: 0; background: var(--surface); color: var(--muted); padding: 6px 14px; font-weight: 600; }
-.seg button + button { border-left: 1px solid var(--border); }
-/* Active = neutral raised fill, not accent — the accent stays on the primary. */
-.seg button.active { background: var(--surface-2); color: var(--text); }
+/* .seg (segmented view toggle) is the shared control in style.css. */
 .mp-nav { display: flex; align-items: center; gap: 8px; }
 .mp-title { min-width: 8ch; text-align: center; }
 .plan-opts { margin-bottom: 16px; }

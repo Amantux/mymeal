@@ -152,6 +152,17 @@ button.danger:hover { background: rgba(220, 38, 38, 0.08); color: var(--danger);
 button.icon-btn { padding: 8px; width: 38px; height: 38px; justify-content: center; }
 button.sm { padding: 5px 10px; font-size: 0.82rem; }
 
+/* ---------- Segmented control ---------- */
+/* One connected strip of mutually-exclusive view options (role=tablist).
+   Moved here verbatim from MealPlan's scoped block once a second view needed
+   the same control. NOTE: InputMethods' tab strip is deliberately NOT this —
+   its 390px wrapping behaviour is different on purpose. */
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: var(--surface); color: var(--muted); padding: 6px 14px; font-weight: 600; }
+.seg button + button { border-left: 1px solid var(--border); }
+/* Active = neutral raised fill, not accent — the accent stays on the primary. */
+.seg button.active { background: var(--surface-2); color: var(--text); }
+
 /* ---------- Cards ---------- */
 .card {
   background: var(--surface); border: 1px solid var(--border);
