@@ -9,7 +9,7 @@ alembic==1.19.1
 # unused when DATABASE_URL is blank (SQLite default).
 psycopg[binary]>=3.3.5
 marshmallow==4.3.1
-PyJWT>=2.10.1
+PyJWT>=2.13.0
 passlib==1.7.4
 # passlib 1.7.4 reads bcrypt.__about__ which bcrypt>=4.1 removed; pin below that.
 bcrypt==4.0.1
