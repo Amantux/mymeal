@@ -31,7 +31,8 @@ const METHODS = [
   { id: 'text', emoji: '📋', label: 'Paste', hint: 'Text, or copied from a web page', page: 'import' },
   { id: 'url', emoji: '🔗', label: 'From a link', hint: 'Any recipe URL', page: 'import' },
   { id: 'photo', emoji: '📷', label: 'From a photo', hint: 'A card, page or handwritten note', page: 'import' },
-  { id: 'search', emoji: '🔎', label: 'By name', hint: 'Search the web for it', page: 'import' },
+  { id: 'search', emoji: '🔎', label: 'By name', hint: 'Look it up in a free recipe database', page: 'import' },
+  { id: 'archive', emoji: '📦', label: 'From another app', hint: 'A Mealie, Tandoor or Paprika export file', page: 'import' },
 ]
 
 // Which page is hosting us, inferred from the route rather than a prop — one less

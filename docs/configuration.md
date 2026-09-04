@@ -80,6 +80,7 @@ docker compose run --rm app python3 -m app.config_check
 | `MYMEAL_OLLAMA_MODEL` | string | `llama3.1` | no | yes | Model for the ollama provider. HA option: `ollama_model`. |
 | `MYMEAL_OLLAMA_API_KEY` | string | `_(empty)_` | **yes** | yes | Optional bearer token for the ollama provider (Ollama Cloud or a secured instance). Blank for a plain local server. HA option: `ollama_api_key`. Supports `MYMEAL_OLLAMA_API_KEY_FILE`. |
 | `MYMEAL_OLLAMA_SEARCH_KEY` | string | `_(empty)_` | **yes** | yes | Ollama API key (ollama.com) for the hosted web search — used to import a recipe by name. Blank falls back to OLLAMA_API_KEY. HA option: `ollama_search_key`. Supports `MYMEAL_OLLAMA_SEARCH_KEY_FILE`. |
+| `MYMEAL_MEALDB_KEY` | string | `_(empty)_` | **yes** | yes | TheMealDB API key for import-by-name. Blank uses the public test key (fine for home use); a supporter key from themealdb.com removes its limits. HA option: `mealdb_key`. Supports `MYMEAL_MEALDB_KEY_FILE`. |
 | `MYMEAL_AI_TIMEOUT_SECONDS` | enum/int | `60` | no | yes | Per-request timeout for AI provider calls. HA option: `ai_timeout_seconds`. |
 | `MYMEAL_AI_CONFIDENCE_THRESHOLD` | number | `0.8` | no | yes | Auto-tagging: a proposed tag at/above this model-reported confidence (and matching an existing tag) is applied automatically; below it, or a new tag, goes to the review queue. |
 

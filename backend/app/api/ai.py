@@ -249,21 +249,31 @@ def _import_events(data, group_id):
                         "status": 422}
         return
 
-    # Import by name: web-search the recipe, then import the best hit's URL.
+    # Import by name. TheMealDB first: free, structured, needs no key — before
+    # it, this whole branch was a dead end without an Ollama search key, and a
+    # fresh install's "By name" tab errored out of the box. A hit is already a
+    # complete payload, so it skips fetching, parsing, and the model entirely.
+    payload = None
     if query and not url and not text:
-        from ..services import websearch
-        if not websearch.enabled():
-            yield "error", {"error": "Web search isn't configured — add an Ollama "
-                                     "search key in Settings to import by name.",
-                            "status": 503}
-            return
+        from ..services import mealdb, websearch
         yield "stage", {"stage": "searching", "detail": query}
-        results = websearch.web_search(f"{query} recipe")
-        url = next((str(r.get("url") or "") for r in results if r.get("url")), "")
-        if not url:
-            yield "error", {"error": f"No recipe found online for “{query}”.",
+        payload = mealdb.search(query)
+        if payload is not None:
+            pass  # already the complete import shape; no fetch, no model
+        elif not websearch.enabled():
+            yield "error", {"error": f"“{query}” isn't in the free recipe "
+                                     "database, and web search isn't configured — "
+                                     "add an Ollama search key in Settings to "
+                                     "search the wider web.",
                             "status": 404}
             return
+        else:
+            results = websearch.web_search(f"{query} recipe")
+            url = next((str(r.get("url") or "") for r in results if r.get("url")), "")
+            if not url:
+                yield "error", {"error": f"No recipe found online for “{query}”.",
+                                "status": 404}
+                return
 
     # A provider is only needed for the AI fallback; resolve leniently so a
     # JSON-LD URL import still works without one.
@@ -273,11 +283,12 @@ def _import_events(data, group_id):
     except ProviderError:
         provider = None
 
-    yield "stage", {"stage": "fetching", "detail": url or "pasted text"}
+    import_meta: dict = {}
     try:
-        import_meta: dict = {}
-        payload = import_recipe(url=url, text=text, provider=provider,
-                                meta_out=import_meta)
+        if payload is None:
+            yield "stage", {"stage": "fetching", "detail": url or "pasted text"}
+            payload = import_recipe(url=url, text=text, provider=provider,
+                                    meta_out=import_meta)
     except UnsupportedPasteError as exc:
         # Before ValueError (it subclasses it): pasted structured data that is
         # not a Recipe. A curated message, and NOT the "no AI provider" 503 —
@@ -517,6 +528,54 @@ def estimate_nutrition_endpoint(recipe_id):
 
 _PHOTO_MEDIA = {"image/jpeg", "image/png", "image/webp"}
 _MAX_PHOTO_BYTES = 10 * 1024 * 1024
+
+
+@bp.post("/ai/import/archive")
+@limiter.limit("5 per minute")   # a single call can create hundreds of rows
+@login_required
+def import_archive_endpoint():
+    """Bulk-import an export file from another recipe manager (Paprika
+    ``.paprikarecipes``, a Tandoor or Mealie zip, or bare JSON/text files).
+
+    Entirely offline — no keys, no model, no network. Each entry succeeds or is
+    skipped with a reason; one broken entry never aborts a migration. The AI
+    structuring/completion passes are deliberately NOT run here: a 300-recipe
+    archive would mean hundreds of model calls, and the per-recipe "Tidy up with
+    AI" button exists for the ones that need it.
+    """
+    from ..services import recipe_archive
+
+    file = request.files.get("archive") or request.files.get("file")
+    if not file:
+        return jsonify({"error": "no file uploaded"}), 422
+    blob = file.read()
+    if not blob:
+        return jsonify({"error": "empty file"}), 422
+
+    payloads, skipped = recipe_archive.extract_payloads(file.filename or "", blob)
+    if not payloads:
+        return jsonify({"error": "no recipes found in that file",
+                        "skipped": skipped[:50]}), 422
+
+    group_id = current_group().id
+    created = []
+    for payload in payloads:
+        entry = payload.pop("_entry", "")
+        try:
+            name = payload.get("name") or "Imported Recipe"
+            recipe = Recipe(name=name, slug=unique_slug(Recipe, group_id, name),
+                            group_id=group_id)
+            db.session.add(recipe)
+            _apply(recipe, {k: v for k, v in payload.items() if k != "name"})
+            db.session.commit()
+            created.append({"id": recipe.id, "name": recipe.name})
+        except Exception:  # noqa: BLE001 - one bad entry must not kill the batch
+            db.session.rollback()
+            _LOGGER.exception("archive entry failed: %s", scrub(entry))
+            skipped.append({"entry": entry, "reason": "could not be saved — see "
+                                                      "the add-on log"})
+    return jsonify({"created": created, "createdCount": len(created),
+                    "skipped": skipped[:50], "skippedCount": len(skipped)}), 201
 
 
 @bp.post("/ai/photo")

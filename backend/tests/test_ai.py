@@ -261,15 +261,25 @@ def test_ai_import_by_name_searches_then_imports(auth_client, monkeypatch):
     assert r.status_code == 201 and r.get_json()["name"] == "Test Soup"
 
 
-def test_ai_import_by_name_requires_search_key(auth_client, monkeypatch):
-    from app.services import websearch
+def test_ai_import_by_name_miss_without_key_is_404_not_503(auth_client, monkeypatch):
+    """TheMealDB runs first and needs no key, so a missing search key is no
+    longer an error in itself — only a miss PLUS no key ends the road, and it is
+    a 404 ("not found here") pointing at what the key would add, not a 503
+    implying the feature is broken. mealdb is mocked: tests never touch the
+    real themealdb.com."""
+    from app.services import mealdb, websearch
+    monkeypatch.setattr(mealdb, "search", lambda q: None)
     monkeypatch.setattr(websearch, "enabled", lambda settings=None: False)
-    assert auth_client.post("/api/v1/ai/import",
-                            json={"query": "soup"}).status_code == 503
+
+    r = auth_client.post("/api/v1/ai/import", json={"query": "soup"})
+
+    assert r.status_code == 404
+    assert "web search isn't configured" in r.get_json()["error"]
 
 
 def test_ai_import_by_name_no_results(auth_client, monkeypatch):
-    from app.services import websearch
+    from app.services import mealdb, websearch
+    monkeypatch.setattr(mealdb, "search", lambda q: None)
     monkeypatch.setattr(websearch, "enabled", lambda settings=None: True)
     monkeypatch.setattr(websearch, "web_search", lambda q, **kw: [])
     assert auth_client.post("/api/v1/ai/import",
