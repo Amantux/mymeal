@@ -24,6 +24,25 @@ from ..logsafe import scrub
 
 _LOG = logging.getLogger("mymeal.metrics")
 
+
+def _safe(value: Any) -> Any:
+    """A sample value that is safe to log but still usable as a number.
+
+    Strings get scrubbed: an MCP tool name comes straight from the caller's
+    JSON-RPC body, and a newline in it forges a whole log entry — including one
+    with a future timestamp, which pushes real audit lines out of the tail that
+    the debug tooling returns. Length-capped for the same reason.
+
+    Numbers and booleans keep their type. They cannot carry CR/LF, and
+    stringifying them made `summary()` dead code: it selects samples on
+    ``isinstance(s["ms"], int)``, which no stored sample could ever satisfy, so
+    every summary reported a count of zero.
+    """
+    if isinstance(value, (bool, int, float)):
+        return value
+    return scrub(value, limit=120)
+
+
 RING_SIZE = 200
 _RING: deque = deque(maxlen=RING_SIZE)
 _LOCK = Lock()
@@ -36,11 +55,7 @@ def record(kind: str, **fields: Any) -> dict:
     small scalars; anything user-supplied is the caller's job to trim, because
     this ends up in a log file the debug tooling can read.
     """
-    # scrub EVERY value: an MCP tool name comes straight from the caller's
-    # JSON-RPC body, and a newline in it forges a whole log entry — including
-    # one with a future timestamp, which pushes real audit lines out of the
-    # tail that debug_recent_logs returns. Length-capped for the same reason.
-    sample = {"kind": kind, **{k: scrub(v, limit=120) for k, v in fields.items()}}
+    sample = {"kind": kind, **{k: _safe(v) for k, v in fields.items()}}
     with _LOCK:
         _RING.append(sample)
     # A single structured line, easy to grep by kind: `metric kind=job ...`.
@@ -89,6 +104,17 @@ class Timer:
 
     def set(self, **fields: Any) -> None:
         self.fields.update(fields)
+
+    def mark(self, field: str) -> None:
+        """Record ms-since-start under `field`, the FIRST time only.
+
+        For "time to first X" measurements — notably a chat stream's
+        time-to-first-token, where the caller sees every token and would
+        otherwise have to guard the call site itself. Later calls are ignored,
+        so `timer.mark("ttftMs")` can sit unguarded in the delta loop.
+        """
+        if self.fields.get(field) is None:
+            self.fields[field] = int((time.monotonic() - self._started) * 1000)
 
     def __enter__(self) -> Timer:
         self._started = time.monotonic()
