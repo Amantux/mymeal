@@ -680,7 +680,9 @@ const imageSrc = computed(() =>
             <span>Title (optional)</span>
             <input v-model="newVideoTitle" placeholder="e.g. Folding technique" />
           </label>
-          <button :disabled="addingVideo" @click="addVideoLink">
+          <!-- Secondary, not accent: Cook is this page's one primary action.
+               A card-level action never earns the orange fill. -->
+          <button class="secondary" :disabled="addingVideo" @click="addVideoLink">
             {{ addingVideo ? 'Adding…' : 'Add link' }}
           </button>
           <label class="secondary btnlike">
@@ -825,7 +827,7 @@ const imageSrc = computed(() =>
             </div>
             <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap">
               <button v-if="v.status === 'open'" class="secondary sm" @click="editExperiment(v)">✎ Edit</button>
-              <button v-if="v.status === 'open'" class="sm" @click="promoteVersion(v)">⬆ Promote</button>
+              <button v-if="v.status === 'open'" class="secondary sm" @click="promoteVersion(v)">⬆ Promote</button>
               <button class="secondary sm danger" @click="discardVersion(v)">Discard</button>
               <span class="muted sm" style="align-self:center">{{ fmtDate(v.createdAt) }}</span>
             </div>
