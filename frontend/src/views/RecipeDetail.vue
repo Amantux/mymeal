@@ -184,14 +184,20 @@ async function tidyIngredients() {
   // onto the wrong ingredient.
   const pairs = src
     .map((r, idx) => ({ r, idx, line: rowToDisplay(r) }))
-    .filter((p) => !p.r.freeText && p.line)
+    .filter((p) => !p.r.freeText && !p.r.refRecipeId && p.line)
   if (!pairs.length || structuring.value) return
   structuring.value = true
   try {
     const res = await api.post('/ai/parse-ingredients', { lines: pairs.map((p) => p.line) })
     const out = src.slice()
     res.ingredients.forEach((r, k) => {
-      const { r: was, idx } = pairs[k]
+      // The model is not guaranteed to return one row per line — the backend
+      // only trusts the positional mapping when the counts match, and drops
+      // items it can't read. An extra row here used to destructure undefined
+      // and surface as a raw TypeError toast.
+      const pair = pairs[k]
+      if (!pair) return
+      const { r: was, idx } = pair
       out[idx] = {
         quantity: r.quantity || '', unit: r.unit || '', food: r.food || '',
         note: r.note || '', qualifier: r.qualifier || '',

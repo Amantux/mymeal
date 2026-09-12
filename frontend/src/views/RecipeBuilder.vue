@@ -91,16 +91,23 @@ async function draft() {
 async function structure() {
   // Free-text rows are held out and spliced back untouched: restructuring them
   // is exactly what their author opted out of, and this replaces the whole list.
+  // Component rows are held out for a harder reason: the rebuilt row carries no
+  // refRecipeId, so passing one through here UNLINKS the sub-recipe and turns it
+  // into a plain food. That predates this change, but it is the same bug class
+  // and these are the lines that decide it.
   const src = filledRows()
   const pairs = src
     .map((r, idx) => ({ r, idx, line: rowToDisplay(r) }))
-    .filter((p) => !p.r.freeText && p.line)
+    .filter((p) => !p.r.freeText && !p.r.refRecipeId && p.line)
   if (!pairs.length || structuring.value) return
   structuring.value = true
   try {
     const res = await api.post('/ai/parse-ingredients', { lines: pairs.map((p) => p.line) })
     const out = src.slice()
     res.ingredients.forEach((r, k) => {
+      // See the note in RecipeDetail.tidyIngredients: the reply is not
+      // guaranteed to be 1:1 with the lines we sent.
+      if (!pairs[k]) return
       out[pairs[k].idx] = {
         quantity: r.quantity || '', unit: r.unit || '', food: r.food || '',
         note: r.note || '', freeText: false, display: '',
