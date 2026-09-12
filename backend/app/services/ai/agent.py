@@ -398,6 +398,38 @@ _ACTION_FORMATTERS = {
 }
 
 
+def run_tool(gid: str, name: str, args) -> dict:
+    """Execute one tool inside its own SAVEPOINT, never raising.
+
+    Tools only ``flush`` — the request owns the single commit — so without a
+    nested transaction one bad tool corrupts the whole turn two ways:
+
+    * a tool that writes and *then* fails leaves its partial write staged, and
+      the request's commit persists it. The ``{"error": ...}`` we hand back to
+      the model is then a lie: the row is really there.
+    * a tool whose own ``flush`` fails (a constraint violation) puts the session
+      in a failed state, so every later tool AND the final commit raise
+      ``PendingRollbackError`` — a 500, which the chat spec (§8) forbids: "a
+      tool failure MUST be caught and fed back to the model as {"error": …} —
+      it MUST NOT 500 the turn".
+
+    The SAVEPOINT scopes both failures to the one tool, so the rest of the turn
+    proceeds on a usable session.
+    """
+    try:
+        with db.session.begin_nested():
+            return execute_tool(gid, name, args)
+    except Exception as exc:  # noqa: BLE001 - feed errors back, never 500
+        # `trace` is returned to the browser and persisted as tool_trace, so the
+        # exception text must not ride along: an ORM error's str() carries the
+        # SQL statement and bound parameters, a connection error the DSN.
+        # execute_tool returns a curated {"error": ...} for every expected case,
+        # so reaching here is an unexpected failure — log it (scrubbed by the
+        # global formatter) and hand the model a generic message.
+        _log.warning("chat tool %s failed", name, exc_info=exc)
+        return {"error": f"{name} failed unexpectedly"}
+
+
 def actions_from_trace(trace: list[dict]) -> list[dict]:
     """Derive action chips from the tool trace (mutations only)."""
     actions = []
@@ -582,18 +614,7 @@ def run_chat(
             {"role": "assistant", "content": result.content or "(using tools)"}
         )
         for call in result.tool_calls:
-            try:
-                output = execute_tool(gid, call.name, call.arguments)
-            except Exception as exc:  # noqa: BLE001 - feed errors back, never 500
-                # `trace` is returned to the browser and persisted as
-                # tool_trace, so the exception text must not ride along: an ORM
-                # error's str() carries the SQL statement and bound parameters,
-                # a connection error the DSN. execute_tool returns curated
-                # {"error": ...} for every expected case, so this is an
-                # unexpected failure — log it (scrubbed by the global
-                # formatter) and hand the model a generic message.
-                _log.warning("chat tool %s failed", call.name, exc_info=exc)
-                output = {"error": f"{call.name} failed unexpectedly"}
+            output = run_tool(gid, call.name, call.arguments)
             trace.append(
                 {"tool": call.name, "args": call.arguments, "result": output}
             )
@@ -654,11 +675,7 @@ def run_chat_stream(gid, provider, history, user_message, max_iters=6):
         messages.append({"role": "assistant", "content": result.content or "(using tools)"})
         for call in result.tool_calls:
             yield {"type": "tool", "name": call.name}
-            try:
-                output = execute_tool(gid, call.name, call.arguments)
-            except Exception as exc:  # noqa: BLE001 - feed errors back, never 500
-                _log.warning("chat tool %s failed", call.name, exc_info=exc)
-                output = {"error": f"{call.name} failed unexpectedly"}
+            output = run_tool(gid, call.name, call.arguments)
             trace.append({"tool": call.name, "args": call.arguments, "result": output})
             messages.append({"role": "user", "content": (
                 f"Result of {call.name}({json.dumps(call.arguments)}): "
