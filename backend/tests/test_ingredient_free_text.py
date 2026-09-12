@@ -109,6 +109,84 @@ def test_free_text_row_survives_an_edit_that_resaves_it(auth_client):
     assert _foods(auth_client) == ["flour"]  # nothing minted from the prose line
 
 
+def test_free_text_row_ignores_a_structured_unit_name(auth_client):
+    """The other unit writer. `test_free_text_row_mints_no_unit` sends only a
+    display, so it exercises the display-PARSE writer; a row carrying an
+    explicit `unit` takes a different branch that find-or-creates it directly.
+    Both must be skipped, and this case had no coverage until a mutation run
+    showed the guard could be deleted with every test still green."""
+    auth_client.post("/api/v1/recipes", json={
+        "name": "Prose",
+        "ingredients": [{"display": "a handful of rocket, to serve",
+                         "freeText": True, "unit": "handful", "food": "rocket"}],
+    })
+
+    assert _units(auth_client) == []
+    assert _foods(auth_client) == []
+
+
+def test_free_text_row_ignores_caller_supplied_food_and_unit_ids(auth_client):
+    """A free-text row must not LINK an existing Food/Unit either. Sending ids
+    is reachable from any API or MCP client, and a linked food would make the
+    row structured again on the next read — the same conversion by another
+    door. Also previously uncovered."""
+    # arrange: real ids in this group, made by a structured recipe.
+    auth_client.post("/api/v1/recipes", json={
+        "name": "Structured",
+        "ingredients": [{"display": "2 cup flour", "quantity": 2,
+                         "unit": "cup", "food": "flour"}],
+    })
+    food_id = auth_client.get("/api/v1/foods").get_json()[0]["id"]
+    unit_id = auth_client.get("/api/v1/units").get_json()[0]["id"]
+
+    rid = auth_client.post("/api/v1/recipes", json={
+        "name": "Prose",
+        "ingredients": [{"display": "a good knob of butter", "freeText": True,
+                         "foodId": food_id, "unitId": unit_id}],
+    }).get_json()["id"]
+
+    got = auth_client.get(f"/api/v1/recipes/{rid}").get_json()["ingredients"][0]
+    assert got["food"] is None and got["unit"] is None
+
+
+def test_a_component_row_is_never_stored_as_free_text(auth_client):
+    """A component references a recipe, so there is no prose for it to be.
+    Storing both would be a state no reader can represent — every one of them
+    gives the component precedence — and the flag would then vanish on the next
+    save instead of being resolved once, here."""
+    sub = auth_client.post("/api/v1/recipes", json={"name": "Garlic confit"}).get_json()["id"]
+
+    rid = auth_client.post("/api/v1/recipes", json={
+        "name": "Uses it",
+        "ingredients": [{"display": "1 batch Garlic confit", "freeText": True,
+                         "refRecipeId": sub}],
+    }).get_json()["id"]
+
+    got = auth_client.get(f"/api/v1/recipes/{rid}").get_json()["ingredients"][0]
+    assert got["refRecipe"]["id"] == sub
+    assert got["freeText"] is False
+
+
+def test_free_text_line_keeps_its_whole_text_on_a_shopping_list(auth_client, app):
+    """A free-text row stores no quantity or unit, so the shopping list has
+    nothing to prepend — but its no-food branch strips the leading amount out
+    of the name on the assumption that it does. That combination deleted the
+    author's own words: "2 handfuls of rocket, to serve" was bought as
+    "of rocket, to serve" × 0."""
+    from app.models import Recipe
+    from app.services.shopping import build_from_recipes
+
+    line = "2 handfuls of rocket, to serve"
+    auth_client.post("/api/v1/recipes", json={
+        "name": "Prose", "ingredients": [{"display": line, "freeText": True}],
+    })
+
+    with app.app_context():
+        items = build_from_recipes([Recipe.query.filter_by(name="Prose").first()])
+
+    assert [i["display"] for i in items] == [line]
+
+
 def test_an_empty_food_alone_is_not_treated_as_free_text(auth_client):
     """MUTATION GUARD. An importer leaves `food` empty on a line it could not
     structure, and the editor re-parses those into tidy rows on purpose. If the

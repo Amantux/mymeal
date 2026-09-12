@@ -246,6 +246,12 @@ def _set_ingredients(recipe: Recipe, rows):
                 id=str(raw_ref), group_id=gid).first()
             if exists:
                 ref_recipe_id = str(raw_ref)
+        # A component references a recipe, so there is no prose for it to be.
+        # Every reader already gives the component the precedence — the editor
+        # renders it as a component row and the toggle isn't offered there — so
+        # enforce that here rather than storing a combination no UI can express
+        # and letting the next save silently resolve it.
+        free_text = free_text and not ref_recipe_id
         # Structured unit/food NAMES (e.g. from the AI ingredient parser) win.
         if not free_text and not unit_id and row.get("unit"):
             name = (units.canonical_unit(row["unit"]) or str(row["unit"]))[:120]
