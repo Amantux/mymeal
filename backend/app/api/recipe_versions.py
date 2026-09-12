@@ -47,6 +47,10 @@ def _snapshot_recipe(recipe: Recipe) -> dict:
                 # when a version is restored.
                 "qualifier": ing.qualifier,
                 "section": ing.section,
+                # Same reason as qualifier: omitted here, a restore rebuilds the
+                # line as a structured row and find-or-creates the whole prose
+                # sentence into the Food catalog.
+                "freeText": ing.free_text,
                 "position": ing.position,
                 "unit": ing.unit.name if ing.unit else "",
                 "food": ing.food.name if ing.food else "",

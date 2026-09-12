@@ -101,6 +101,12 @@ def ingredient_out(ing):
         # preparation.
         "qualifier": ing.qualifier,
         "section": ing.section,
+        # The author declared this line to be prose, so it is deliberately
+        # unstructured rather than merely unparsed. The editor needs this to
+        # reproduce the free-text lane on the next edit — without it the line
+        # looks like any other food-less legacy row and gets re-parsed back into
+        # structure, minting the Food this flag exists to prevent.
+        "freeText": ing.free_text,
         "position": ing.position,
         "unit": unit_out(ing.unit) if ing.unit else None,
         "food": food_out(ing.food) if ing.food else None,

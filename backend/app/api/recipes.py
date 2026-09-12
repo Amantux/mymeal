@@ -218,14 +218,24 @@ def _set_ingredients(recipe: Recipe, rows):
     for i, row in enumerate((rows or [])[:MAX_INGREDIENT_ROWS]):
         display = str(row.get("display", ""))[:1000]
         qty = row.get("quantity")
+        # The author declared this line to be PROSE ("a good knob of butter, for
+        # finishing"). Every catalog write below is skipped for it, because
+        # find-or-creating that line would put the whole sentence in the shared
+        # Food catalog and then in every ingredient autocomplete in the app.
+        #
+        # Read from the payload, never inferred from an empty food/unit:
+        # emptiness already means "an importer could not structure this line",
+        # and the editor deliberately re-parses THOSE into tidy rows. Deriving
+        # the flag would merge the two states and silently end that re-parse.
+        free_text = bool(row.get("freeText"))
         # A caller-supplied foodId/unitId must belong to THIS group, exactly
         # like refRecipeId below. Without the scope check, group A could
         # reference group B's Food/Unit by id and read its name/description/
         # aliases back through food_out — a cross-tenant disclosure. Unknown or
         # cross-group ids drop to None (the row falls back to its free-text
         # food/unit name, or none).
-        unit_id = _owned_id(gid, Unit, row.get("unitId"))
-        food_id = _owned_id(gid, Food, row.get("foodId"))
+        unit_id = None if free_text else _owned_id(gid, Unit, row.get("unitId"))
+        food_id = None if free_text else _owned_id(gid, Food, row.get("foodId"))
         # A row may LINK another recipe as a component. Validate it belongs to
         # this group and isn't the recipe itself; when set, it replaces the food
         # (a component references a recipe, not a Food).
@@ -237,18 +247,23 @@ def _set_ingredients(recipe: Recipe, rows):
             if exists:
                 ref_recipe_id = str(raw_ref)
         # Structured unit/food NAMES (e.g. from the AI ingredient parser) win.
-        if not unit_id and row.get("unit"):
+        if not free_text and not unit_id and row.get("unit"):
             name = (units.canonical_unit(row["unit"]) or str(row["unit"]))[:120]
             unit_id = _find_or_create_unit(gid, name)
         # An explicit qualifier from the caller (the import confirmation step)
         # always wins; otherwise take whatever the split produced.
         qualifier = str(row.get("qualifier") or "")[:120]
-        if not ref_recipe_id and not food_id and row.get("food"):
+        if not free_text and not ref_recipe_id and not food_id and row.get("food"):
             food_id, split_qualifier = _find_or_create_food(
                 gid, str(row["food"])[:255], food_cache)
             qualifier = qualifier or split_qualifier
-        # Otherwise best-effort parse the free-text display for qty + unit.
-        if not ref_recipe_id and not unit_id and (qty in (None, 0, 0.0, "")) \
+        # Otherwise best-effort parse the free-text display for qty + unit. Not
+        # for a declared prose line: this parse is the SECOND catalog writer
+        # (it resolves "2 handfuls of rocket" to the handful unit and
+        # find-or-creates it), so skipping only the food above would leave half
+        # the pollution behind.
+        if not free_text and not ref_recipe_id and not unit_id \
+                and (qty in (None, 0, 0.0, "")) \
                 and not row.get("unit") and display:
             parsed = units.parse_line(display)
             qty = parsed["qty"] or 0
@@ -276,6 +291,7 @@ def _set_ingredients(recipe: Recipe, rows):
                 qualifier=qualifier,
                 section=str(row.get("section") or "")[:255],
                 position=row.get("position", i),
+                free_text=free_text,
                 unit_id=unit_id,
                 food_id=None if ref_recipe_id else food_id,
                 ref_recipe_id=ref_recipe_id,
