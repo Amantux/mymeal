@@ -181,8 +181,8 @@ describe('IngredientRows undo + reorder safety', () => {
 
   // --- the free-text lane ----------------------------------------------------
 
-  const TOGGLE = '[aria-label="Write as one free-text line"]'
-  const UNTOGGLE = '[aria-label="Use separate fields"]'
+  // One constant accessible name; aria-pressed carries the state.
+  const TOGGLE = '[aria-label="Write this line as free text"]'
 
   test('the free-text toggle collapses the row to a single input', async () => {
     const w = mountIt([{ food: '' }])
@@ -217,7 +217,7 @@ describe('IngredientRows undo + reorder safety', () => {
     await flushPromises()
 
     expect(w.get('.ftxt').element.value).toBe('salt and pepper, to taste')
-    expect(w.get(UNTOGGLE).attributes('aria-pressed')).toBe('true')
+    expect(w.get(TOGGLE).attributes('aria-pressed')).toBe('true')
   })
 
   test('toggling into the lane carries the typed text across', async () => {
@@ -233,7 +233,7 @@ describe('IngredientRows undo + reorder safety', () => {
   test('toggling back out keeps the line in the food field', async () => {
     const w = mountIt([{ freeText: true, display: 'a splash of olive oil' }])
     await flushPromises()
-    await w.get(UNTOGGLE).trigger('click')
+    await w.get(TOGGLE).trigger('click')
 
     expect(w.get('[aria-label="Ingredient"]').element.value).toBe('a splash of olive oil')
     expect(lastEmit(w)[0].freeText).toBe(false)

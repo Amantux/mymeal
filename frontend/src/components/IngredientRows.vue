@@ -304,10 +304,15 @@ function addComponent(r) {
       <div class="ctl">
         <!-- Not offered on a component row: that row references a recipe, so
              there is no prose for it to become. -->
+        <!-- The accessible NAME is constant and `aria-pressed` carries the
+             state. Flipping the name to the opposite action as well announced
+             "Use separate fields, pressed" — a double negative that says the
+             row is in the mode it would switch to. The title still flips,
+             because a mouse tooltip has no pressed state to lean on. -->
         <button v-if="!r.refRecipeId" type="button" class="icon ftxt-tog"
                 :class="{ on: r.freeText }" :aria-pressed="String(!!r.freeText)"
+                aria-label="Write this line as free text"
                 :title="r.freeText ? 'Use separate fields' : 'Write as one free-text line'"
-                :aria-label="r.freeText ? 'Use separate fields' : 'Write as one free-text line'"
                 @click="toggleFreeText(r)">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 4h10M3 8h10M3 12h6" /></svg>
         </button>
@@ -340,6 +345,11 @@ function addComponent(r) {
       <button type="button" class="ghost add" @click="add">＋ Add ingredient</button>
       <button type="button" class="ghost add" @click="openPicker">🔗 Add recipe as component</button>
       <span class="kbd-hint">Enter adds a row · Alt+↑/↓ moves one</span>
+      <!-- The feature is otherwise invisible: the toggle is the fourth
+           same-weight glyph in its cluster, and nothing names it. Unlike the
+           keyboard hint this stays visible on a phone, where there is no hover
+           title to fall back on. -->
+      <span class="ftxt-hint">☰ writes a row as one free-text line, stored as written</span>
     </div>
 
     <!-- Recipe picker -->
@@ -409,6 +419,8 @@ function addComponent(r) {
 }
 .kbd-hint { align-self: center; font-size: 0.76rem; color: var(--muted); }
 @media (max-width: 620px) { .kbd-hint { display: none; } }
+/* Stays at every width — see the note in the template. */
+.ftxt-hint { align-self: center; font-size: 0.76rem; color: var(--muted); }
 
 /* Batch stepper for a component row — spans the qty+unit columns. */
 .batch { grid-column: 1 / 3; display: flex; align-items: center; gap: 6px; }
@@ -433,6 +445,17 @@ function addComponent(r) {
 /* The prose lane's single input, spanning every field column (qty→note) so the
    row reads as one line rather than a field that happens to be wide. */
 .ftxt { grid-column: 1 / 5; }
+/* A structural marker, so the mode is encoded by more than colour. Without it
+   the only signal that this row is deliberate is one tinted 28px square in a
+   cluster of four identical squares, and merged inputs under QTY·UNIT·
+   INGREDIENT·NOTE headings read as a rendering fault rather than a choice.
+   Deliberately --border, not the accent: this is a dense work surface, and the
+   accent is already spoken for by the primary action (and by .food-ref, which
+   would make accent-soft mean two different things in one card). */
+.ing-row.is-ftxt {
+  border-left: 2px solid var(--border);
+  padding-left: 12px; margin-left: -14px;
+}
 /* The toggle states WHICH mode the row is in, so it can't rely on the icon
    alone — it carries aria-pressed, and when on it takes the accent so the mode
    is visible at a glance next to rows that are still structured. */
@@ -458,14 +481,16 @@ function addComponent(r) {
   .col-heads { display: none; }
   .ing-row { grid-template-columns: 1fr 1fr auto; gap: 8px; }
   .ing-row .food, .ing-row .food-ref, .ing-row .note { grid-column: 1 / -1; }
-  /* Full width on its own band, with the controls dropped BELOW it.
-     Beside the controls (like a component row's .batch) the input came out
-     ~110px wide — four 40px touch targets eat the row — so the one box whose
-     entire purpose is to be wide was the narrowest on the page and truncated
-     the line mid-word. The explicit `.ctl { grid-row: 1 }` has to be released
-     for this row or the controls stay pinned beside an empty first cell. */
-  .ing-row .ftxt { grid-column: 1 / -1; }
-  .ing-row.is-ftxt .ctl { grid-row: auto; grid-column: 1 / -1; }
+  /* The input gets a full-width band of its own. Beside the controls (like a
+     component row's .batch) it came out ~110px wide — four 40px touch targets
+     eat the row — so the one box whose entire purpose is to be wide was the
+     narrowest on the page and truncated the line mid-word.
+     The control cluster stays on the FIRST band, where it sits on every
+     structured row: letting it fall below made the controls jump
+     top-of-row/bottom-of-row/top-of-row down a long list. Both bands are
+     placed explicitly, because .ctl below pins itself to grid-row 1. */
+  .ing-row.is-ftxt .ctl { grid-row: 1; grid-column: 1 / -1; }
+  .ing-row .ftxt { grid-row: 2; grid-column: 1 / -1; }
   .ctl { grid-column: 3; grid-row: 1; justify-content: flex-end; }
   .ing-row + .ing-row { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 8px; }
   /* Reorder/remove are 28px targets 2px apart on a phone. The read surface's
