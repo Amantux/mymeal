@@ -85,16 +85,26 @@ function add() { rows.value.push(blank()) }
 // directions: the toggle is one click away from the remove button, and a toggle
 // that silently emptied the row the user just typed would be a data-loss bug
 // with no undo.
+// Each direction takes the text from the mode being LEFT and clears that mode's
+// field. Keeping the old value "just in case" is what made an out-and-back trip
+// silently discard the edit in between: leave the lane, rewrite the food, come
+// back, and a stale `display` won and the rewrite was gone.
 function toggleFreeText(r) {
   if (r.freeText) {
     // Back to fields: the line becomes the food, which is what the structured
     // editor does with any line it hasn't parsed. Nothing is lost — it is the
     // same text, in the one field wide enough to hold it.
-    r.food = r.food || r.display
+    r.food = r.display || r.food
+    r.display = ''
     r.freeText = false
     return
   }
-  r.display = r.display || rowToDisplay(r)
+  // Composed fresh from the fields as they are NOW. rowToDisplay folds the note
+  // in ("…, ground"), so clearing it loses nothing and keeps the promise that a
+  // free-text row is one line: an invisible note would otherwise keep rendering
+  // on the recipe page with no way to edit it.
+  r.display = rowToDisplay(r)
+  r.note = ''
   r.freeText = true
 }
 

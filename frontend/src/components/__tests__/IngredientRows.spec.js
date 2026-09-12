@@ -183,6 +183,8 @@ describe('IngredientRows undo + reorder safety', () => {
 
   // One constant accessible name; aria-pressed carries the state.
   const TOGGLE = '[aria-label="Write this line as free text"]'
+  // Same button; the pressed state is what distinguishes the two directions.
+  const UNTOGGLE_STATE = TOGGLE
 
   test('the free-text toggle collapses the row to a single input', async () => {
     const w = mountIt([{ food: '' }])
@@ -237,6 +239,31 @@ describe('IngredientRows undo + reorder safety', () => {
 
     expect(w.get('[aria-label="Ingredient"]').element.value).toBe('a splash of olive oil')
     expect(lastEmit(w)[0].freeText).toBe(false)
+  })
+
+  test('an edit made between two toggles is not discarded', async () => {
+    // Out of the lane, rewrite the food, back into the lane. Keeping the old
+    // `display` "just in case" meant the stale line won and the rewrite
+    // vanished — silent data loss with no undo, from two clicks.
+    const w = mountIt([{ freeText: true, display: 'a splash of olive oil' }])
+    await flushPromises()
+
+    await w.get(UNTOGGLE_STATE).trigger('click')
+    await w.get('[aria-label="Ingredient"]').setValue('extra virgin olive oil')
+    await w.get(TOGGLE).trigger('click')
+
+    expect(w.get('.ftxt').element.value).toBe('extra virgin olive oil')
+  })
+
+  test('entering the lane folds the note into the line and clears it', async () => {
+    // The row is one sentence now, and the Note box is gone — an invisible note
+    // would keep rendering on the recipe page with no way to edit it.
+    const w = mountIt([{ quantity: '2', unit: 'tsp', food: 'cinnamon', note: 'ground' }])
+    await flushPromises()
+    await w.get(TOGGLE).trigger('click')
+
+    expect(w.get('.ftxt').element.value).toBe('2 tsp cinnamon, ground')
+    expect(lastEmit(w)[0].note).toBe('')
   })
 
   test('structured rows are unaffected by the lane', async () => {
