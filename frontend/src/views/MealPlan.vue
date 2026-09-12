@@ -1,6 +1,6 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
-import { api } from '../api'
+import { ref, computed, watch, onMounted } from 'vue'
+import { api, apiUrl } from '../api'
 import { useUI } from '../stores/ui'
 import ErrorState from '../components/ErrorState.vue'
 import { useLoader } from '../composables/useLoader'
@@ -154,6 +154,92 @@ async function generate() {
     busy.value = false
   }
 }
+// --- Calendar subscription ---------------------------------------------
+// A feed URL, not a download: calendar apps and Home Assistant poll it, so the
+// plan stays live wherever the household already looks.
+const calToken = ref(null)
+const calLoading = ref(true)
+const calBusy = ref('')          // '' | 'publish' | 'rotate' | 'stop'
+// Which destructive action is awaiting confirmation: '' | 'rotate' | 'stop'.
+// BOTH are confirmed, and that symmetry is the point — turning the feed off is
+// strictly more destructive than replacing the link (the link can never come
+// back), so guarding only the replace would put the seatbelt on the safer one.
+const calConfirm = ref('')
+
+// Behind HA ingress the browser's URL is a random, session-scoped
+// /api/hassio_ingress/<token>/ path that only an authenticated HA session can
+// use — a calendar app fetching it gets a login page, not an .ics. So we must
+// NOT hand the user that URL. We detect ingress and show the direct host:port
+// form instead, naming the prerequisite (mapping port 7850 in the add-on's
+// Network tab, which is null by default).
+const underIngress = computed(() => window.location.pathname.includes('/api/hassio_ingress/'))
+const feedPath = computed(() => (calToken.value ? `/calendar/${calToken.value}.ics` : ''))
+const feedUrl = computed(() => {
+  if (!calToken.value) return ''
+  if (underIngress.value) return `http://<home-assistant-host>:7850/api/v1${feedPath.value}`
+  return new URL(apiUrl(feedPath.value), window.location.href).href
+})
+
+const calError = ref('')
+
+async function loadSubscription() {
+  calLoading.value = true
+  calError.value = ''
+  try {
+    calToken.value = (await api.get('/calendar/subscription')).token
+  } catch (e) {
+    // This card must be able to show its own error rather than sitting on a
+    // permanent skeleton — it loads independently of the plan grid.
+    calError.value = e.message || 'Could not load the calendar feed settings.'
+  } finally {
+    calLoading.value = false
+  }
+}
+onMounted(loadSubscription)
+
+async function publishFeed() {
+  calBusy.value = 'publish'
+  try {
+    calToken.value = (await api.post('/calendar/subscription')).token
+    ui.toast('Calendar feed published')
+  } catch (e) {
+    ui.error(e.message || 'Could not publish the feed')
+  } finally {
+    calBusy.value = ''
+  }
+}
+async function rotateFeed() {
+  calBusy.value = 'rotate'
+  try {
+    calToken.value = (await api.post('/calendar/subscription/rotate')).token
+    calConfirm.value = ''
+    ui.toast('New link generated — the old one no longer works')
+  } catch (e) {
+    ui.error(e.message || 'Could not generate a new link')
+  } finally {
+    calBusy.value = ''
+  }
+}
+async function stopFeed() {
+  calBusy.value = 'stop'
+  try {
+    await api.del('/calendar/subscription')
+    calToken.value = null
+    calConfirm.value = ''
+    ui.toast('Calendar feed turned off')
+  } catch (e) {
+    ui.error(e.message || 'Could not turn off the feed')
+  } finally {
+    calBusy.value = ''
+  }
+}
+function copyFeed() {
+  navigator.clipboard?.writeText(feedUrl.value).then(
+    () => ui.toast('Link copied'),
+    () => ui.error('Could not copy — select the link and copy it manually'),
+  )
+}
+
 async function buildList() {
   try {
     const sl = await api.post('/shopping-lists', { name: `Plan ${iso(range.value.start)}` })
@@ -280,9 +366,135 @@ async function buildList() {
       <button v-else class="ghost sm" style="margin-top:4px" @click="adding = d.date">＋ Add meal</button>
     </div>
   </div>
+
+  <!-- Calendar subscription. An inline card at the foot of the page rather than
+       a dialog off the page head, matching "Share & export" on RecipeDetail —
+       it is the same mental model (mint a secret link, copy it, revoke it) and
+       the app should not have two patterns for that. It also keeps the page
+       head at one primary action, which a fourth button broke on a phone. -->
+  <div class="card mp-subscribe">
+    <h2>📅 Subscribe in your calendar</h2>
+
+    <div v-if="calLoading" class="skeleton mp-sub-skeleton"></div>
+
+    <p v-else-if="calError" class="mp-sub-error">
+      {{ calError }}
+      <button class="ghost sm" @click="loadSubscription">Retry</button>
+    </p>
+
+    <!-- First run: teach what the feed IS before asking for the action. -->
+    <template v-else-if="!calToken">
+      <p class="mp-sub-lead">
+        Publish a private link to this meal plan and your calendar app keeps it in
+        sync — planned meals appear as all-day events in Apple&nbsp;Calendar,
+        Google&nbsp;Calendar or Home&nbsp;Assistant, updating whenever you change
+        the plan.
+      </p>
+      <p class="muted mp-sub-note">
+        Anyone with the link can read your meal plan, so treat it like a password.
+        You can replace it at any time.
+      </p>
+      <!-- secondary, not accent: the page's one accent fill stays on "Build
+           shopping list" (same call RecipeDetail makes for "Create public link"). -->
+      <button class="secondary" @click="publishFeed" :disabled="calBusy === 'publish'">
+        {{ calBusy === 'publish' ? 'Publishing…' : '🔗 Publish calendar link' }}
+      </button>
+    </template>
+
+    <template v-else>
+      <p v-if="underIngress" class="mp-sub-lead">
+        You're viewing myMeal through Home&nbsp;Assistant, and that address only
+        works while you're signed in to HA — a calendar app can't use it. Use the
+        link below with <strong>your Home&nbsp;Assistant machine's address</strong>
+        in place of <code>&lt;home-assistant-host&gt;</code>, and first map
+        <strong>7850/tcp</strong> in this add-on's Network tab (it's off by default).
+      </p>
+      <p v-else class="mp-sub-lead">
+        Add this link in your calendar app as a subscribed calendar, or in
+        Home&nbsp;Assistant via the Remote&nbsp;Calendar integration. Anyone with
+        it can read your meal plan.
+      </p>
+
+      <span class="field-label" id="mp-feed-label">Calendar feed link</span>
+      <div class="row mp-sub-row">
+        <!-- A wrapping textarea, not an input: the token is the only part of
+             this URL that carries information and a single line hides it at
+             every width — which also means a replaced link looks identical to
+             the old one. -->
+        <!-- 3 rows, not 2: the ingress variant's URL carries a placeholder host
+             AND the token, and clipping the token is the one thing this field
+             exists to prevent. -->
+        <textarea class="fill mp-sub-url" rows="3" readonly aria-labelledby="mp-feed-label"
+          :value="feedUrl" @focus="$event.target.select()"></textarea>
+        <button class="secondary" @click="copyFeed">Copy</button>
+      </div>
+
+      <div v-if="!calConfirm" class="row mp-sub-actions">
+        <button class="secondary sm" @click="calConfirm = 'rotate'">↻ Replace link</button>
+        <button class="ghost sm danger" @click="calConfirm = 'stop'">Stop sharing</button>
+      </div>
+
+      <!-- Both destructive actions confirm, and each names its own consequence. -->
+      <div v-else class="mp-sub-confirm">
+        <p v-if="calConfirm === 'rotate'">
+          Replace this link? The current link stops working immediately, and every
+          calendar already subscribed to it stops updating until you give them the
+          new one.
+        </p>
+        <p v-else>
+          Stop sharing this plan? The link stops working immediately and cannot be
+          brought back — every subscribed calendar stops updating, and publishing
+          again gives you a different link to hand out.
+        </p>
+        <div class="row mp-sub-actions">
+          <button v-if="calConfirm === 'rotate'" class="secondary danger sm"
+            @click="rotateFeed" :disabled="calBusy === 'rotate'">
+            {{ calBusy === 'rotate' ? 'Replacing…' : 'Replace link' }}
+          </button>
+          <button v-else class="secondary danger sm" @click="stopFeed"
+            :disabled="calBusy === 'stop'">
+            {{ calBusy === 'stop' ? 'Stopping…' : 'Stop sharing' }}
+          </button>
+          <button class="secondary sm" @click="calConfirm = ''">Cancel</button>
+        </div>
+      </div>
+    </template>
+  </div>
 </template>
 
 <style scoped>
+/* Calendar subscription card. Separated from the plan grid above it by the
+   card's own top margin; everything inside uses the 4/8/12/16 spacing scale. */
+.mp-subscribe { margin-top: 24px; max-width: 640px; }
+.mp-subscribe h2 { margin: 0 0 8px; }
+/* The lead is instructional content, not a caption — it reads at body colour;
+   only the secondary caveat is muted. */
+.mp-sub-lead { margin: 0 0 12px; font-size: 0.9rem; }
+.mp-sub-note { margin: 0 0 16px; font-size: 0.82rem; }
+/* Skeleton shaped like the taller (first-run) body, so the card doesn't jump. */
+.mp-sub-skeleton { height: 160px; }
+.mp-sub-error { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--danger); }
+/* Matches label.field > span in style.css; used as a standalone label because
+   the control it names sits beside a button, and wrapping a button in a <label>
+   proxies its clicks to the field. */
+.field-label {
+  display: block; font-size: 0.8rem; font-weight: 600;
+  color: var(--muted); margin-bottom: 5px;
+}
+.mp-sub-row { align-items: flex-start; gap: 8px; }
+/* Wraps rather than truncates: the token is the informative part of the URL. */
+.mp-sub-url { resize: vertical; font-size: 0.82rem; line-height: 1.4; }
+.mp-sub-actions { gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+/* A bordered block, not a nested .card — a card inside a card is the heaviest
+   box on the page and it is only a confirmation. */
+.mp-sub-confirm {
+  margin-top: 12px; padding: 12px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.mp-sub-confirm p { margin: 0; font-size: 0.88rem; }
+.mp-sub-confirm .mp-sub-actions { margin-top: 12px; }
+
 /* .seg (segmented view toggle) is the shared control in style.css. */
 .mp-nav { display: flex; align-items: center; gap: 8px; }
 .mp-title { min-width: 8ch; text-align: center; }
