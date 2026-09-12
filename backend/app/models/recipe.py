@@ -1,4 +1,4 @@
-from sqlalchemy import String, Text, Integer, Float, Boolean, ForeignKey
+from sqlalchemy import String, Text, Integer, Float, Boolean, ForeignKey, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..extensions import db
@@ -102,6 +102,19 @@ class RecipeIngredient(IDMixin, TimestampMixin, db.Model):
     qualifier: Mapped[str] = mapped_column(String(120), default="", server_default="")
     # Optional section heading this line falls under ("For the sauce").
     section: Mapped[str] = mapped_column(String(255), default="")
+    # The author declared this line to be PROSE ("a good knob of butter, for
+    # finishing"), so it must never be find-or-created into the shared Food/Unit
+    # catalogs — the whole line would become a catalog entry and then haunt every
+    # autocomplete in the app.
+    #
+    # This is a persisted flag and NOT `food_id IS NULL`, because emptiness is
+    # already taken: an archive import or the paste parser leaves food_id NULL on
+    # a line it couldn't structure, and the editor deliberately re-parses THOSE
+    # (startEdit) to offer tidy qty·unit·food rows. Without a column the two
+    # states are indistinguishable and the user's explicit choice is re-parsed
+    # back into structure — the exact round-trip loss this lane exists to stop.
+    free_text: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false())
     position: Mapped[int] = mapped_column(Integer, default=0)
 
     recipe_id: Mapped[str] = mapped_column(
