@@ -43,3 +43,26 @@ def test_a_normal_request_is_not_limited(limited_app):
     # the health/status endpoint carries no limit
     assert all(c.get("/api/v1/misc/health").status_code == 200
                for _ in range(20))
+
+
+def test_public_calendar_feed_is_rate_limited(limited_app):
+    """The feed is unauthenticated and serves household data, so it must not be
+    an unbounded scraping surface. 120/hour is generous enough that several
+    devices polling on a timer never trip it — a subscriber that starts getting
+    429s silently stops updating, which users read as "the calendar is broken",
+    not as a rate limit."""
+    c = limited_app.test_client()
+    c.post("/api/v1/users/register",
+           json={"email": "cal@t.com", "password": "password", "name": "C"})
+    token = c.post("/api/v1/users/login",
+                   json={"username": "cal@t.com", "password": "password"}
+                   ).get_json()["token"]
+    c.environ_base["HTTP_AUTHORIZATION"] = token
+    feed = c.post("/api/v1/calendar/subscription").get_json()["token"]
+
+    anon = limited_app.test_client()
+    codes = [anon.get(f"/api/v1/calendar/{feed}.ics").status_code
+             for _ in range(125)]
+
+    assert 429 in codes, "the public feed was not rate limited"
+    assert codes.count(200) <= 120
