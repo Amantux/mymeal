@@ -179,6 +179,87 @@ describe('IngredientRows undo + reorder safety', () => {
     expect(order()).toEqual(['b', 'c', 'a'])
   })
 
+  // --- the free-text lane ----------------------------------------------------
+
+  const TOGGLE = '[aria-label="Write as one free-text line"]'
+  const UNTOGGLE = '[aria-label="Use separate fields"]'
+
+  test('the free-text toggle collapses the row to a single input', async () => {
+    const w = mountIt([{ food: '' }])
+    await flushPromises()
+    expect(w.find('.ftxt').exists()).toBe(false)
+
+    await w.get(TOGGLE).trigger('click')
+
+    expect(w.findAll('.ftxt')).toHaveLength(1)
+    // The qty/unit/food/note grid is gone for this row — that is the point.
+    expect(w.find('[aria-label="Quantity"]').exists()).toBe(false)
+    expect(w.find('[aria-label="Unit"]').exists()).toBe(false)
+    expect(w.find('[aria-label="Note"]').exists()).toBe(false)
+  })
+
+  test('an emitted free-text row carries the flag and the line', async () => {
+    const w = mountIt([{ food: '' }])
+    await flushPromises()
+    await w.get(TOGGLE).trigger('click')
+    await w.get('.ftxt').setValue('a good knob of butter, for finishing')
+
+    const row = lastEmit(w)[0]
+    expect(row.freeText).toBe(true)
+    expect(row.display).toBe('a good knob of butter, for finishing')
+  })
+
+  test('a row handed in as free text renders in the lane', async () => {
+    // The round trip: RecipeDetail maps a stored free-text ingredient to this
+    // shape, and the editor must reproduce the lane rather than showing an
+    // empty structured row beside a line the author can no longer see.
+    const w = mountIt([{ freeText: true, display: 'salt and pepper, to taste' }])
+    await flushPromises()
+
+    expect(w.get('.ftxt').element.value).toBe('salt and pepper, to taste')
+    expect(w.get(UNTOGGLE).attributes('aria-pressed')).toBe('true')
+  })
+
+  test('toggling into the lane carries the typed text across', async () => {
+    // The toggle sits one tab-stop from Remove. Emptying the row the user just
+    // typed would be data loss with no undo.
+    const w = mountIt([{ quantity: '2', unit: 'tsp', food: 'cinnamon' }])
+    await flushPromises()
+    await w.get(TOGGLE).trigger('click')
+
+    expect(w.get('.ftxt').element.value).toBe('2 tsp cinnamon')
+  })
+
+  test('toggling back out keeps the line in the food field', async () => {
+    const w = mountIt([{ freeText: true, display: 'a splash of olive oil' }])
+    await flushPromises()
+    await w.get(UNTOGGLE).trigger('click')
+
+    expect(w.get('[aria-label="Ingredient"]').element.value).toBe('a splash of olive oil')
+    expect(lastEmit(w)[0].freeText).toBe(false)
+  })
+
+  test('structured rows are unaffected by the lane', async () => {
+    const w = mountIt([{ quantity: '2', unit: 'cup', food: 'flour', note: 'sifted' }])
+    await flushPromises()
+
+    expect(w.find('.ftxt').exists()).toBe(false)
+    expect(w.get('[aria-label="Quantity"]').element.value).toBe('2')
+    expect(w.get('[aria-label="Note"]').element.value).toBe('sifted')
+    // The toggle is off, and merely mounting a structured row emits nothing.
+    expect(w.get(TOGGLE).attributes('aria-pressed')).toBe('false')
+    expect(w.emitted('update:modelValue')).toBeUndefined()
+  })
+
+  test('a component row is not offered the free-text toggle', async () => {
+    // It references a recipe, so there is no prose for it to become.
+    const w = mountIt([{ quantity: '1', food: 'Garlic Confit',
+                         refRecipeId: 'r1', refRecipeName: 'Garlic Confit' }])
+    await flushPromises()
+
+    expect(w.find(TOGGLE).exists()).toBe(false)
+  })
+
   test('Ctrl+Alt+Arrow does not reorder', async () => {
     // A desktop workspace shortcut (and used by some screen readers) must not
     // rearrange the user's ingredients as a side effect.

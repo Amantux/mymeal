@@ -9,6 +9,7 @@
 import { ref, watch, onMounted, nextTick } from 'vue'
 import { api } from '../api'
 import { useUI } from '../stores/ui'
+import { rowToDisplay } from '../utils/ingredientEdit'
 import ComboBox from './ComboBox.vue'
 
 const props = defineProps({ modelValue: { type: Array, default: () => [] } })
@@ -28,8 +29,15 @@ function blank() {
   // `section` ("For the drizzle") likewise: it isn't editable here, but a key
   // missing from blank() is what let the save path rebuild rows without it and
   // wipe every grouping the first time an imported recipe was edited.
+  // `freeText` + `display` are the prose lane: the author declares this line to
+  // be a sentence, and it is then stored display-only instead of being
+  // find-or-created into the shared Food/Unit catalogs. Both MUST be here for
+  // the same reason as the keys above — rows are built as { ...blank(), ...r },
+  // so a key missing here is dropped from every row the parent hands in, and
+  // dropping these two turns the line back into a structured row on save.
   return { quantity: '', unit: '', food: '', note: '', qualifier: '', section: '',
-           sourceText: '', refRecipeId: '', refRecipeName: '' }
+           sourceText: '', refRecipeId: '', refRecipeName: '',
+           freeText: false, display: '' }
 }
 const rows = ref(props.modelValue.length ? props.modelValue.map((r) => ({ ...blank(), ...r })) : [blank()])
 
@@ -65,6 +73,31 @@ function fmtBatch(q) {
 
 function add() { rows.value.push(blank()) }
 
+// --- Free-text lane ----------------------------------------------------------
+// Some ingredients are prose, not data: "a good knob of butter, for finishing",
+// "salt and pepper, to taste". Forced through the qty·unit·food grid they land
+// in the food box, and the save path find-or-creates the whole sentence as a
+// Food — which then shows up in every ingredient autocomplete in the app. This
+// toggle lets the author say "this line is a sentence", collapsing the row to
+// one wide input that is stored as-is.
+//
+// Switching carries the text ACROSS rather than clearing it, in both
+// directions: the toggle is one click away from the remove button, and a toggle
+// that silently emptied the row the user just typed would be a data-loss bug
+// with no undo.
+function toggleFreeText(r) {
+  if (r.freeText) {
+    // Back to fields: the line becomes the food, which is what the structured
+    // editor does with any line it hasn't parsed. Nothing is lost — it is the
+    // same text, in the one field wide enough to hold it.
+    r.food = r.food || r.display
+    r.freeText = false
+    return
+  }
+  r.display = r.display || rowToDisplay(r)
+  r.freeText = true
+}
+
 // --- Keyboard flow -----------------------------------------------------------
 // Adding a row used to cost a mouse trip to the button below the list, which at
 // 30 rows is a long way from where you're typing. Enter on any field in a row
@@ -96,12 +129,13 @@ function undoRemove() {
   // the restored one.
   const onlyBlank = rows.value.length === 1 && !rows.value[0].food
     && !rows.value[0].quantity && !rows.value[0].refRecipeId
+    && !rows.value[0].display
   if (onlyBlank) rows.value = []
   rows.value.splice(Math.min(index, rows.value.length), 0, row)
   lastRemoved.value = null
 }
 function removedLabel(row) {
-  return row.refRecipeName || row.food || row.sourceText || 'ingredient'
+  return row.refRecipeName || row.food || row.display || row.sourceText || 'ingredient'
 }
 function move(i, delta) {
   const j = i + delta
@@ -154,7 +188,8 @@ async function parsePaste() {
       // original line, both of which used to be discarded on arrival.
       note: r.note || '', sourceText: r.display || '',
     }))
-    const onlyBlank = rows.value.length === 1 && !rows.value[0].food && !rows.value[0].quantity
+    const onlyBlank = rows.value.length === 1 && !rows.value[0].food
+      && !rows.value[0].quantity && !rows.value[0].display
     rows.value = onlyBlank ? parsed : rows.value.concat(parsed)
     pasteText.value = ''
     showPaste.value = false
@@ -244,6 +279,16 @@ function addComponent(r) {
           <span class="link-ico">🔗</span>{{ r.refRecipeName }}
         </div>
       </template>
+      <!-- The prose lane: one wide box holding the line exactly as written.
+           There is deliberately no Note field here — the note is part of the
+           sentence ("…, for finishing"), and a second box would ask the author
+           to split the very line they just said not to split. -->
+      <template v-else-if="r.freeText">
+        <input :ref="(el) => setQtyRef(el, i)" v-model="r.display" class="ftxt"
+               placeholder="e.g. a good knob of butter, for finishing"
+               :aria-label="`Ingredient ${i + 1} line`"
+               @keydown.enter.prevent="addAfter(i)" />
+      </template>
       <template v-else>
         <input :ref="(el) => setQtyRef(el, i)" v-model="r.quantity" class="qty"
                inputmode="decimal" placeholder="Qty" aria-label="Quantity"
@@ -253,9 +298,19 @@ function addComponent(r) {
         <ComboBox v-model="r.food" class="food" :options="foods" placeholder="e.g. flour"
                   aria-label="Ingredient" @enter="addAfter(i)" />
       </template>
-      <input v-model="r.note" class="note" placeholder="Note (optional)" aria-label="Note"
+      <input v-if="!r.freeText" v-model="r.note" class="note"
+             placeholder="Note (optional)" aria-label="Note"
              @keydown.enter.prevent="addAfter(i)" />
       <div class="ctl">
+        <!-- Not offered on a component row: that row references a recipe, so
+             there is no prose for it to become. -->
+        <button v-if="!r.refRecipeId" type="button" class="icon ftxt-tog"
+                :class="{ on: r.freeText }" :aria-pressed="String(!!r.freeText)"
+                :title="r.freeText ? 'Use separate fields' : 'Write as one free-text line'"
+                :aria-label="r.freeText ? 'Use separate fields' : 'Write as one free-text line'"
+                @click="toggleFreeText(r)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 4h10M3 8h10M3 12h6" /></svg>
+        </button>
         <button type="button" class="icon" :disabled="i === 0" title="Move up" aria-label="Move up" @click="move(i, -1)">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10l4-4 4 4" /></svg>
         </button>
@@ -375,6 +430,14 @@ function addComponent(r) {
 }
 .food-ref .link-ico { flex-shrink: 0; }
 
+/* The prose lane's single input, spanning every field column (qty→note) so the
+   row reads as one line rather than a field that happens to be wide. */
+.ftxt { grid-column: 1 / 5; }
+/* The toggle states WHICH mode the row is in, so it can't rely on the icon
+   alone — it carries aria-pressed, and when on it takes the accent so the mode
+   is visible at a glance next to rows that are still structured. */
+.ftxt-tog.on { background: var(--accent-soft); color: var(--accent-text); }
+
 .ctl { display: flex; gap: 2px; justify-content: flex-start; }
 .icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; background: transparent; color: var(--muted); border-radius: 6px; cursor: pointer; }
 .icon svg { width: 16px; height: 16px; }
@@ -395,6 +458,11 @@ function addComponent(r) {
   .col-heads { display: none; }
   .ing-row { grid-template-columns: 1fr 1fr auto; gap: 8px; }
   .ing-row .food, .ing-row .food-ref, .ing-row .note { grid-column: 1 / -1; }
+  /* Sits BESIDE the controls on row 1, exactly like the component row's
+     .batch. Spanning 1/-1 here would put it under the explicitly-placed
+     `.ctl { grid-row: 1 }` and leave the controls floating beside an empty
+     first cell — the same collision the section label hit. */
+  .ing-row .ftxt { grid-column: 1 / 3; }
   .ctl { grid-column: 3; grid-row: 1; justify-content: flex-end; }
   .ing-row + .ing-row { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 8px; }
   /* Reorder/remove are 28px targets 2px apart on a phone. The read surface's
