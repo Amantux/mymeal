@@ -340,13 +340,24 @@ function loadBuffersFrom(snap) {
   }
   nutritionForm.value = { ...(snap.nutrition || {}) }
   selectedCategoryIds.value = snap.categoryIds || []
-  editIngredients.value = (snap.ingredients || []).map((i) =>
-    i.refRecipeId
-      ? { quantity: i.quantity || '', unit: i.unit || '', food: i.food || i.display || 'component',
-          note: i.note || '', qualifier: i.qualifier || '', section: i.section || '',
-          refRecipeId: i.refRecipeId, refRecipeName: i.food || i.display || 'recipe' }
-      : { quantity: i.quantity || '', unit: i.unit || '', food: i.food || i.display || '',
-          note: i.note || '', qualifier: i.qualifier || '', section: i.section || '' })
+  editIngredients.value = (snap.ingredients || []).map((i) => {
+    const carried = { note: i.note || '', qualifier: i.qualifier || '', section: i.section || '' }
+    if (i.refRecipeId) {
+      return { quantity: i.quantity || '', unit: i.unit || '',
+               food: i.food || i.display || 'component', ...carried,
+               refRecipeId: i.refRecipeId, refRecipeName: i.food || i.display || 'recipe' }
+    }
+    // A snapshot carries the free-text flag, so loading one into the editor has
+    // to reproduce the lane. Falling through to the line below would drop the
+    // prose into `food` and the next save would mint it as a Food — the same
+    // round-trip loss, reached by editing an experiment instead of the recipe.
+    if (i.freeText) {
+      return { quantity: '', unit: '', food: '', display: i.display || '',
+               freeText: true, ...carried }
+    }
+    return { quantity: i.quantity || '', unit: i.unit || '',
+             food: i.food || i.display || '', freeText: false, ...carried }
+  })
   editSteps.value = (snap.steps || []).map((s) => ({ text: s.text }))
 }
 
