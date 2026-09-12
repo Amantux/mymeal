@@ -181,6 +181,14 @@ const feedUrl = computed(() => {
 })
 
 const calError = ref('')
+// The URL is a bearer credential on a page people open daily, and meal-plan
+// screenshots are a routine support artifact — so it is masked until asked for,
+// matching how the Settings page treats API keys. Copy still works while
+// masked, and publishing or replacing reveals it, because that is the one
+// moment the user actually needs to read it.
+const calRevealed = ref(false)
+const maskedUrl = computed(() =>
+  calToken.value ? feedUrl.value.replace(calToken.value, '•'.repeat(24)) : '')
 
 async function loadSubscription() {
   calLoading.value = true
@@ -201,6 +209,7 @@ async function publishFeed() {
   calBusy.value = 'publish'
   try {
     calToken.value = (await api.post('/calendar/subscription')).token
+    calRevealed.value = true   // they need to read it right now
     ui.toast('Calendar feed published')
   } catch (e) {
     ui.error(e.message || 'Could not publish the feed')
@@ -213,6 +222,7 @@ async function rotateFeed() {
   try {
     calToken.value = (await api.post('/calendar/subscription/rotate')).token
     calConfirm.value = ''
+    calRevealed.value = true   // the new link has to be handed out
     ui.toast('New link generated — the old one no longer works')
   } catch (e) {
     ui.error(e.message || 'Could not generate a new link')
@@ -226,6 +236,7 @@ async function stopFeed() {
     await api.del('/calendar/subscription')
     calToken.value = null
     calConfirm.value = ''
+    calRevealed.value = false
     ui.toast('Calendar feed turned off')
   } catch (e) {
     ui.error(e.message || 'Could not turn off the feed')
@@ -234,9 +245,22 @@ async function stopFeed() {
   }
 }
 function copyFeed() {
-  navigator.clipboard?.writeText(feedUrl.value).then(
+  // navigator.clipboard is undefined on an insecure origin — which is exactly
+  // where this feature sends people (http://<ha-host>:7850). Optional chaining
+  // alone made the whole expression short-circuit to undefined: no copy, no
+  // toast, no error, nothing. Say so instead, and the masked field is still
+  // selectable because the underlying value is the real URL.
+  if (!navigator.clipboard?.writeText) {
+    ui.error('Copying needs a secure (https) connection here — select the link and copy it manually.')
+    calRevealed.value = true
+    return
+  }
+  navigator.clipboard.writeText(feedUrl.value).then(
     () => ui.toast('Link copied'),
-    () => ui.error('Could not copy — select the link and copy it manually'),
+    () => {
+      calRevealed.value = true
+      ui.error('Could not copy — select the link and copy it manually.')
+    },
   )
 }
 
@@ -415,7 +439,13 @@ async function buildList() {
         it can read your meal plan.
       </p>
 
-      <span class="field-label" id="mp-feed-label">Calendar feed link</span>
+      <div class="mp-sub-labelrow">
+        <span class="field-label" id="mp-feed-label">Calendar feed link</span>
+        <button class="ghost sm" :aria-pressed="calRevealed"
+          @click="calRevealed = !calRevealed">
+          {{ calRevealed ? 'Hide' : 'Show link' }}
+        </button>
+      </div>
       <div class="row mp-sub-row">
         <!-- A wrapping textarea, not an input: the token is the only part of
              this URL that carries information and a single line hides it at
@@ -425,7 +455,8 @@ async function buildList() {
              AND the token, and clipping the token is the one thing this field
              exists to prevent. -->
         <textarea class="fill mp-sub-url" rows="3" readonly aria-labelledby="mp-feed-label"
-          :value="feedUrl" @focus="$event.target.select()"></textarea>
+          :value="calRevealed ? feedUrl : maskedUrl"
+          @focus="calRevealed && $event.target.select()"></textarea>
         <button class="secondary" @click="copyFeed">Copy</button>
       </div>
 
@@ -481,9 +512,18 @@ async function buildList() {
   display: block; font-size: 0.8rem; font-weight: 600;
   color: var(--muted); margin-bottom: 5px;
 }
+.mp-sub-labelrow { display: flex; align-items: baseline; gap: 8px; }
+.mp-sub-labelrow .field-label { margin-bottom: 4px; }
 .mp-sub-row { align-items: flex-start; gap: 8px; }
 /* Wraps rather than truncates: the token is the informative part of the URL. */
 .mp-sub-url { resize: vertical; font-size: 0.82rem; line-height: 1.4; }
+/* On a phone the field is ~32 characters wide, so the URL needs 4–5 lines and
+   the ingress variant (placeholder host + token) needs more still. `rows` is a
+   character-count hint that can't know the width — clipping the token is the
+   one failure this field exists to prevent, so give it room here. */
+@media (max-width: 560px) {
+  .mp-sub-url { min-height: 7em; }
+}
 .mp-sub-actions { gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 /* A bordered block, not a nested .card — a card inside a card is the heaviest
    box on the page and it is only a confirmation. */
