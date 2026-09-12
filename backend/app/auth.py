@@ -12,6 +12,7 @@ import contextlib
 import fcntl
 import functools
 import os
+import secrets
 from datetime import datetime, timezone
 
 import jwt
@@ -100,6 +101,24 @@ def decode_token(token: str):
         return None
 
 
+# Versions before this fix minted synthetic users with this literal password,
+# which /users/login's ungated email+password check made a public, guessable
+# owner-login backdoor — on every install, including hardened ones, because the
+# integration-token mint runs _default_user() at startup regardless. Randomizing
+# only the CREATE branches would leave every already-provisioned install exposed
+# forever (the row exists, so those branches never run again); detect and rotate
+# the known literal on every read, so an upgrade closes the door with no
+# migration. Same fix as Edibl (c410dce) and HomeHoard — myMeal was the missed
+# third sibling.
+_KNOWN_BACKDOOR_PASSWORD = "unused"
+
+
+def _rotate_known_backdoor_password(user: User) -> None:
+    if verify_password(_KNOWN_BACKDOOR_PASSWORD, user.password_hash):
+        user.password_hash = hash_password(secrets.token_urlsafe(32))
+        db.session.commit()
+
+
 def _default_user() -> User:
     """Return (creating if needed) the single local user for no-auth mode.
 
@@ -111,13 +130,17 @@ def _default_user() -> User:
     """
     user = db.session.query(User).filter_by(email=DEFAULT_EMAIL).first()
     if user:
+        _rotate_known_backdoor_password(user)
         return user
     try:
         group = _get_or_create_household()
         user = User(
             name="Local User",
             email=DEFAULT_EMAIL,
-            password_hash=hash_password("unused"),
+            # Random, discarded: this account is never meant to be reachable via
+            # /users/login — it exists as the DISABLE_AUTH fallback identity and
+            # the anchor the integration token binds to.
+            password_hash=hash_password(secrets.token_urlsafe(32)),
             is_owner=True,
             group_id=group.id,
         )
@@ -194,6 +217,7 @@ def _ingress_user():
     real_name = (request.headers.get("X-Remote-User-Display-Name")
                  or request.headers.get("X-Remote-User-Name") or "").strip()
     if user:
+        _rotate_known_backdoor_password(user)
         if real_name and user.name != real_name:
             user.name = real_name
             db.session.commit()
@@ -213,7 +237,8 @@ def _ingress_user():
     user = User(
         name=display or "Home Assistant user",
         email=f"ha:{ha_id}",              # synthetic, unique; not a login email
-        password_hash=hash_password("unused"),
+        # Random, discarded — authenticates only via the trusted ingress header.
+        password_hash=hash_password(secrets.token_urlsafe(32)),
         is_owner=not has_owner,
         ha_user_id=ha_id,
         group_id=group.id,
