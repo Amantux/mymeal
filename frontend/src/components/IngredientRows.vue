@@ -265,7 +265,7 @@ function addComponent(r) {
            explicit `.ctl { grid-row: 1 }` placement and orphaned the controls. -->
       <p v-if="r.section && r.section !== rows[i - 1]?.section" class="sec-lbl">{{ r.section }}</p>
       <div :ref="(el) => setRowRef(el, i)"
-         class="ing-row" :class="{ 'is-ref': r.refRecipeId }"
+         class="ing-row" :class="{ 'is-ref': r.refRecipeId, 'is-ftxt': r.freeText }"
          role="group" :aria-label="`Ingredient ${i + 1} of ${rows.length}`"
          @keydown="onRowKey($event, i)">
       <template v-if="r.refRecipeId">
@@ -458,11 +458,14 @@ function addComponent(r) {
   .col-heads { display: none; }
   .ing-row { grid-template-columns: 1fr 1fr auto; gap: 8px; }
   .ing-row .food, .ing-row .food-ref, .ing-row .note { grid-column: 1 / -1; }
-  /* Sits BESIDE the controls on row 1, exactly like the component row's
-     .batch. Spanning 1/-1 here would put it under the explicitly-placed
-     `.ctl { grid-row: 1 }` and leave the controls floating beside an empty
-     first cell — the same collision the section label hit. */
-  .ing-row .ftxt { grid-column: 1 / 3; }
+  /* Full width on its own band, with the controls dropped BELOW it.
+     Beside the controls (like a component row's .batch) the input came out
+     ~110px wide — four 40px touch targets eat the row — so the one box whose
+     entire purpose is to be wide was the narrowest on the page and truncated
+     the line mid-word. The explicit `.ctl { grid-row: 1 }` has to be released
+     for this row or the controls stay pinned beside an empty first cell. */
+  .ing-row .ftxt { grid-column: 1 / -1; }
+  .ing-row.is-ftxt .ctl { grid-row: auto; grid-column: 1 / -1; }
   .ctl { grid-column: 3; grid-row: 1; justify-content: flex-end; }
   .ing-row + .ing-row { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 8px; }
   /* Reorder/remove are 28px targets 2px apart on a phone. The read surface's
