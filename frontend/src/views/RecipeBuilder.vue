@@ -8,6 +8,11 @@ import { ref, watch, onMounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
 import { useUI } from '../stores/ui'
+// The shared transforms, not a local copy. This view had its own older
+// rowToDisplay/payload pair that predated the extraction and had already
+// drifted — it dropped `qualifier` and `section` — which is the drift the
+// module exists to prevent.
+import { rowToDisplay, rowToPayload } from '../utils/ingredientEdit'
 import IngredientRows from '../components/IngredientRows.vue'
 import StepRows from '../components/StepRows.vue'
 import InputMethods from '../components/InputMethods.vue'
@@ -44,16 +49,13 @@ const drafting = ref(false)
 const structuring = ref(false)
 const saving = ref(false)
 
-function rowToDisplay(r) {
-  const parts = [String(r.quantity ?? '').trim(), (r.unit || '').trim(), (r.food || '').trim()].filter(Boolean)
-  let d = parts.join(' ')
-  const note = (r.note || '').trim()
-  if (note) d = d ? `${d}, ${note}` : note
-  return d
-}
-// Rows worth saving: anything with a food, a quantity, or a linked recipe.
+// Rows worth saving: anything with a food, a quantity, a linked recipe, or a
+// free-text line. The free-text case must be explicit — such a row has no food
+// and no quantity by construction, so without it every prose line is filtered
+// out of the payload and the save silently drops it.
 const filledRows = () => ingredients.value.filter(
-  (r) => (r.food || '').trim() || String(r.quantity ?? '').trim() || r.refRecipeId,
+  (r) => (r.food || '').trim() || String(r.quantity ?? '').trim() || r.refRecipeId
+    || (r.freeText && (r.display || '').trim()),
 )
 
 async function draft() {
@@ -87,14 +89,24 @@ async function draft() {
 }
 
 async function structure() {
-  const ls = filledRows().map(rowToDisplay).filter(Boolean)
-  if (!ls.length || structuring.value) return
+  // Free-text rows are held out and spliced back untouched: restructuring them
+  // is exactly what their author opted out of, and this replaces the whole list.
+  const src = filledRows()
+  const pairs = src
+    .map((r, idx) => ({ r, idx, line: rowToDisplay(r) }))
+    .filter((p) => !p.r.freeText && p.line)
+  if (!pairs.length || structuring.value) return
   structuring.value = true
   try {
-    const res = await api.post('/ai/parse-ingredients', { lines: ls })
-    ingredients.value = res.ingredients.map((r) => ({
-      quantity: r.quantity || '', unit: r.unit || '', food: r.food || '', note: r.note || '',
-    }))
+    const res = await api.post('/ai/parse-ingredients', { lines: pairs.map((p) => p.line) })
+    const out = src.slice()
+    res.ingredients.forEach((r, k) => {
+      out[pairs[k].idx] = {
+        quantity: r.quantity || '', unit: r.unit || '', food: r.food || '',
+        note: r.note || '', freeText: false, display: '',
+      }
+    })
+    ingredients.value = out
     ui.toast(`Structured ${res.ingredients.length} ingredient${res.ingredients.length === 1 ? '' : 's'}`)
   } catch (e) {
     ui.error(e.message)
@@ -108,11 +120,7 @@ async function save() {
     ui.error('Give the recipe a name.')
     return
   }
-  const ings = filledRows().map((r, position) => ({
-    display: rowToDisplay(r), quantity: Number(r.quantity) || 0,
-    unit: r.unit || '', food: r.food || '', note: r.note || '', position,
-    refRecipeId: r.refRecipeId || undefined,
-  }))
+  const ings = filledRows().map((r, position) => rowToPayload(r, position))
   saving.value = true
   try {
     const r = await api.post('/recipes', {
