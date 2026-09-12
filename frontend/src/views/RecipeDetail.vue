@@ -158,8 +158,12 @@ const form = ref({})
 const editIngredients = ref([]) // structured rows for the edit-mode editor
 const structuring = ref(false)
 
+// A free-text row has no food and no quantity by construction, so it has to be
+// recognised explicitly here — otherwise every prose line is filtered out of the
+// payload and the save silently DELETES it.
 const filledRows = () => editIngredients.value.filter(
-  (r) => (r.food || '').trim() || String(r.quantity ?? '').trim() || r.refRecipeId,
+  (r) => (r.food || '').trim() || String(r.quantity ?? '').trim() || r.refRecipeId
+    || (r.freeText && (r.display || '').trim()),
 )
 
 // ingredientToRow / rowToDisplay / rowToPayload live in utils/ingredientEdit.js:
@@ -169,19 +173,36 @@ const filledRows = () => editIngredients.value.filter(
 
 async function tidyIngredients() {
   const src = filledRows()
-  const ls = src.map(rowToDisplay).filter(Boolean)
-  if (!ls.length || structuring.value) return
+  // Free-text rows are held OUT of the tidy and spliced back untouched.
+  // Restructuring them is exactly what their author opted out of, and Tidy
+  // replaces the whole list — so including them would be a third way to
+  // silently convert prose back into catalog-minting structured rows.
+  //
+  // Pairing each line with the index it came from also fixes a latent desync:
+  // a row whose display is empty was dropped by `.filter(Boolean)` while the
+  // results were still zipped by position, shifting every later row's section
+  // onto the wrong ingredient.
+  const pairs = src
+    .map((r, idx) => ({ r, idx, line: rowToDisplay(r) }))
+    .filter((p) => !p.r.freeText && p.line)
+  if (!pairs.length || structuring.value) return
   structuring.value = true
   try {
-    const res = await api.post('/ai/parse-ingredients', { lines: ls })
-    editIngredients.value = res.ingredients.map((r, idx) => ({
-      quantity: r.quantity || '', unit: r.unit || '', food: r.food || '',
-      note: r.note || '', qualifier: r.qualifier || '',
-      // The parser never sees the section (it isn't part of the line), so it
-      // must be carried across from the row that produced the line, or Tidy
-      // becomes another way to silently wipe every grouping.
-      section: src[idx]?.section || '',
-    }))
+    const res = await api.post('/ai/parse-ingredients', { lines: pairs.map((p) => p.line) })
+    const out = src.slice()
+    res.ingredients.forEach((r, k) => {
+      const { r: was, idx } = pairs[k]
+      out[idx] = {
+        quantity: r.quantity || '', unit: r.unit || '', food: r.food || '',
+        note: r.note || '', qualifier: r.qualifier || '',
+        // The parser never sees the section (it isn't part of the line), so it
+        // must be carried across from the row that produced the line, or Tidy
+        // becomes another way to silently wipe every grouping.
+        section: was.section || '',
+        freeText: false, display: '',
+      }
+    })
+    editIngredients.value = out
     ui.toast('Tidied ingredients')
   } catch (e) {
     ui.error(e.message || 'Could not tidy ingredients')
@@ -243,8 +264,14 @@ async function startEdit() {
   // Legacy free-text ingredients (no structured food) go through the
   // deterministic parser so the editor shows tidy qty·unit·food rows, not the
   // whole line crammed in the food field. Falls back to display-in-food.
+  // `!i.freeText` is what separates the two meanings of "has no food". A legacy
+  // line is one an importer COULDN'T structure, and parsing it is a service to
+  // the user. A free-text line is one the author decided NOT to structure, and
+  // parsing it would hand their own prose back through the parser and mint the
+  // Food the flag exists to prevent — the round-trip loss, one edit later.
   const legacy = r.ingredients
-    .map((i, idx) => (!i.food && !i.refRecipe && i.display ? { idx, display: i.display } : null))
+    .map((i, idx) => (!i.food && !i.refRecipe && !i.freeText && i.display
+      ? { idx, display: i.display } : null))
     .filter(Boolean)
   if (legacy.length) {
     try {
