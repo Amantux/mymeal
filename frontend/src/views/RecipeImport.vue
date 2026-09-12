@@ -274,6 +274,11 @@ async function applyReview() {
         // today, but this payload is a full replacement — it has to carry
         // everything a row can be.
         refRecipeId: ing.refRecipe?.id || null,
+        // Carried for the same reason, not guessed: an import never SETS this
+        // (an unparsed imported line is the legacy shape, and the flag is the
+        // author's decision in the editor), but this payload replaces every
+        // row, so a flag that did exist would be dropped here.
+        freeText: !!ing.freeText,
       }
     })
     await api.put(`/recipes/${imported.value.id}`, { ingredients: rows })
