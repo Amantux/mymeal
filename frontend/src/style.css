@@ -124,6 +124,18 @@ h3 { font-size: 0.95rem; font-weight: 600; margin: 0; }
 .content { padding: 26px 28px; max-width: 1240px; width: 100%; }
 .page-head { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
 .page-head .grow { flex: 1; }
+/* A page head's action cluster. Grouping the buttons means the CLUSTER wraps,
+   not individual buttons, so a narrow viewport never strands the last one on a
+   line by itself. Right-aligned when it does wrap, so the break reads as a
+   deliberate second row rather than an overflow accident. */
+.head-actions {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  justify-content: flex-end;
+}
+/* Destructive actions sit APART from the constructive ones. A wider gap (not a
+   divider) survives wrapping: Delete is separated from Edit whether the cluster
+   is on one line or three. */
+.head-actions .danger { margin-left: 14px; }
 
 /* ---------- Buttons ---------- */
 button, .btn {
@@ -300,6 +312,9 @@ label.field > span {
 
 /* ---------- Empty & loading ---------- */
 .empty-state { text-align: center; padding: 54px 20px; color: var(--muted); }
+/* Cap the measure. First-run copy has to teach a concept, so it is a sentence or
+   two — across a 1400px content column that becomes an unreadable single line. */
+.empty-state p { max-width: 56ch; margin-inline: auto; }
 .empty-state .ico { font-size: 42px; opacity: 0.5; margin-bottom: 10px; }
 .empty-state h3 { color: var(--text); margin-bottom: 6px; }
 .skeleton {

@@ -274,6 +274,46 @@ def test_scale_line_puts_a_leading_bracket_back_in_front():
         == "(optional) 2 tbsp chili flakes"
 
 
+@pytest.mark.parametrize("line,factor,expected", [
+    # The defect: scaling 4→6 servings printed "337 1/2 g". Nobody weighs half a
+    # gram of mushrooms, and the fraction claims precision the scaling never had.
+    ("225 g flour", 1.5, "338 g flour"),
+    ("750 g piece beef fillet", 1.25, "938 g piece beef fillet"),
+    ("500 ml stock", 1.5, "750 ml stock"),
+    # Kilos and litres are big enough for a fraction to be real — as a decimal.
+    ("1 kg beef", 1.19, "1.19 kg beef"),
+    ("2 l water", 0.5, "1 l water"),            # exact value stays whole
+    # Sub-gram amounts keep a decimal rather than rounding away to "0".
+    ("2 g saffron", 0.25, "0.5 g saffron"),
+    # Ranges get the same treatment at BOTH ends.
+    ("200-300 g pasta", 1.5, "300-450 g pasta"),
+    # Recipe English keeps fractions for everything else — unchanged.
+    ("1/2 tsp salt", 3, "1 1/2 tsp salt"),
+    ("1 cup flour", 1.5, "1 1/2 cups flour"),
+    ("1 lb beef", 1.5, "1 1/2 lb beef"),
+])
+def test_scale_line_renders_metric_amounts_as_decimals_not_fractions(line, factor, expected):
+    assert units.scale_line(line, factor) == expected
+
+
+def test_format_qty_for_unit_only_overrides_the_metric_units():
+    """The fraction rendering is right for how recipes are written; it is only
+    wrong for g/ml/kg/l. Everything else must still route to format_qty."""
+    assert units.format_qty_for_unit(337.5, "g") == "338"
+    assert units.format_qty_for_unit(1.19, "kg") == "1.19"
+    assert units.format_qty_for_unit(1.5, "cup") == "1 1/2"
+    assert units.format_qty_for_unit(1.5, "tbsp") == "1 1/2"
+    assert units.format_qty_for_unit(1.5, None) == "1 1/2"
+    # An unknown unit is not a metric one, so it keeps the default rendering.
+    assert units.format_qty_for_unit(1.5, "glug") == "1 1/2"
+
+
+def test_split_amount_does_not_fraction_a_gram_column():
+    """The two-column ingredient display reads the same formatter, so a stored
+    fractional gram quantity must not come back as "337 1/2" either."""
+    assert units.split_amount("337.5 g flour") == ("338", "g", "flour")
+
+
 def test_pluralize_agrees_with_the_rendered_quantity_not_the_raw_one():
     """format_qty rounds, so 1.0003 prints "1"; comparing the unrounded value
     printed "1 cups" — the exact defect the plural map was added to fix."""

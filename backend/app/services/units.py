@@ -322,6 +322,35 @@ def format_qty(value: float) -> str:
     return str(int(rounded)) if rounded == int(rounded) else f"{rounded:g}"
 
 
+# Metric units are written as decimals, never as vulgar fractions. "1 1/2 cups"
+# is how recipes are written; "337 1/2 g" is not — nobody weighs half a gram of
+# mushrooms, and the fraction reads as precision the scaling never had.
+_DECIMAL_UNITS = {
+    # whole units only: a fraction of a gram or millilitre is noise
+    "g": 0,
+    "ml": 0,
+    # a fraction of a kilo or litre is real, but as a decimal — 1.19 kg
+    "kg": 2,
+    "l": 2,
+}
+
+
+def format_qty_for_unit(value: float, unit: str | None) -> str:
+    """Render a quantity for display beside ``unit``.
+
+    Defers to :func:`format_qty` — fractions and all — for everything except the
+    metric units, where a fraction is simply the wrong notation. Sub-1 metric
+    amounts keep one decimal rather than rounding away to "0", matching what
+    _format_grams already does on the weight-annotation path.
+    """
+    places = _DECIMAL_UNITS.get(unit)
+    if places is None or value is None or value <= 0:
+        return format_qty(value)
+    if places == 0 and value < 1:
+        return f"{round(value, 1):g}"
+    return f"{round(value, places):g}"
+
+
 def split_amount(display: str, quantity: float | None = None) -> tuple[str, str, str]:
     """Split an ingredient line into ``(amount, unit, rest)`` for a two-column
     display. Lossless: the three parts together always account for every word of
@@ -349,7 +378,8 @@ def split_amount(display: str, quantity: float | None = None) -> tuple[str, str,
     qty = quantity if quantity else p["qty"]
     # The unit comes from the TEXT, not the row: `rest` had exactly that word
     # removed, so echoing anything else would inject or drop a word.
-    return format_qty(qty), pluralize_unit(p["unit"], round(qty, 2)), p["rest"]
+    return (format_qty_for_unit(qty, p["unit"]),
+            pluralize_unit(p["unit"], round(qty, 2)), p["rest"])
 
 
 def scale_line(text: str, factor: float) -> str:
@@ -361,7 +391,7 @@ def scale_line(text: str, factor: float) -> str:
     if parsed["qty"] is None:
         return text
     scaled = parsed["qty"] * factor
-    new_qty = format_qty(scaled)
+    new_qty = format_qty_for_unit(scaled, parsed["unit"])
     # Scale BOTH ends of a range. Only the display text grows a range here — the
     # structured quantity stays the low end (see parse_line), so shopping
     # consolidation, weight conversion and the MCP/HA surfaces are untouched.
@@ -369,7 +399,7 @@ def scale_line(text: str, factor: float) -> str:
     # regex and silently destroyed.
     hi = parsed.get("range_hi")
     if hi is not None:
-        new_qty = f"{new_qty}-{format_qty(hi * factor)}"
+        new_qty = f"{new_qty}-{format_qty_for_unit(hi * factor, parsed['unit'])}"
     # Pluralize on the value we actually RENDER, not the raw product: format_qty
     # rounds, so 1.0003 prints "1" and an exact comparison would print "1 cups".
     # A range is plural whenever its high end is.

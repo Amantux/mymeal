@@ -597,23 +597,28 @@ const imageSrc = computed(() =>
     <div class="page-head">
       <button class="ghost" @click="router.push('/recipes')">← Recipes</button>
       <div class="grow"></div>
-      <template v-if="!editing">
-        <button v-if="recipe.steps.length" @click="openCookMode">
-          👨‍🍳 Cook
-        </button>
-        <button v-if="recipe.ingredients.length" class="secondary" :disabled="shoppingBusy"
-          @click="addToShopping">🛒 Add to list</button>
-        <button class="secondary" @click="toggleFavorite">
-          {{ recipe.isFavorite ? '★ Favorited' : '☆ Favorite' }}
-        </button>
-        <button class="secondary" @click="startEdit">Edit</button>
-        <button class="danger" @click="remove">Delete</button>
-      </template>
-      <template v-else>
-        <span v-if="editingVersionId" class="badge" style="align-self:center">✎ Editing experiment</span>
-        <button class="secondary" @click="editing = false; editingVersionId = null">Cancel</button>
-        <button @click="save">Save</button>
-      </template>
+      <!-- The actions are ONE flex item so a phone wraps the whole cluster to
+           its own line instead of orphaning whichever button ran out of room
+           (Delete used to land alone, left-aligned, looking like a mistake). -->
+      <div class="head-actions">
+        <template v-if="!editing">
+          <button v-if="recipe.steps.length" @click="openCookMode">
+            👨‍🍳 Cook
+          </button>
+          <button v-if="recipe.ingredients.length" class="secondary" :disabled="shoppingBusy"
+            @click="addToShopping">🛒 Add to list</button>
+          <button class="secondary" @click="toggleFavorite">
+            {{ recipe.isFavorite ? '★ Favorited' : '☆ Favorite' }}
+          </button>
+          <button class="secondary" @click="startEdit">Edit</button>
+          <button class="danger" @click="remove">Delete</button>
+        </template>
+        <template v-else>
+          <span v-if="editingVersionId" class="badge" style="align-self:center">✎ Editing experiment</span>
+          <button class="secondary" @click="editing = false; editingVersionId = null">Cancel</button>
+          <button @click="save">Save</button>
+        </template>
+      </div>
     </div>
 
     <!-- VIEW MODE -->
@@ -680,7 +685,9 @@ const imageSrc = computed(() =>
             <span>Title (optional)</span>
             <input v-model="newVideoTitle" placeholder="e.g. Folding technique" />
           </label>
-          <button :disabled="addingVideo" @click="addVideoLink">
+          <!-- Secondary, not accent: Cook is this page's one primary action.
+               A card-level action never earns the orange fill. -->
+          <button class="secondary" :disabled="addingVideo" @click="addVideoLink">
             {{ addingVideo ? 'Adding…' : 'Add link' }}
           </button>
           <label class="secondary btnlike">
@@ -825,7 +832,7 @@ const imageSrc = computed(() =>
             </div>
             <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap">
               <button v-if="v.status === 'open'" class="secondary sm" @click="editExperiment(v)">✎ Edit</button>
-              <button v-if="v.status === 'open'" class="sm" @click="promoteVersion(v)">⬆ Promote</button>
+              <button v-if="v.status === 'open'" class="secondary sm" @click="promoteVersion(v)">⬆ Promote</button>
               <button class="secondary sm danger" @click="discardVersion(v)">Discard</button>
               <span class="muted sm" style="align-self:center">{{ fmtDate(v.createdAt) }}</span>
             </div>
