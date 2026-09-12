@@ -30,6 +30,10 @@ SYSTEM = (
     "they ask you to suggest something new. When the user shares a recipe URL or "
     "pastes a recipe, use import_recipe to fetch and save it. Keep answers "
     "concise and useful. "
+    "If a tool comes back with needsClarification, it means the name the user "
+    "gave matches several of their recipes and NOTHING was looked up or changed. "
+    "Show them the candidates and ask which they meant — never pick one yourself, "
+    "even if they sound impatient or already said 'yes'. "
     "Reporting a bug: if the user says something is broken or wrong, or asks to "
     "report a bug or send feedback, walk them through it conversationally — ask "
     "(one at a time if needed) what they were doing, what went wrong, and what "
@@ -156,19 +160,36 @@ TOOLS = [
 ]
 
 
-def _find_recipe(gid, name_or_id):
-    r = db.session.get(Recipe, name_or_id)
-    if r and r.group_id == gid:
-        return r
-    r = db.session.query(Recipe).filter_by(group_id=gid, slug=name_or_id).first()
-    if r:
-        return r
-    like = f"%{name_or_id}%"
-    return (
-        db.session.query(Recipe)
-        .filter(Recipe.group_id == gid, Recipe.name.ilike(like))
-        .first()
-    )
+def _resolve_recipe(gid, name_or_id):
+    """Resolve a recipe reference, or hand back the candidates to ask about.
+
+    Returns ``(recipe, ask)`` with exactly one side set. This goes through
+    ``services.recipe_resolve`` — the same confidence policy the REST resolve
+    endpoint, the MCP server and the HA integration use — rather than taking the
+    first ``ilike`` hit. Reciting the wrong recipe's ingredients and steps in
+    full confidence is the failure this prevents: with five chicken recipes
+    saved, "the chicken one" is a question, not a match.
+
+    Note the split the resolver is careful about: ``search_recipes`` is a
+    SUMMARISING read and deliberately does not disambiguate (asking "which
+    chicken?" when the user asked to see their chicken recipes would be a
+    regression). ``get_recipe`` returns exactly one recipe, so it must ask.
+    """
+    from ..recipe_resolve import lookup
+
+    decision = lookup(gid, str(name_or_id or ""))
+    if decision["confidence"] == "high":
+        return decision["match"], None
+    if not decision.get("candidates"):
+        return None, None
+    return None, {
+        "needsClarification": True,
+        "message": (
+            f"\"{name_or_id}\" matches several recipes. Ask which one they mean "
+            f"— do not pick one. Nothing was looked up."
+        ),
+        "candidates": decision["candidates"],
+    }
 
 
 def execute_tool(gid: str, name: str, args: dict):
@@ -190,7 +211,9 @@ def execute_tool(gid: str, name: str, args: dict):
         return [{"id": r.id, "name": r.name} for r in rows]
 
     if name == "get_recipe":
-        r = _find_recipe(gid, str(args.get("name_or_id", "")))
+        r, ask = _resolve_recipe(gid, str(args.get("name_or_id", "")))
+        if ask:
+            return ask
         if not r:
             return {"error": "no matching recipe"}
         return {

@@ -442,40 +442,11 @@ def resolve_recipe():
     if not q:
         return jsonify({"confidence": "none", "candidates": [],
                         "error": "No recipe name or id given."}), 400
-    gid = current_group().id
-
-    # An id or slug is an unambiguous handle — never a fuzzy match.
-    direct = db.session.get(Recipe, q)
-    if not direct or direct.group_id != gid:
-        direct = db.session.query(Recipe).filter_by(group_id=gid, slug=q).first()
-    if direct:
-        return jsonify({"confidence": "high", "matchedOn": "id",
-                        "recipe": recipe_out(direct)})
-
-    like = f"%{q}%"
-    rows = (
-        db.session.query(Recipe)
-        .filter_by(group_id=gid)
-        .filter(
-            db.or_(
-                Recipe.name.ilike(like),
-                Recipe.description.ilike(like),
-                Recipe.tags.any(Tag.name.ilike(like)),
-            )
-        )
-        .options(selectinload(Recipe.tags))
-        .all()
-    )
-    decision = recipe_resolve.decide(
-        [{"id": r.id, "name": r.name, "tags": [t.name for t in r.tags],
-          "description": r.description or ""} for r in rows],
-        q,
-    )
+    decision = recipe_resolve.lookup(current_group().id, q)
     if decision["confidence"] == "high":
-        match = db.session.get(Recipe, decision["match"]["id"])
         return jsonify({"confidence": "high",
                         "matchedOn": decision.get("matchedOn"),
-                        "recipe": recipe_out(match)})
+                        "recipe": recipe_out(decision["match"])})
     return jsonify(decision)
 
 
