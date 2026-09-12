@@ -18,9 +18,19 @@ const streaming = computed(() => householdDefault.value)
 // setup state instead of only failing when you send. Optimistic until loaded.
 const aiStatus = ref({ enabled: true, provider: '' })
 const notConfigured = computed(() => aiStatus.value.enabled === false)
+
+// Cheap, and the answer goes stale: a provider can be configured (or removed)
+// in Settings while the widget sits mounted on another tab. Asked on mount AND
+// on every open, so the panel never argues with what Settings just did. Never
+// inferred from a failed send — that conflates "no provider" with "provider
+// broke", which need different copy.
+async function refreshStatus() {
+  try { aiStatus.value = await api.get('/ai/status') } catch (e) { /* stay optimistic */ }
+}
+
 onMounted(async () => {
   try { householdDefault.value = !!(await api.get('/ai/chat-settings')).stream } catch (e) { /* default false */ }
-  try { aiStatus.value = await api.get('/ai/status') } catch (e) { /* stay optimistic */ }
+  await refreshStatus()
 })
 
 // Maps a structured undo descriptor (from the server) to a known, safe API
@@ -45,6 +55,7 @@ const input = ref('')
 const busy = ref(false)
 const sessionId = ref(null)
 const body = ref(null)
+const inputEl = ref(null)
 
 // Domain-specific openers — the myMeal equivalent of Edibl's stock prompts.
 const suggestions = [
@@ -68,6 +79,8 @@ function toggle() {
 watch(open, (isOpen) => {
   if (!isOpen) return
   scrollDown()
+  refreshStatus() // in the background — opening never waits on it
+  nextTick(() => inputEl.value?.focus())
   if (ui.assistantPrompt) {
     const prompt = ui.assistantPrompt
     ui.assistantPrompt = null
@@ -146,12 +159,21 @@ async function send(text) {
     if (streaming.value) await sendStream(content)
     else await sendPost(content)
   } catch (e) {
-    // 503 = no AI provider configured; surface the server's guidance inline.
-    msgs.value.push({
-      role: 'assistant',
-      error: true,
-      content: e.message || 'Something went wrong.',
-    })
+    if (e.status === 503) {
+      // The provider went away mid-conversation — removed in Settings, key
+      // revoked, whatever. Flip back to the setup state so the panel offers the
+      // fix, and pop the user's message: it was never answered, and leaving it
+      // stranded above a setup prompt reads as though it had been.
+      aiStatus.value = { ...aiStatus.value, enabled: false }
+      const last = msgs.value[msgs.value.length - 1]
+      if (last && last.role === 'user') msgs.value.pop()
+    } else {
+      msgs.value.push({
+        role: 'assistant',
+        error: true,
+        content: e.message || 'Something went wrong.',
+      })
+    }
   } finally {
     busy.value = false
     await scrollDown()
@@ -238,6 +260,7 @@ async function send(text) {
 
         <div class="pfoot">
           <input
+            ref="inputEl"
             v-model="input"
             class="pinput"
             :placeholder="notConfigured ? 'Set up an AI provider to chat' : 'Message the assistant…'"
