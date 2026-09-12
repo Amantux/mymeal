@@ -55,6 +55,71 @@ def test_bad_database_url_scheme_refuses_to_start():
     assert "database" in str(exc.value).lower()
 
 
+def test_bad_database_url_is_collected_with_other_errors():
+    # The collect-all contract: a bad DSN must not short-circuit validation, or
+    # fixing a misconfigured deploy becomes one-error-per-restart guesswork.
+    with pytest.raises(ConfigError) as exc:
+        L(env={
+            "MYMEAL_SECRET_KEY": GOOD_SECRET,
+            "MYMEAL_DATABASE_URL": "postgresql+psycopg2://u@h/db",
+            "MYMEAL_CORS_ORIGINS": "not-a-url",
+        })
+    joined = "\n".join(exc.value.errors)
+    assert "MYMEAL_DATABASE_URL" in joined and "psycopg2" in joined
+    assert "MYMEAL_CORS_ORIGINS" in joined
+
+
+def test_bare_postgres_url_is_accepted_and_normalized(tmp_path):
+    s = L(env={"MYMEAL_SECRET_KEY": GOOD_SECRET,
+               "MYMEAL_DATABASE_URL": "postgresql://u:p@h:5432/db",
+               "MYMEAL_DATA_DIR": str(tmp_path)})
+    assert s.sqlalchemy_uri == "postgresql+psycopg://u:p@h:5432/db"
+
+
+def test_blank_database_url_is_unset_not_a_bad_scheme(tmp_path):
+    # The HA UI writes "" (and operators leave stray spaces) for a cleared
+    # field; that means "use the default", not "a URL with a blank scheme".
+    s = L(env={"MYMEAL_SECRET_KEY": GOOD_SECRET, "MYMEAL_DATA_DIR": str(tmp_path)},
+          overrides={"DATABASE_URL": "   "})
+    assert s.sqlalchemy_uri.startswith("sqlite:///")
+
+
+def test_sqlite_default_untouched(tmp_path):
+    s = L(env={"MYMEAL_SECRET_KEY": GOOD_SECRET, "MYMEAL_DATA_DIR": str(tmp_path)})
+    assert s.sqlalchemy_uri == f"sqlite:///{os.path.join(str(tmp_path), 'mymeal.db')}"
+
+
+def test_bad_provisioned_dsn_refuses_to_start(tmp_path):
+    # A DSN written by an older/foreign provisioner must fail loudly at boot as
+    # a named, collected ConfigError — not as a bare ValueError from create_app.
+    (tmp_path / ".database_url").write_text("mysql://u:pw@h/db")
+    with pytest.raises(ConfigError) as exc:
+        L(env={"MYMEAL_SECRET_KEY": GOOD_SECRET, "MYMEAL_DATA_DIR": str(tmp_path),
+               "MYMEAL_CORS_ORIGINS": "not-a-url"},
+          overrides={"USE_SHARED_POSTGRES": True})
+    joined = "\n".join(exc.value.errors)
+    assert ".database_url" in joined and "Delete that file" in joined
+    assert "MYMEAL_CORS_ORIGINS" in joined      # still collected alongside
+    assert "pw" not in joined                   # the DSN itself is never echoed
+
+
+def test_bad_provisioned_dsn_raises_config_error_at_point_of_use(tmp_path):
+    # Reached when the file turns bad after load (or a caller skipped
+    # validation): still ConfigError, never a raw ValueError traceback.
+    s = L(env={"MYMEAL_SECRET_KEY": GOOD_SECRET, "MYMEAL_DATA_DIR": str(tmp_path)},
+          overrides={"USE_SHARED_POSTGRES": True})
+    (tmp_path / ".database_url").write_text("mysql://u:pw@h/db")
+    with pytest.raises(ConfigError) as exc:
+        s.sqlalchemy_uri
+    assert "Delete that file" in str(exc.value)
+
+
+def test_provisioned_dsn_absent_is_not_an_error(tmp_path):
+    s = L(env={"MYMEAL_SECRET_KEY": GOOD_SECRET, "MYMEAL_DATA_DIR": str(tmp_path)},
+          overrides={"USE_SHARED_POSTGRES": True})
+    assert s.sqlalchemy_uri.startswith("sqlite:///")
+
+
 def L(env=None, **kw):
     """Load settings from an explicit env, never the real process environment."""
     kw.setdefault("ha_options", {})

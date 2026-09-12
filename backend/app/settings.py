@@ -175,6 +175,40 @@ def normalize_db_url(url: str) -> str:
     )
 
 
+PROVISIONED_DSN_FILENAME = ".database_url"
+
+
+def provisioned_dsn_path(data_dir: str) -> str:
+    return os.path.join(data_dir, PROVISIONED_DSN_FILENAME)
+
+
+def read_provisioned_dsn(data_dir: str) -> str | None:
+    """The DSN pg_provision persisted, or None if there isn't one.
+
+    Absent/unreadable is NOT an error: it simply means "not provisioned yet",
+    so callers fall back to SQLite. One reader shared by ``sqlalchemy_uri`` and
+    startup validation, so the two can never disagree about what is on disk.
+    """
+    try:
+        with open(provisioned_dsn_path(data_dir)) as fh:
+            return fh.read().strip() or None
+    except OSError:
+        return None
+
+
+def provisioned_dsn_error(data_dir: str, exc: Exception) -> str:
+    """The one message for an unloadable provisioned DSN.
+
+    Names the file, never the DSN (it embeds a password), and says how to
+    recover: the entrypoint re-provisions when the file is missing, so deleting
+    it is the fix rather than an act of desperation.
+    """
+    return (
+        f"the provisioned database DSN in {provisioned_dsn_path(data_dir)}: {exc} "
+        "Delete that file to re-provision on the next start."
+    )
+
+
 def as_str(raw: str) -> str:
     return str(raw)
 
@@ -396,23 +430,29 @@ class Settings:
 
     @property
     def sqlalchemy_uri(self) -> str:
-        # Explicit URL always wins.
-        if self.values["DATABASE_URL"]:
-            return normalize_db_url(self.values["DATABASE_URL"])
+        # Explicit URL always wins. Stripped first: a whitespace-only value is
+        # "unset", not a URL whose scheme happens to be blank.
+        explicit = (self.values["DATABASE_URL"] or "").strip()
+        if explicit:
+            # Wrapped: an unusable database URL is a configuration failure, so
+            # callers see ConfigError whether the refusal came from startup
+            # validation or from here. normalize_db_url names only the
+            # scheme/driver, never the URL, so no credential is echoed.
+            try:
+                return normalize_db_url(explicit)
+            except ValueError as exc:
+                raise ConfigError([f"MYMEAL_DATABASE_URL: {exc}"]) from None
         # Shared PostgreSQL: the entrypoint's provisioning step (pg_provision)
         # writes the discovered DSN here; read it rather than routing a runtime
-        # value through the env/options precedence chain.
+        # value through the env/options precedence chain. Absent = not
+        # provisioned yet, so fall through to the SQLite default.
         if self.values["USE_SHARED_POSTGRES"]:
-            try:
-                with open(os.path.join(self.data_dir, ".database_url")) as fh:
-                    url = fh.read().strip()
-                if url:
+            url = read_provisioned_dsn(self.data_dir)
+            if url:
+                try:
                     return normalize_db_url(url)
-            except OSError:
-                # The provisioned-DSN file is optional: absent/unreadable simply
-                # means "not provisioned yet", so fall through to the SQLite
-                # default rather than failing startup.
-                pass
+                except ValueError as exc:
+                    raise ConfigError([provisioned_dsn_error(self.data_dir, exc)]) from None
         return f"sqlite:///{os.path.join(self.data_dir, 'mymeal.db')}"
 
     @property
@@ -632,7 +672,7 @@ def _validate_semantics(values, sources, in_ha, errors, warnings, strict_secret)
         )
 
     # --- serving ---
-    uri = values["DATABASE_URL"]
+    uri = (values["DATABASE_URL"] or "").strip()
     is_sqlite = (not uri) or uri.startswith("sqlite")
     if is_sqlite and values["WORKERS"] > 4:
         warnings.append(
@@ -645,6 +685,19 @@ def _validate_semantics(values, sources, in_ha, errors, warnings, strict_secret)
             normalize_db_url(uri)
         except ValueError as exc:
             errors.append(f"MYMEAL_DATABASE_URL: {exc}")
+    elif values["USE_SHARED_POSTGRES"]:
+        # The provisioned DSN is a config source like any other, so it is
+        # validated HERE too and not only at the point of use — otherwise a DSN
+        # written by an older/foreign provisioner surfaces as a bare ValueError
+        # traceback from create_app instead of a named, collected ConfigError.
+        # Absent file = not provisioned yet, which is normal, not an error.
+        dsn = read_provisioned_dsn(os.path.abspath(values["DATA_DIR"]))
+        if dsn:
+            try:
+                normalize_db_url(dsn)
+            except ValueError as exc:
+                errors.append(
+                    provisioned_dsn_error(os.path.abspath(values["DATA_DIR"]), exc))
 
     edibl_url = values["EDIBL_URL"]
     if edibl_url and not re.match(r"^https?://", edibl_url):
