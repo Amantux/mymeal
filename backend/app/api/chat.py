@@ -131,6 +131,16 @@ def undo_action():
     return jsonify({"undone": False, "error": err}), 502
 
 
+def _provider_name(provider) -> str:
+    """The provider's short id, for the metric only.
+
+    getattr, not attribute access: the tool loop needs nothing from a provider
+    but .chat/.chat_stream, so a perfectly valid adapter may not carry a name —
+    and a metric must never be the reason a chat turn fails.
+    """
+    return getattr(provider, "name", "?")
+
+
 def _next_position(session) -> int:
     return (max((m.position for m in session.messages), default=-1)) + 1
 
@@ -161,7 +171,7 @@ def chat():
 
     history = [{"role": m.role, "content": m.content} for m in session.messages]
 
-    with Timer("chat", mode="post", provider=provider.name) as timer:
+    with Timer("chat", mode="post", provider=_provider_name(provider)) as timer:
         try:
             result = run_chat(gid, provider, history, message)
         except ProviderError as exc:
@@ -238,7 +248,7 @@ def chat_stream():
         # is consumed, so a timer started in the view would measure the wait for
         # the client rather than the turn. ttftMs is the number that matters for
         # a stream — total time says little when tokens arrive progressively.
-        with Timer("chat", mode="stream", provider=provider.name) as timer:
+        with Timer("chat", mode="stream", provider=_provider_name(provider)) as timer:
             try:
                 for ev in run_chat_stream(gid, provider, history, message):
                     if ev["type"] == "delta":

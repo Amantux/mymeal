@@ -99,6 +99,22 @@ def test_stream_turn_records_mode_stream_and_ttft(auth_client, monkeypatch):
     assert sample["mode"] == "stream" and isinstance(sample["ttftMs"], int)
 
 
+def test_provider_without_a_name_still_completes_the_turn(auth_client, monkeypatch):
+    """The loop needs only .chat from a provider, so the metric must not demand
+    more than that — reading provider.name eagerly once 500'd these turns."""
+    import app.api.chat as chat_api
+
+    class Duck:  # deliberately not an AIProvider subclass
+        def chat(self, messages, system=None, tools=None):
+            return ChatResult(content="hi")
+
+    monkeypatch.setattr(chat_api, "get_provider", lambda: Duck())
+
+    r = auth_client.post("/api/v1/ai/chat", json={"message": "hi"})
+
+    assert r.status_code == 200
+
+
 def test_metrics_failure_never_breaks_a_chat_turn(auth_client, monkeypatch):
     import app.api.chat as chat_api
 
