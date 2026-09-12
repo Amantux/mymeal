@@ -59,8 +59,17 @@ async function request(method, path, body, isForm = false) {
   }
   const ct = res.headers.get('content-type') || ''
   const data = ct.includes('application/json') ? await res.json() : await res.text()
-  if (!res.ok) throw new Error((data && data.error) || res.statusText)
+  if (!res.ok) throw apiError((data && data.error) || res.statusText, res.status)
   return data
+}
+
+// Callers branch on the status (a 404 on undo means "already undone", a 409 is
+// a conflict worth its own message), so it has to survive the throw — a bare
+// Error silently makes every such branch unreachable.
+function apiError(message, status) {
+  const err = new Error(message)
+  err.status = status
+  return err
 }
 
 export const api = {
@@ -91,7 +100,7 @@ export async function streamPost(path, body, onEvent) {
   if (!res.ok || !res.body) {
     let msg = res.statusText
     try { const j = await res.json(); msg = (j && j.error) || msg } catch (e) { /* non-JSON */ }
-    throw new Error(msg)
+    throw apiError(msg, res.status)
   }
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
