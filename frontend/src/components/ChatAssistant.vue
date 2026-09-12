@@ -388,6 +388,31 @@ async function send(text) {
   .asst-panel-enter-active, .asst-panel-leave-active { transition: none; }
 }
 
+/* On phones a 56px accent disc parked over the page reads as page furniture and
+   sat on top of real content — ingredient lines on a recipe, the row controls in
+   the ingredient editor, the review badges on import. Two halves fix it, and the
+   fix is general (here + `.content`'s bottom padding in style.css), never
+   per-page:
+     1. shrink to 46px (still above the 44px touch-target floor) and hold it in
+        the corner, so it covers ~a third of the area it used to, and
+     2. sit at 0.75 opacity while idle, so the line underneath stays readable
+        mid-scroll, returning to full strength on hover/focus/press and whenever
+        the panel is open — the moments you are actually aiming at it.
+   Keyed to the app's existing 720px phone breakpoint rather than a new number.
+   Deliberately NOT display:none — a hidden assistant is an absent one. */
+@media (max-width: 720px) {
+  .fab {
+    right: 16px;
+    bottom: 16px;
+    width: 46px;
+    height: 46px;
+    font-size: 1.15rem;
+    opacity: 0.75;
+    transition: opacity 0.12s ease;
+  }
+  .fab:hover, .fab:focus-visible, .fab:active, .fab.open { opacity: 1; }
+}
+
 /* On phones the panel docks as a full-height sheet instead of a small card
    floating mid-screen over the page content. */
 @media (max-width: 560px) {
