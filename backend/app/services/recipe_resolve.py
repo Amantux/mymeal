@@ -137,6 +137,63 @@ def candidate_out(row, matched_on, score=None) -> dict:
     return out
 
 
+def lookup(gid: str, query: str, limit: int = MAX_CANDIDATES) -> dict:
+    """Resolve a free-text recipe reference for one group, against the database.
+
+    The DB-backed companion to :func:`decide`, so every caller that turns "the
+    chicken one" into a recipe — the REST resolve endpoint, the chat agent, and
+    through them the MCP server and the HA integration — runs the SAME query and
+    the SAME confidence rule. A caller that hand-rolls its own ``ilike(...).first()``
+    silently reintroduces the guessing this module exists to prevent.
+
+    Returns :func:`decide`'s shape, except a ``"high"`` result carries the ORM
+    ``Recipe`` under ``"match"``.
+    """
+    # Imported here so the scoring half of this module stays pure and importable
+    # without an app context (it is unit-tested that way).
+    from sqlalchemy.orm import selectinload
+
+    from ..extensions import db
+    from ..models import Recipe, Tag
+
+    q = (query or "").strip()
+    if not q:
+        return {"confidence": "none", "candidates": []}
+
+    # An id or slug is an unambiguous handle the caller already holds (typically
+    # from a previous search) — never re-fuzz it.
+    direct = db.session.get(Recipe, q)
+    if not direct or direct.group_id != gid:
+        direct = db.session.query(Recipe).filter_by(group_id=gid, slug=q).first()
+    if direct:
+        return {"confidence": "high", "match": direct, "matchedOn": "id"}
+
+    like = f"%{q}%"
+    rows = (
+        db.session.query(Recipe)
+        .filter_by(group_id=gid)
+        .filter(
+            db.or_(
+                Recipe.name.ilike(like),
+                Recipe.description.ilike(like),
+                Recipe.tags.any(Tag.name.ilike(like)),
+            )
+        )
+        .options(selectinload(Recipe.tags))
+        .all()
+    )
+    by_id = {r.id: r for r in rows}
+    decision = decide(
+        [{"id": r.id, "name": r.name, "tags": [t.name for t in r.tags],
+          "description": r.description or ""} for r in rows],
+        q,
+        limit=limit,
+    )
+    if decision["confidence"] == "high":
+        decision["match"] = by_id[decision["match"]["id"]]
+    return decision
+
+
 def decide(rows, query: str, limit: int = MAX_CANDIDATES) -> dict:
     """Rank ``rows`` and return a confidence decision.
 

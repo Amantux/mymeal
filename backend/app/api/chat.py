@@ -12,6 +12,7 @@ from ..schemas.serializers import (
     chat_message_out,
 )
 from ..services.ai.base import ProviderError
+from ..services.metrics import Timer
 from ..services.ai.registry import get_provider
 from ..services.ai.agent import run_chat, run_chat_stream, actions_from_trace
 
@@ -130,6 +131,16 @@ def undo_action():
     return jsonify({"undone": False, "error": err}), 502
 
 
+def _provider_name(provider) -> str:
+    """The provider's short id, for the metric only.
+
+    getattr, not attribute access: the tool loop needs nothing from a provider
+    but .chat/.chat_stream, so a perfectly valid adapter may not carry a name —
+    and a metric must never be the reason a chat turn fails.
+    """
+    return getattr(provider, "name", "?")
+
+
 def _next_position(session) -> int:
     return (max((m.position for m in session.messages), default=-1)) + 1
 
@@ -160,13 +171,18 @@ def chat():
 
     history = [{"role": m.role, "content": m.content} for m in session.messages]
 
-    try:
-        result = run_chat(gid, provider, history, message)
-    except ProviderError as exc:
-        # Discard the flushed-but-uncommitted session and any tool writes so a
-        # failed turn leaves no phantom session or partial shopping-list item.
-        db.session.rollback()
-        return jsonify({"error": str(exc)}), 502
+    with Timer("chat", mode="post", provider=_provider_name(provider)) as timer:
+        try:
+            result = run_chat(gid, provider, history, message)
+        except ProviderError as exc:
+            # Discard the flushed-but-uncommitted session and any tool writes so
+            # a failed turn leaves no phantom session or partial shopping-list
+            # item. ok is set explicitly: the exception is handled here, so it
+            # never reaches the Timer, which would otherwise record a success.
+            db.session.rollback()
+            timer.set(ok=False)
+            return jsonify({"error": str(exc)}), 502
+        timer.set(toolRounds=len(result["trace"]))
 
     pos = _next_position(session)
     user_msg = ChatMessage(
@@ -228,43 +244,57 @@ def chat_stream():
             db.session.flush()
 
         reply, trace = "", []
-        try:
-            for ev in run_chat_stream(gid, provider, history, message):
-                if ev["type"] == "delta":
-                    yield json.dumps({"type": "delta", "text": ev["text"]}) + "\n"
-                elif ev["type"] == "tool":
-                    yield json.dumps({"type": "tool", "name": ev["name"]}) + "\n"
-                elif ev["type"] == "done":
-                    reply, trace = ev["reply"], ev["trace"]
-        except ProviderError as exc:
-            db.session.rollback()
-            yield json.dumps({"type": "error", "error": str(exc)}) + "\n"
-            return
-        except Exception:  # noqa: BLE001 - never leak a stack into the stream
-            db.session.rollback()
-            yield json.dumps({"type": "error", "error": "The assistant failed."}) + "\n"
-            return
+        # Timed inside the generator: nothing here runs until the response body
+        # is consumed, so a timer started in the view would measure the wait for
+        # the client rather than the turn. ttftMs is the number that matters for
+        # a stream — total time says little when tokens arrive progressively.
+        with Timer("chat", mode="stream", provider=_provider_name(provider)) as timer:
+            try:
+                for ev in run_chat_stream(gid, provider, history, message):
+                    if ev["type"] == "delta":
+                        timer.mark("ttftMs")
+                        yield json.dumps({"type": "delta", "text": ev["text"]}) + "\n"
+                    elif ev["type"] == "tool":
+                        yield json.dumps({"type": "tool", "name": ev["name"]}) + "\n"
+                    elif ev["type"] == "done":
+                        reply, trace = ev["reply"], ev["trace"]
+            except ProviderError as exc:
+                db.session.rollback()
+                # ok is set explicitly on every failure path: the exception is
+                # handled here, so it never reaches the Timer, which would
+                # otherwise record the failed turn as a success.
+                timer.set(ok=False)
+                yield json.dumps({"type": "error", "error": str(exc)}) + "\n"
+                return
+            except Exception:  # noqa: BLE001 - never leak a stack into the stream
+                db.session.rollback()
+                timer.set(ok=False)
+                yield json.dumps({"type": "error", "error": "The assistant failed."}) + "\n"
+                return
+            timer.set(toolRounds=len(trace))
 
-        try:
-            pos = _next_position(session)
-            user_msg = ChatMessage(role="user", content=message, position=pos,
-                                   session_id=session.id)
-            assistant_msg = ChatMessage(
-                role="assistant", content=reply, tool_trace=json.dumps(trace),
-                position=pos + 1, session_id=session.id)
-            db.session.add_all([user_msg, assistant_msg])
-            db.session.commit()
-        except Exception:  # noqa: BLE001 - a commit failure must surface, not end silently
-            db.session.rollback()
-            yield json.dumps({"type": "error", "error": "Could not save the reply."}) + "\n"
-            return
-        yield json.dumps({
-            "type": "done",
-            "sessionId": session.id,
-            "reply": reply,
-            "actions": actions_from_trace(trace),
-            "message": chat_message_out(assistant_msg),
-        }) + "\n"
+            try:
+                pos = _next_position(session)
+                user_msg = ChatMessage(role="user", content=message, position=pos,
+                                       session_id=session.id)
+                assistant_msg = ChatMessage(
+                    role="assistant", content=reply, tool_trace=json.dumps(trace),
+                    position=pos + 1, session_id=session.id)
+                db.session.add_all([user_msg, assistant_msg])
+                db.session.commit()
+            except Exception:  # noqa: BLE001 - a commit failure must surface, not end silently
+                db.session.rollback()
+                timer.set(ok=False)
+                yield json.dumps(
+                    {"type": "error", "error": "Could not save the reply."}) + "\n"
+                return
+            yield json.dumps({
+                "type": "done",
+                "sessionId": session.id,
+                "reply": reply,
+                "actions": actions_from_trace(trace),
+                "message": chat_message_out(assistant_msg),
+            }) + "\n"
 
     return Response(
         stream_with_context(generate()),
