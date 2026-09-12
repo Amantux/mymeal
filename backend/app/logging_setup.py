@@ -221,5 +221,23 @@ def configure(settings=None, process: str = "app", force: bool = False) -> str |
             path = None
             root.warning("could not open a log file under %s: %s", log_dir, exc)
 
+    # Gunicorn's own loggers do NOT propagate to root, so the handlers above
+    # never see them — its access log writes the raw request line straight to
+    # stdout, which is what the add-on's Log tab shows and what users paste into
+    # GitHub issues. That matters now that a URL can itself be a credential: the
+    # calendar feed's token lives in the path and a subscribed client re-fetches
+    # it on a timer, so without this the household's feed token is printed to a
+    # user-visible log every few minutes, forever. Attach on the LOGGER so every
+    # handler gunicorn installed is covered.
+    for name in ("gunicorn.access", "gunicorn.error"):
+        gunicorn_logger = logging.getLogger(name)
+        # Drop filters a previous configure() attached, or force=True would
+        # stack a new pair on every call.
+        for existing in list(gunicorn_logger.filters):
+            if isinstance(existing, (RequestIdFilter, RedactingFilter)):
+                gunicorn_logger.removeFilter(existing)
+        for f in filters:
+            gunicorn_logger.addFilter(f)
+
     _configured = True
     return path
