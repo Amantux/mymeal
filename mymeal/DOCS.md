@@ -229,11 +229,36 @@ host port:
 
 | Port | Give it a host port when you want to… |
 |---|---|
-| `7850` | reach the REST API directly from the LAN, or let the HACS integration connect over the network instead of the internal one |
+| `7850` | reach the REST API directly from the LAN, let the HACS integration connect over the network instead of the internal one, or subscribe to the meal-plan calendar feed (see below) |
 | `7851` | reach the MCP server from a machine other than Home Assistant |
 
 Leave a port blank to keep it internal-only. You can change the host port here
 at any time.
+
+## Subscribe to your meal plan in a calendar
+
+The **Meal plan** page has a *Subscribe in your calendar* card. Publish a link
+there and your meal plan appears as all-day events in any calendar app — Apple
+Calendar, Google Calendar, Thunderbird — or in Home Assistant itself via the
+**Remote Calendar** integration. It is a live subscription, so edits to the plan
+show up on the next sync rather than needing a re-import.
+
+Two things to know before you publish:
+
+- **You must give port `7850` a host port first** (see the table above).
+  Calendar apps cannot sign in to Home Assistant, so they cannot use the
+  sidebar (ingress) address — they need to reach myMeal directly. The card
+  tells you the address to use once the port is mapped.
+- **The link is the password.** It needs no sign-in, so anyone who has it can
+  read your meal plan — that is what makes it work in a calendar app. Nothing
+  else is exposed: no recipes, no shopping lists, no account details, and
+  nothing can be changed through it.
+
+Use **Replace link** if you think a link has been shared too widely; the old one
+stops working immediately and every calendar subscribed to it stops updating
+until you hand out the new one. **Stop sharing** withdraws the feed entirely.
+
+The feed carries the last four weeks plus everything you have planned ahead.
 
 ## Data and backups
 

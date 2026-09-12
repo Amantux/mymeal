@@ -12,6 +12,19 @@ class Group(IDMixin, TimestampMixin, db.Model):
 
     name: Mapped[str] = mapped_column(String(255))
 
+    # Opaque token for the household's public, read-only iCalendar feed.
+    # None = no feed published. Deliberately shaped exactly like
+    # Recipe.share_token — same type, same unique+indexed lookup, and stored in
+    # PLAIN TEXT for the same reason: it is a bearer capability in a URL that
+    # the owner must be able to re-read and re-copy (a new phone, a second
+    # calendar app) long after minting. Hashing would force show-once, which is
+    # wrong for a feed you subscribe to repeatedly, and buys little: the token
+    # grants read-only access to one household's meal plan, exactly what the URL
+    # holder already has. Rotation is the revocation mechanism.
+    calendar_token: Mapped[str | None] = mapped_column(
+        String(64), unique=True, index=True, nullable=True, default=None
+    )
+
     users = relationship("User", back_populates="group", cascade="all, delete-orphan")
     recipes = relationship(
         "Recipe", back_populates="group", cascade="all, delete-orphan"

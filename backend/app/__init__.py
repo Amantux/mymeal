@@ -242,6 +242,7 @@ def _run_migrations(app):
 
 def _register_blueprints(app):
     from .api.ai import bp as ai_bp
+    from .api.calendar import bp as calendar_bp
     from .api.categories import bp as categories_bp
     from .api.chat import bp as chat_bp
     from .api.conversions import bp as conversions_bp
@@ -283,6 +284,7 @@ def _register_blueprints(app):
         edibl_bp,
         preferences_bp,
         public_bp,
+        calendar_bp,
         jobs_bp,
         suggestions_bp,
         conversions_bp,

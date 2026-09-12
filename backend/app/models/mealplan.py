@@ -1,6 +1,6 @@
 from datetime import date
 
-from sqlalchemy import String, Integer, Date, Text, ForeignKey
+from sqlalchemy import String, Integer, Date, Text, ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..extensions import db
@@ -16,6 +16,16 @@ class MealPlanEntry(IDMixin, TimestampMixin, db.Model):
     """
 
     __tablename__ = "mealplan_entries"
+
+    # Every read of this table is "one household, a date range" — the plan
+    # views, the shopping-list builder, and now the public calendar feed, which
+    # is unauthenticated and polled on a timer. Migration 0016 indexed the hot
+    # tenant/FK columns but missed this table; a composite (group_id, date)
+    # serves the compound filter better than either column alone, and Postgres
+    # does not index a foreign key for you.
+    __table_args__ = (
+        Index("ix_mealplan_entries_group_id_date", "group_id", "date"),
+    )
 
     date: Mapped[date] = mapped_column(Date, index=True)
     # breakfast | lunch | dinner | snack | side

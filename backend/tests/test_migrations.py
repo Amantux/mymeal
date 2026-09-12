@@ -214,6 +214,14 @@ def _indexes(db, table):
         c.close()
 
 
+def _columns(db, table):
+    c = sqlite3.connect(db)
+    try:
+        return {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+    finally:
+        c.close()
+
+
 def test_upgrade_creates_every_hot_index(tmp_path):
     db = str(tmp_path / "m.db")
     r = _run_alembic(db, "upgrade", "head")
@@ -248,3 +256,119 @@ def test_model_metadata_declares_the_same_indexes():
 
     for index in _EXPECTED.values():
         assert index in declared, f"model metadata is missing {index}"
+
+
+# ---- 0017: groups.calendar_token ----
+
+def test_0017_upgrade_creates_calendar_token_column_and_unique_index(tmp_path):
+    db = str(tmp_path / "c.db")
+
+    r = _run_alembic(db, "upgrade", "head")
+
+    assert r.returncode == 0, r.stderr[-800:]
+    assert "calendar_token" in _columns(db, "groups")
+    c = sqlite3.connect(db)
+    try:
+        # Uniqueness is the guarantee that two households can never collide on
+        # a feed URL. PRAGMA index_list reports it in column 2.
+        unique = {row[1]: row[2] for row in c.execute("PRAGMA index_list(groups)")}
+    finally:
+        c.close()
+    assert unique.get("ix_groups_calendar_token") == 1, "index must be UNIQUE"
+
+
+def test_0017_downgrade_then_upgrade_round_trips(tmp_path):
+    db = str(tmp_path / "c.db")
+    assert _run_alembic(db, "upgrade", "head").returncode == 0
+
+    down = _run_alembic(db, "downgrade", "0016_hot_fk_indexes")
+
+    assert down.returncode == 0, down.stderr[-800:]
+    assert "calendar_token" not in _columns(db, "groups")
+    up = _run_alembic(db, "upgrade", "head")
+    assert up.returncode == 0, up.stderr[-800:]
+    assert "calendar_token" in _columns(db, "groups")
+
+
+def test_0017_downgrade_preserves_seeded_household_and_dependents(tmp_path):
+    """Dropping a column on SQLite is a table rebuild, and `groups` is the
+    parent of nearly every table — the exact shape that lost rows in 0013. An
+    empty database rebuilds fine, which is how that class of bug hides, so seed
+    a real household and a dependent row first."""
+    db = str(tmp_path / "c.db")
+    assert _run_alembic(db, "upgrade", "head").returncode == 0
+    c = sqlite3.connect(db)
+    try:
+        _insert(c, "groups", {"id": "g1", "name": "Household",
+                              "calendar_token": "tok"})
+        _insert(c, "mealplan_entries", {"id": "e1", "group_id": "g1",
+                                        "date": "2026-09-12"})
+        c.commit()
+    finally:
+        c.close()
+
+    assert _run_alembic(db, "downgrade", "0016_hot_fk_indexes").returncode == 0
+
+    c = sqlite3.connect(db)
+    try:
+        assert [r[0] for r in c.execute("SELECT name FROM groups")] == ["Household"]
+        assert c.execute(
+            "SELECT COUNT(*) FROM mealplan_entries").fetchone()[0] == 1
+    finally:
+        c.close()
+
+
+def test_0017_upgrade_is_a_noop_on_a_create_all_database(tmp_path):
+    """A fresh DB is built by create_all from the model, so it ALREADY has the
+    column and index when 0017 runs against it. The presence guards must make
+    that a no-op instead of a duplicate-column error."""
+    from app.extensions import db as _db
+
+    eng = create_engine(f"sqlite:///{tmp_path}/fresh.db")
+    _db.metadata.create_all(eng)
+    eng.dispose()
+    path = str(tmp_path / "fresh.db")
+    assert _run_alembic(path, "stamp", "0016_hot_fk_indexes").returncode == 0
+
+    r = _run_alembic(path, "upgrade", "head")
+
+    assert r.returncode == 0, r.stderr[-800:]
+    assert "calendar_token" in _columns(path, "groups")
+
+
+def test_0017_model_metadata_declares_the_calendar_token_index():
+    """Same invariant as the 0016 test: a create_all database and a migrated one
+    must describe ONE schema, not two."""
+    from app.models import Group
+
+    assert "ix_groups_calendar_token" in {
+        ix.name for ix in Group.__table__.indexes}
+
+
+_PLAN_IDX = "ix_mealplan_entries_group_id_date"
+
+
+def test_0017_indexes_the_mealplan_tenant_and_date_filter(tmp_path):
+    """0016 indexed the hot tenant/FK columns but missed mealplan_entries, and
+    the calendar feed adds an unauthenticated, timer-polled query filtering
+    exactly (group_id, date)."""
+    db = str(tmp_path / "c.db")
+
+    r = _run_alembic(db, "upgrade", "head")
+
+    assert r.returncode == 0, r.stderr[-800:]
+    assert _PLAN_IDX in _indexes(db, "mealplan_entries")
+
+
+def test_0017_plan_index_round_trips_and_matches_the_model(tmp_path):
+    from app.models import MealPlanEntry
+
+    db = str(tmp_path / "c.db")
+    assert _run_alembic(db, "upgrade", "head").returncode == 0
+
+    assert _run_alembic(db, "downgrade", "0016_hot_fk_indexes").returncode == 0
+    assert _PLAN_IDX not in _indexes(db, "mealplan_entries")
+    assert _run_alembic(db, "upgrade", "head").returncode == 0
+    assert _PLAN_IDX in _indexes(db, "mealplan_entries")
+    # create_all and the migrated path must describe the same schema.
+    assert _PLAN_IDX in {ix.name for ix in MealPlanEntry.__table__.indexes}

@@ -33,7 +33,7 @@ ports:
   7850/tcp: null
   7851/tcp: null
 ports_description:
-  7850/tcp: myMeal REST API — map only for direct LAN / HACS-over-network access (Ingress does not need it)
+  7850/tcp: myMeal REST API — map for direct LAN / HACS-over-network access, or to subscribe to the meal-plan calendar feed from a calendar app (Ingress does not need it)
   7851/tcp: myMeal MCP server (SSE) — to reach it from outside HA, turn on mcp_expose_external and mint a Full/MCP API key first, then map this port
 map:
   - share:rw

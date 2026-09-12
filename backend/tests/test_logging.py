@@ -164,6 +164,63 @@ def test_short_extra_secrets_are_ignored():
     assert redact("the cat sat", ("cat",)) == "the cat sat"
 
 
+# --------------------------------------------------------------------------
+# Credentials that live in a URL PATH (the calendar feed token)
+# --------------------------------------------------------------------------
+
+def test_a_calendar_feed_token_is_redacted_from_the_request_line(tmp_path,
+                                                                 restore_logging):
+    """The feed token IS the credential and it sits in the path, so every poll
+    would otherwise print it. A subscribed client re-fetches on a timer, and
+    the add-on's Log tab is routinely pasted into GitHub issues."""
+    from app.services.calendar_feed import new_token
+
+    token = new_token()
+    path = configure(_Settings(tmp_path), process="test", force=True)
+
+    logging.getLogger("mymeal.test").warning(
+        "GET /api/v1/calendar/%s.ics -> 200 in 5ms", token)
+
+    written = open(path).read()
+    assert token not in written
+    assert "[redacted]" in written
+
+
+def test_gunicorn_access_logging_is_redacted_too(tmp_path, restore_logging):
+    """gunicorn's loggers do NOT propagate to root, so the root handlers never
+    see them — its access log writes the raw request line straight to stdout.
+    configure() has to reach into those loggers explicitly."""
+    from app.services.calendar_feed import new_token
+
+    token = new_token()
+    path = configure(_Settings(tmp_path), process="test", force=True)
+    access = logging.getLogger("gunicorn.access")
+    # Emulate gunicorn: its own handler, writing the access line itself.
+    access.propagate = False
+    access.setLevel(logging.INFO)
+    access.addHandler(logging.FileHandler(path))
+    try:
+        access.info('127.0.0.1 - - "GET /api/v1/calendar/%s.ics HTTP/1.1" 200',
+                    token)
+    finally:
+        for h in list(access.handlers):
+            access.removeHandler(h)
+            h.close()
+
+    assert token not in open(path).read()
+
+
+def test_configure_does_not_stack_filters_on_the_gunicorn_loggers(tmp_path,
+                                                                  restore_logging):
+    access = logging.getLogger("gunicorn.access")
+
+    configure(_Settings(tmp_path), process="test", force=True)
+    after_one = len(access.filters)
+    configure(_Settings(tmp_path), process="test", force=True)
+
+    assert len(access.filters) == after_one
+
+
 def test_mask_email_keeps_the_domain_but_not_the_person():
     assert mask_email("alex@example.com") == "a***@example.com"
     assert mask_email("nonsense") == "***"
