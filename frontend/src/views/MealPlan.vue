@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { api } from '../api'
 import { useUI } from '../stores/ui'
+import EmptyState from '../components/EmptyState.vue'
 import ErrorState from '../components/ErrorState.vue'
 import { useLoader } from '../composables/useLoader'
 
@@ -84,6 +85,11 @@ const title = computed(() => {
   return `Week of ${iso(mondayOf(anchor.value))}`
 })
 
+// null = not yet known. Tells the two empty states apart: a household that has
+// never planned anything needs the concept explained; one that has just paged to
+// a quiet week only needs the way back in.
+const everPlanned = ref(null)
+
 async function load() {
   const [plan, recs] = await Promise.all([
     api.get(`/mealplans?start=${iso(range.value.start)}&end=${iso(range.value.end)}`),
@@ -91,6 +97,15 @@ async function load() {
   ])
   entries.value = plan.items
   recipes.value = recs.items
+  if (plan.items.length) {
+    // Anything in view proves they have planned before — free, no extra call.
+    everPlanned.value = true
+  } else if (everPlanned.value === null) {
+    // Only when the view is genuinely empty AND we don't already know, so the
+    // probe runs at most once per session and never on the common path.
+    const all = await api.get('/mealplans')
+    everPlanned.value = all.items.length > 0
+  }
 }
 const { loading, error, reload } = useLoader(load)
 watch([view, anchor], reload)
@@ -117,9 +132,17 @@ function entriesFor(date) {
 const adding = ref(null)
 const form = ref({ mealType: 'dinner', recipeId: '', title: '' })
 
+// The empty state's CTA. Drops the reader straight onto a day with the add form
+// already open, rather than back at the grid to hunt for "＋ Add meal".
+function startFirstMeal() {
+  const days = dayList.value
+  adding.value = days.some((d) => d.date === TODAY) ? TODAY : days[0].date
+}
+
 async function addEntry(date) {
   try {
     await api.post('/mealplans', { date, ...form.value })
+    everPlanned.value = true
     form.value = { mealType: 'dinner', recipeId: '', title: '' }
     adding.value = null
     await reload()
@@ -178,7 +201,10 @@ async function buildList() {
     <button class="secondary" @click="generate" :disabled="busy">
       {{ busy ? 'Planning…' : '✨ Plan with AI' }}
     </button>
-    <button @click="buildList">🛒 Build shopping list</button>
+    <!-- With nothing planned there is nothing to build a list FROM, so the
+         accent moves to the empty state's CTA and this drops to secondary.
+         One primary per view, and it points at what actually helps. -->
+    <button :class="{ secondary: !entries.length }" @click="buildList">🛒 Build shopping list</button>
   </div>
 
   <div v-if="showPlanOpts" class="card plan-opts">
@@ -249,6 +275,23 @@ async function buildList() {
       </div>
     </div>
   </template>
+
+  <!-- Nothing planned in view. Two different messages, because "you have never
+       done this" and "this particular week is quiet" need different help. The
+       month view keeps its calendar instead — the grid of dates IS the content
+       there, and clicking a day is how you plan from it. -->
+  <EmptyState
+    v-else-if="!entries.length && adding === null"
+    icon="🗓️"
+    :title="everPlanned === false ? 'Plan your week' : `Nothing planned for this ${view}`"
+    :hint="everPlanned === false
+      ? 'A meal plan is a calendar of what you\'ll cook. Put a recipe on a day, fill in as much of the week as you like, then build one shopping list from the lot.'
+      : 'Add a meal to any day, or let AI fill the week from your recipes.'"
+  >
+    <button @click="startFirstMeal">
+      {{ everPlanned === false ? '＋ Plan your first meal' : '＋ Add a meal' }}
+    </button>
+  </EmptyState>
 
   <!-- Day (single, focused) / Week (7 equal columns) share the day-card markup. -->
   <div v-else :class="view === 'day' ? 'mp-day' : 'mp-week'">
