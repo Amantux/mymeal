@@ -343,3 +343,32 @@ def test_0017_model_metadata_declares_the_calendar_token_index():
 
     assert "ix_groups_calendar_token" in {
         ix.name for ix in Group.__table__.indexes}
+
+
+_PLAN_IDX = "ix_mealplan_entries_group_id_date"
+
+
+def test_0017_indexes_the_mealplan_tenant_and_date_filter(tmp_path):
+    """0016 indexed the hot tenant/FK columns but missed mealplan_entries, and
+    the calendar feed adds an unauthenticated, timer-polled query filtering
+    exactly (group_id, date)."""
+    db = str(tmp_path / "c.db")
+
+    r = _run_alembic(db, "upgrade", "head")
+
+    assert r.returncode == 0, r.stderr[-800:]
+    assert _PLAN_IDX in _indexes(db, "mealplan_entries")
+
+
+def test_0017_plan_index_round_trips_and_matches_the_model(tmp_path):
+    from app.models import MealPlanEntry
+
+    db = str(tmp_path / "c.db")
+    assert _run_alembic(db, "upgrade", "head").returncode == 0
+
+    assert _run_alembic(db, "downgrade", "0016_hot_fk_indexes").returncode == 0
+    assert _PLAN_IDX not in _indexes(db, "mealplan_entries")
+    assert _run_alembic(db, "upgrade", "head").returncode == 0
+    assert _PLAN_IDX in _indexes(db, "mealplan_entries")
+    # create_all and the migrated path must describe the same schema.
+    assert _PLAN_IDX in {ix.name for ix in MealPlanEntry.__table__.indexes}

@@ -6,6 +6,7 @@ context, matching the rest of services/.
 """
 from __future__ import annotations
 
+import logging
 import secrets
 from datetime import date, timedelta
 
@@ -14,6 +15,8 @@ from sqlalchemy.orm import joinedload
 from ..extensions import db
 from ..models import MealPlanEntry
 from .ics import all_day_event, calendar
+
+_LOGGER = logging.getLogger("mymeal.calendar")
 
 # How far back the feed reaches. This is a FEED, not an archive: a calendar
 # client re-downloads the whole document on every poll, so every event we keep
@@ -25,9 +28,17 @@ PAST_DAYS = 28
 
 # Hard ceiling on events in one document. Nothing forward-bounds the plan (a
 # user may plan months ahead, and cutting that off would be the wrong default),
-# so this is the backstop that keeps an unauthenticated, timer-polled endpoint
-# from ever serving an unbounded response.
+# so this is one of two backstops that keep an unauthenticated, timer-polled
+# endpoint from ever serving an unbounded response.
 MAX_EVENTS = 2000
+
+# The other backstop. MAX_EVENTS bounds ROWS, not BYTES, and `notes` is a Text
+# column with no length limit — one entry carrying a 200 KB note produced a
+# 200 KB feed, re-sent to every subscriber on every poll. These are display
+# fields in a calendar client that shows one line, so truncating costs nothing
+# a user would notice and turns an unbounded response into a bounded one.
+MAX_SUMMARY_CHARS = 200
+MAX_DESCRIPTION_CHARS = 1000
 
 # UID domain. Deliberately a FIXED literal rather than the request host: the
 # entire point of a stable UID is that a re-sync UPDATES an event instead of
@@ -72,6 +83,11 @@ def entries_for_feed(gid: str, today: date | None = None) -> list[MealPlanEntry]
     )
 
 
+def _clip(text: str, limit: int) -> str:
+    text = text or ""
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+
 def _meal_label(entry: MealPlanEntry) -> str:
     # meal_type is a free-form String(32), so title-case whatever is there
     # rather than mapping a fixed set and dropping anything unrecognised.
@@ -86,7 +102,7 @@ def summary_for(entry: MealPlanEntry) -> str:
     """
     name = (entry.recipe.name if entry.recipe else "") or entry.title or "Meal"
     label = _meal_label(entry)
-    return f"{label}: {name}" if label else name
+    return _clip(f"{label}: {name}" if label else name, MAX_SUMMARY_CHARS)
 
 
 def description_for(entry: MealPlanEntry) -> str:
@@ -109,7 +125,7 @@ def description_for(entry: MealPlanEntry) -> str:
         parts.append(entry.notes.strip())
     if entry.recipe and entry.recipe.slug:
         parts.append(f"Recipe: {entry.recipe.slug}")
-    return "\n".join(parts)
+    return _clip("\n".join(parts), MAX_DESCRIPTION_CHARS)
 
 
 def build_feed(gid: str, name: str = "Meal plan",
@@ -117,13 +133,24 @@ def build_feed(gid: str, name: str = "Meal plan",
     """The whole ICS document for one group. Empty plan -> a valid empty
     VCALENDAR, never a 404: subscribers poll on a timer and an error would show
     the user a broken calendar rather than an empty one."""
+    entries = entries_for_feed(gid, today)
+    if len(entries) >= MAX_EVENTS:
+        # Silent truncation of someone's meal plan is the kind of thing that
+        # gets reported as "the calendar randomly stops in March".
+        _LOGGER.warning(
+            "calendar feed hit the %d-event cap for group %s; entries beyond "
+            "that date are not published", MAX_EVENTS, gid)
     events = [
         all_day_event(
             uid=f"{entry.id}@{UID_DOMAIN}",
             day=entry.date,
             summary=summary_for(entry),
             description=description_for(entry),
+            # The entry's own last-modified time, not "now": several clients
+            # treat a changed DTSTAMP as a modification, so deriving it from
+            # the clock would mark every event as edited on every poll.
+            dtstamp=entry.updated_at,
         )
-        for entry in entries_for_feed(gid, today)
+        for entry in entries
     ]
     return calendar(events, name=name)

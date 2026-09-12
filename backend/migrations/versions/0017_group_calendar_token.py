@@ -35,6 +35,18 @@ depends_on = None
 
 _INDEX = "ix_groups_calendar_token"
 
+# Shipped in the same revision because the feed is what makes it urgent: every
+# read of mealplan_entries is "one household, a date range", and the feed adds
+# an unauthenticated, timer-polled instance of that query. 0016 indexed the hot
+# tenant/FK columns but did not cover this table, and Postgres does not index a
+# foreign key automatically — so `group_id` is a sequential scan today.
+_PLAN_INDEX = "ix_mealplan_entries_group_id_date"
+
+
+def _has_index(table: str, name: str) -> bool:
+    return any(ix["name"] == name
+               for ix in sa.inspect(op.get_bind()).get_indexes(table))
+
 
 def upgrade() -> None:
     insp = sa.inspect(op.get_bind())
@@ -51,8 +63,14 @@ def upgrade() -> None:
     if not indexed:
         op.create_index(_INDEX, "groups", ["calendar_token"], unique=True)
 
+    if not _has_index("mealplan_entries", _PLAN_INDEX):
+        op.create_index(_PLAN_INDEX, "mealplan_entries", ["group_id", "date"])
+
 
 def downgrade() -> None:
+    if _has_index("mealplan_entries", _PLAN_INDEX):
+        op.drop_index(_PLAN_INDEX, table_name="mealplan_entries")
+
     bind = op.get_bind()
     insp = sa.inspect(bind)
     indexes = {ix["name"] for ix in insp.get_indexes("groups")}

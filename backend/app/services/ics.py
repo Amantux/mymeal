@@ -44,7 +44,13 @@ def escape_text(value) -> str:
     # Normalise all three newline conventions to the literal two-character
     # sequence \n, which is how TEXT carries a line break.
     s = s.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\n")
-    return s
+    # Strip the remaining control characters. RFC 5545's TEXT production admits
+    # no CTLs except HTAB, and they cause real damage rather than mere
+    # non-conformance: a NUL makes strict parsers (including HA's `ical`) reject
+    # the file, and an ESC lets a recipe name inject ANSI sequences into any
+    # terminal that cats the feed. Done AFTER the newline pass so real line
+    # breaks are preserved as the literal \n above rather than dropped here.
+    return "".join(c for c in s if c == "\t" or ord(c) >= 0x20)
 
 
 def fold(line: str) -> list[str]:
@@ -118,9 +124,9 @@ def calendar(events: list[list[str]], name: str = "Meal plan",
              prodid: str = "-//myMeal//Meal plan//EN") -> str:
     """Wrap VEVENTs in a VCALENDAR and join with CRLF.
 
-    X-WR-CALNAME/X-WR-CALDESC are non-standard but are what Google, Apple and
-    Home Assistant actually read to label a subscribed feed; without them the
-    calendar shows up named after its URL.
+    X-WR-CALNAME is non-standard but is what Google, Apple and Home Assistant
+    actually read to label a subscribed feed; without it the calendar shows up
+    named after its URL.
     """
     lines = [
         "BEGIN:VCALENDAR",

@@ -10,6 +10,7 @@ from datetime import date, timedelta
 import pytest
 
 from app.extensions import db
+from app.services.calendar_feed import new_token
 
 
 # --------------------------------------------------------------------------
@@ -45,6 +46,15 @@ def _fetch(client, token):
     return client.application.test_client().get(f"/api/v1/calendar/{token}.ics")
 
 
+def _lines(text):
+    """Physical lines, unfolded. Structural assertions must count these, NOT
+    substrings of the whole document — an escaped `\\nEND:VEVENT` sitting inside
+    a SUMMARY value is exactly what an injection test is trying to distinguish
+    from a real one, and a naive `text.count("END:VEVENT")` cannot tell them
+    apart (it reported a false positive when this suite was first written)."""
+    return text.replace("\r\n ", "").split("\r\n")[:-1]
+
+
 def _events(text):
     """Split a VCALENDAR into its VEVENT blocks (unfolded)."""
     unfolded = text.replace("\r\n ", "")
@@ -71,10 +81,21 @@ def test_subscription_is_unpublished_until_created(auth_client):
     assert auth_client.get("/api/v1/calendar/subscription").get_json()["token"] is None
 
 
-def test_create_subscription_mints_a_high_entropy_token(auth_client):
+def test_create_subscription_mints_a_high_entropy_token(auth_client, app):
     token = _publish(auth_client)
 
     assert token and len(token) >= 32
+    # Length alone is a vacuous check — "a" * 43 passes it, and so would a
+    # counter. The token is a bearer capability on an unauthenticated endpoint,
+    # so assert it actually looks random: many distinct characters, drawn from
+    # the urlsafe-base64 alphabet, and no shared prefix between two mints.
+    assert set(token) <= set(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+    assert len(set(token)) >= 16, f"suspiciously low variety: {token!r}"
+    with app.app_context():
+        others = {new_token() for _ in range(20)}
+    assert len(others) == 20
+    assert not any(o[:8] == token[:8] for o in others)
 
 
 def test_create_subscription_is_idempotent(auth_client):
@@ -365,6 +386,115 @@ def test_newlines_in_notes_become_escaped_and_never_break_the_line_structure(
     # Every physical line must still be a property or a continuation.
     for line in body.split("\r\n"):
         assert line == "" or line.startswith(" ") or ":" in line
+
+
+def test_a_crafted_recipe_name_cannot_inject_calendar_structure(auth_client):
+    """The injection attack on any line-oriented format: close the current
+    object and open your own. Escaping turns the newline into a literal \\n, so
+    the payload stays INSIDE the SUMMARY value and no extra event appears."""
+    evil = "Pwn\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nSUMMARY:Injected\r\nEND:VEVENT"
+    rid = _recipe(auth_client, evil)["id"]
+    _entry(auth_client, TODAY, recipeId=rid)
+    token = _publish(auth_client)
+
+    body = _fetch(auth_client, token).get_data(as_text=True)
+
+    # Exactly one event: count STRUCTURAL lines, not substrings.
+    lines = _lines(body)
+    assert lines.count("BEGIN:VEVENT") == 1
+    assert lines.count("END:VEVENT") == 1
+    assert "SUMMARY:Injected" not in lines
+    # The payload survives as inert text inside the one real SUMMARY value.
+    summary = next(x for x in lines if x.startswith("SUMMARY:"))
+    assert "Injected" in summary and "\\nEND:VEVENT" in summary
+
+
+def test_a_crafted_note_cannot_terminate_the_calendar_early(auth_client):
+    _entry(auth_client, TODAY, title="Stew",
+           notes="bye\r\nEND:VCALENDAR\r\nBEGIN:VCALENDAR")
+    token = _publish(auth_client)
+
+    body = _fetch(auth_client, token).get_data(as_text=True)
+
+    lines = _lines(body)
+    assert lines.count("BEGIN:VCALENDAR") == 1
+    assert lines.count("END:VCALENDAR") == 1
+    assert lines[-1] == "END:VCALENDAR"
+
+
+def test_a_crafted_household_name_cannot_inject_via_the_calendar_name(auth_client, gid, app):
+    """X-WR-CALNAME carries the group name, which is user-controlled. It is a
+    TEXT property and must be escaped like any other."""
+    with app.app_context():
+        from app.models import Group
+        db.session.get(Group, gid).name = "Home\r\nBEGIN:VEVENT\r\nSUMMARY:Nope"
+        db.session.commit()
+    token = _publish(auth_client)
+
+    body = _fetch(auth_client, token).get_data(as_text=True)
+
+    lines = _lines(body)
+    assert "BEGIN:VEVENT" not in lines   # the plan is empty; none may be injected
+    assert "SUMMARY:Nope" not in lines
+    calname = next(x for x in lines if x.startswith("X-WR-CALNAME:"))
+    assert "\\nBEGIN:VEVENT" in calname
+
+
+def test_control_characters_never_reach_the_feed(auth_client):
+    """RFC 5545 TEXT admits no control characters except HTAB, and they do real
+    damage: a NUL makes strict parsers (HA's `ical` among them) reject the
+    file, and an ESC lets a recipe name inject ANSI sequences into any terminal
+    that prints the feed."""
+    _entry(auth_client, TODAY, title="Stew\x00\x07\x1b[31mRED",
+           notes="note\x00\x1bmore")
+    token = _publish(auth_client)
+
+    body = _fetch(auth_client, token).get_data(as_text=True)
+
+    bad = [c for c in body if ord(c) < 0x20 and c not in "\r\n"]
+    assert not bad, f"control characters survived: {bad!r}"
+    # Tab is legal and must be preserved rather than stripped wholesale.
+    assert "RED" in body
+
+
+def test_an_enormous_note_cannot_inflate_the_unauthenticated_response(auth_client):
+    """MAX_EVENTS bounds rows, not bytes, and `notes` is an unbounded Text
+    column — one entry with a huge note otherwise produced a huge feed, re-sent
+    to every subscriber on every poll."""
+    _entry(auth_client, TODAY, title="Stew", notes="x" * 200_000)
+    token = _publish(auth_client)
+
+    body = _fetch(auth_client, token).get_data(as_text=True)
+
+    assert len(body) < 5_000, f"feed ballooned to {len(body)} bytes"
+    assert "…" in body  # truncated visibly rather than silently
+
+
+def test_a_very_long_recipe_name_is_clipped_in_the_summary(auth_client):
+    rid = _recipe(auth_client, "Roast " + "very " * 200 + "long")["id"]
+    _entry(auth_client, TODAY, recipeId=rid)
+    token = _publish(auth_client)
+
+    summary = next(x for x in _lines(_fetch(auth_client, token)
+                                     .get_data(as_text=True))
+                   if x.startswith("SUMMARY:"))
+
+    assert len(summary) < 260
+    assert summary.endswith("…")
+
+
+def test_dtstamp_tracks_the_entry_not_the_clock(auth_client):
+    """Several clients read a changed DTSTAMP as "this event was modified".
+    Deriving it from the current time would mark the whole calendar as edited
+    on every poll."""
+    _entry(auth_client, TODAY, title="Stew")
+    token = _publish(auth_client)
+
+    first = _fetch(auth_client, token).get_data(as_text=True)
+    second = _fetch(auth_client, token).get_data(as_text=True)
+
+    stamp = [x for x in _lines(first) if x.startswith("DTSTAMP:")]
+    assert stamp == [x for x in _lines(second) if x.startswith("DTSTAMP:")]
 
 
 def test_every_physical_line_stays_within_75_octets(auth_client):
