@@ -376,7 +376,11 @@ label.field > span {
   .topbar-brand { font-weight: 700; gap: 6px; }
   .topbar-brand .logo { font-size: 1.1rem; }
 
-  .content { padding: 18px 14px; }
+  /* Reserve the chat FAB's corner (16px offset + 46px disc, plus breathing room)
+     so the LAST rows of any page can always be scrolled clear of it. Shrinking
+     the FAB alone isn't enough: content at the very end of the document has
+     nowhere left to scroll to and would stay pinned underneath it forever. */
+  .content { padding: 18px 14px 76px; }
   .topbar { padding: 0 14px; gap: 10px; }
   /* Let page headers with action buttons wrap instead of overflowing the
      viewport (Meal Plan's title + two actions clipped off-screen otherwise). */
