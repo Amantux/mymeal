@@ -597,23 +597,28 @@ const imageSrc = computed(() =>
     <div class="page-head">
       <button class="ghost" @click="router.push('/recipes')">← Recipes</button>
       <div class="grow"></div>
-      <template v-if="!editing">
-        <button v-if="recipe.steps.length" @click="openCookMode">
-          👨‍🍳 Cook
-        </button>
-        <button v-if="recipe.ingredients.length" class="secondary" :disabled="shoppingBusy"
-          @click="addToShopping">🛒 Add to list</button>
-        <button class="secondary" @click="toggleFavorite">
-          {{ recipe.isFavorite ? '★ Favorited' : '☆ Favorite' }}
-        </button>
-        <button class="secondary" @click="startEdit">Edit</button>
-        <button class="danger" @click="remove">Delete</button>
-      </template>
-      <template v-else>
-        <span v-if="editingVersionId" class="badge" style="align-self:center">✎ Editing experiment</span>
-        <button class="secondary" @click="editing = false; editingVersionId = null">Cancel</button>
-        <button @click="save">Save</button>
-      </template>
+      <!-- The actions are ONE flex item so a phone wraps the whole cluster to
+           its own line instead of orphaning whichever button ran out of room
+           (Delete used to land alone, left-aligned, looking like a mistake). -->
+      <div class="head-actions">
+        <template v-if="!editing">
+          <button v-if="recipe.steps.length" @click="openCookMode">
+            👨‍🍳 Cook
+          </button>
+          <button v-if="recipe.ingredients.length" class="secondary" :disabled="shoppingBusy"
+            @click="addToShopping">🛒 Add to list</button>
+          <button class="secondary" @click="toggleFavorite">
+            {{ recipe.isFavorite ? '★ Favorited' : '☆ Favorite' }}
+          </button>
+          <button class="secondary" @click="startEdit">Edit</button>
+          <button class="danger" @click="remove">Delete</button>
+        </template>
+        <template v-else>
+          <span v-if="editingVersionId" class="badge" style="align-self:center">✎ Editing experiment</span>
+          <button class="secondary" @click="editing = false; editingVersionId = null">Cancel</button>
+          <button @click="save">Save</button>
+        </template>
+      </div>
     </div>
 
     <!-- VIEW MODE -->
