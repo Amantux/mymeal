@@ -9,6 +9,7 @@
 import { ref, watch, onMounted, nextTick } from 'vue'
 import { api } from '../api'
 import { useUI } from '../stores/ui'
+import { rowToDisplay } from '../utils/ingredientEdit'
 import ComboBox from './ComboBox.vue'
 
 const props = defineProps({ modelValue: { type: Array, default: () => [] } })
@@ -28,8 +29,15 @@ function blank() {
   // `section` ("For the drizzle") likewise: it isn't editable here, but a key
   // missing from blank() is what let the save path rebuild rows without it and
   // wipe every grouping the first time an imported recipe was edited.
+  // `freeText` + `display` are the prose lane: the author declares this line to
+  // be a sentence, and it is then stored display-only instead of being
+  // find-or-created into the shared Food/Unit catalogs. Both MUST be here for
+  // the same reason as the keys above — rows are built as { ...blank(), ...r },
+  // so a key missing here is dropped from every row the parent hands in, and
+  // dropping these two turns the line back into a structured row on save.
   return { quantity: '', unit: '', food: '', note: '', qualifier: '', section: '',
-           sourceText: '', refRecipeId: '', refRecipeName: '' }
+           sourceText: '', refRecipeId: '', refRecipeName: '',
+           freeText: false, display: '' }
 }
 const rows = ref(props.modelValue.length ? props.modelValue.map((r) => ({ ...blank(), ...r })) : [blank()])
 
@@ -65,6 +73,41 @@ function fmtBatch(q) {
 
 function add() { rows.value.push(blank()) }
 
+// --- Free-text lane ----------------------------------------------------------
+// Some ingredients are prose, not data: "a good knob of butter, for finishing",
+// "salt and pepper, to taste". Forced through the qty·unit·food grid they land
+// in the food box, and the save path find-or-creates the whole sentence as a
+// Food — which then shows up in every ingredient autocomplete in the app. This
+// toggle lets the author say "this line is a sentence", collapsing the row to
+// one wide input that is stored as-is.
+//
+// Switching carries the text ACROSS rather than clearing it, in both
+// directions: the toggle is one click away from the remove button, and a toggle
+// that silently emptied the row the user just typed would be a data-loss bug
+// with no undo.
+// Each direction takes the text from the mode being LEFT and clears that mode's
+// field. Keeping the old value "just in case" is what made an out-and-back trip
+// silently discard the edit in between: leave the lane, rewrite the food, come
+// back, and a stale `display` won and the rewrite was gone.
+function toggleFreeText(r) {
+  if (r.freeText) {
+    // Back to fields: the line becomes the food, which is what the structured
+    // editor does with any line it hasn't parsed. Nothing is lost — it is the
+    // same text, in the one field wide enough to hold it.
+    r.food = r.display || r.food
+    r.display = ''
+    r.freeText = false
+    return
+  }
+  // Composed fresh from the fields as they are NOW. rowToDisplay folds the note
+  // in ("…, ground"), so clearing it loses nothing and keeps the promise that a
+  // free-text row is one line: an invisible note would otherwise keep rendering
+  // on the recipe page with no way to edit it.
+  r.display = rowToDisplay(r)
+  r.note = ''
+  r.freeText = true
+}
+
 // --- Keyboard flow -----------------------------------------------------------
 // Adding a row used to cost a mouse trip to the button below the list, which at
 // 30 rows is a long way from where you're typing. Enter on any field in a row
@@ -96,12 +139,13 @@ function undoRemove() {
   // the restored one.
   const onlyBlank = rows.value.length === 1 && !rows.value[0].food
     && !rows.value[0].quantity && !rows.value[0].refRecipeId
+    && !rows.value[0].display
   if (onlyBlank) rows.value = []
   rows.value.splice(Math.min(index, rows.value.length), 0, row)
   lastRemoved.value = null
 }
 function removedLabel(row) {
-  return row.refRecipeName || row.food || row.sourceText || 'ingredient'
+  return row.refRecipeName || row.food || row.display || row.sourceText || 'ingredient'
 }
 function move(i, delta) {
   const j = i + delta
@@ -154,7 +198,8 @@ async function parsePaste() {
       // original line, both of which used to be discarded on arrival.
       note: r.note || '', sourceText: r.display || '',
     }))
-    const onlyBlank = rows.value.length === 1 && !rows.value[0].food && !rows.value[0].quantity
+    const onlyBlank = rows.value.length === 1 && !rows.value[0].food
+      && !rows.value[0].quantity && !rows.value[0].display
     rows.value = onlyBlank ? parsed : rows.value.concat(parsed)
     pasteText.value = ''
     showPaste.value = false
@@ -230,7 +275,7 @@ function addComponent(r) {
            explicit `.ctl { grid-row: 1 }` placement and orphaned the controls. -->
       <p v-if="r.section && r.section !== rows[i - 1]?.section" class="sec-lbl">{{ r.section }}</p>
       <div :ref="(el) => setRowRef(el, i)"
-         class="ing-row" :class="{ 'is-ref': r.refRecipeId }"
+         class="ing-row" :class="{ 'is-ref': r.refRecipeId, 'is-ftxt': r.freeText }"
          role="group" :aria-label="`Ingredient ${i + 1} of ${rows.length}`"
          @keydown="onRowKey($event, i)">
       <template v-if="r.refRecipeId">
@@ -244,6 +289,16 @@ function addComponent(r) {
           <span class="link-ico">🔗</span>{{ r.refRecipeName }}
         </div>
       </template>
+      <!-- The prose lane: one wide box holding the line exactly as written.
+           There is deliberately no Note field here — the note is part of the
+           sentence ("…, for finishing"), and a second box would ask the author
+           to split the very line they just said not to split. -->
+      <template v-else-if="r.freeText">
+        <input :ref="(el) => setQtyRef(el, i)" v-model="r.display" class="ftxt"
+               placeholder="e.g. a good knob of butter, for finishing"
+               :aria-label="`Ingredient ${i + 1} line`"
+               @keydown.enter.prevent="addAfter(i)" />
+      </template>
       <template v-else>
         <input :ref="(el) => setQtyRef(el, i)" v-model="r.quantity" class="qty"
                inputmode="decimal" placeholder="Qty" aria-label="Quantity"
@@ -253,9 +308,24 @@ function addComponent(r) {
         <ComboBox v-model="r.food" class="food" :options="foods" placeholder="e.g. flour"
                   aria-label="Ingredient" @enter="addAfter(i)" />
       </template>
-      <input v-model="r.note" class="note" placeholder="Note (optional)" aria-label="Note"
+      <input v-if="!r.freeText" v-model="r.note" class="note"
+             placeholder="Note (optional)" aria-label="Note"
              @keydown.enter.prevent="addAfter(i)" />
       <div class="ctl">
+        <!-- Not offered on a component row: that row references a recipe, so
+             there is no prose for it to become. -->
+        <!-- The accessible NAME is constant and `aria-pressed` carries the
+             state. Flipping the name to the opposite action as well announced
+             "Use separate fields, pressed" — a double negative that says the
+             row is in the mode it would switch to. The title still flips,
+             because a mouse tooltip has no pressed state to lean on. -->
+        <button v-if="!r.refRecipeId" type="button" class="icon ftxt-tog"
+                :class="{ on: r.freeText }" :aria-pressed="String(!!r.freeText)"
+                aria-label="Write this line as free text"
+                :title="r.freeText ? 'Use separate fields' : 'Write as one free-text line'"
+                @click="toggleFreeText(r)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 4h10M3 8h10M3 12h6" /></svg>
+        </button>
         <button type="button" class="icon" :disabled="i === 0" title="Move up" aria-label="Move up" @click="move(i, -1)">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10l4-4 4 4" /></svg>
         </button>
@@ -285,6 +355,11 @@ function addComponent(r) {
       <button type="button" class="ghost add" @click="add">＋ Add ingredient</button>
       <button type="button" class="ghost add" @click="openPicker">🔗 Add recipe as component</button>
       <span class="kbd-hint">Enter adds a row · Alt+↑/↓ moves one</span>
+      <!-- The feature is otherwise invisible: the toggle is the fourth
+           same-weight glyph in its cluster, and nothing names it. Unlike the
+           keyboard hint this stays visible on a phone, where there is no hover
+           title to fall back on. -->
+      <span class="ftxt-hint">☰ writes a row as one free-text line, stored as written</span>
     </div>
 
     <!-- Recipe picker -->
@@ -354,6 +429,8 @@ function addComponent(r) {
 }
 .kbd-hint { align-self: center; font-size: 0.76rem; color: var(--muted); }
 @media (max-width: 620px) { .kbd-hint { display: none; } }
+/* Stays at every width — see the note in the template. */
+.ftxt-hint { align-self: center; font-size: 0.76rem; color: var(--muted); }
 
 /* Batch stepper for a component row — spans the qty+unit columns. */
 .batch { grid-column: 1 / 3; display: flex; align-items: center; gap: 6px; }
@@ -375,6 +452,25 @@ function addComponent(r) {
 }
 .food-ref .link-ico { flex-shrink: 0; }
 
+/* The prose lane's single input, spanning every field column (qty→note) so the
+   row reads as one line rather than a field that happens to be wide. */
+.ftxt { grid-column: 1 / 5; }
+/* A structural marker, so the mode is encoded by more than colour. Without it
+   the only signal that this row is deliberate is one tinted 28px square in a
+   cluster of four identical squares, and merged inputs under QTY·UNIT·
+   INGREDIENT·NOTE headings read as a rendering fault rather than a choice.
+   Deliberately --border, not the accent: this is a dense work surface, and the
+   accent is already spoken for by the primary action (and by .food-ref, which
+   would make accent-soft mean two different things in one card). */
+.ing-row.is-ftxt {
+  border-left: 2px solid var(--border);
+  padding-left: 12px; margin-left: -14px;
+}
+/* The toggle states WHICH mode the row is in, so it can't rely on the icon
+   alone — it carries aria-pressed, and when on it takes the accent so the mode
+   is visible at a glance next to rows that are still structured. */
+.ftxt-tog.on { background: var(--accent-soft); color: var(--accent-text); }
+
 .ctl { display: flex; gap: 2px; justify-content: flex-start; }
 .icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; background: transparent; color: var(--muted); border-radius: 6px; cursor: pointer; }
 .icon svg { width: 16px; height: 16px; }
@@ -395,6 +491,16 @@ function addComponent(r) {
   .col-heads { display: none; }
   .ing-row { grid-template-columns: 1fr 1fr auto; gap: 8px; }
   .ing-row .food, .ing-row .food-ref, .ing-row .note { grid-column: 1 / -1; }
+  /* The input gets a full-width band of its own. Beside the controls (like a
+     component row's .batch) it came out ~110px wide — four 40px touch targets
+     eat the row — so the one box whose entire purpose is to be wide was the
+     narrowest on the page and truncated the line mid-word.
+     The control cluster stays on the FIRST band, where it sits on every
+     structured row: letting it fall below made the controls jump
+     top-of-row/bottom-of-row/top-of-row down a long list. Both bands are
+     placed explicitly, because .ctl below pins itself to grid-row 1. */
+  .ing-row.is-ftxt .ctl { grid-row: 1; grid-column: 1 / -1; }
+  .ing-row .ftxt { grid-row: 2; grid-column: 1 / -1; }
   .ctl { grid-column: 3; grid-row: 1; justify-content: flex-end; }
   .ing-row + .ing-row { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 8px; }
   /* Reorder/remove are 28px targets 2px apart on a phone. The read surface's

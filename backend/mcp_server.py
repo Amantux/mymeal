@@ -342,7 +342,23 @@ def update_recipe(name_or_id: str, name: str | None = None,
     if name:
         body["name"] = name
     if ingredients is not None:
-        body["ingredients"] = [{"display": str(x)} for x in ingredients]
+        # get_recipe hands back plain display strings and this tool's docstring
+        # tells callers to send that list back edited. Rebuilt as bare
+        # {"display": ...} every line is unflagged, so an untouched prose line
+        # ("a good knob of butter, for finishing") comes back as a structured
+        # row and its whole sentence is find-or-created into the shared Food
+        # catalog — the pollution the free-text lane exists to prevent,
+        # reintroduced by the workflow we document.
+        #
+        # Match on the exact line: unchanged means keep the author's flag; an
+        # edited or brand-new line is the legacy shape and stays unflagged,
+        # because declaring a line to be prose is a decision this tool must not
+        # make on the author's behalf.
+        prose = {i["display"] for i in recipe.get("ingredients", [])
+                 if i.get("freeText")}
+        body["ingredients"] = [
+            {"display": str(x), "freeText": str(x) in prose} for x in ingredients
+        ]
     if steps is not None:
         body["steps"] = [{"text": str(x)} for x in steps]
     if servings is not None:

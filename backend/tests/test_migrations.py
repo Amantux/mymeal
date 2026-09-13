@@ -372,3 +372,95 @@ def test_0017_plan_index_round_trips_and_matches_the_model(tmp_path):
     assert _PLAN_IDX in _indexes(db, "mealplan_entries")
     # create_all and the migrated path must describe the same schema.
     assert _PLAN_IDX in {ix.name for ix in MealPlanEntry.__table__.indexes}
+# ---- 0018: recipe_ingredients.free_text ----
+
+def _col(db, table, column):
+    c = sqlite3.connect(db)
+    try:
+        return next((r for r in c.execute(f"PRAGMA table_info({table})")
+                     if r[1] == column), None)
+    finally:
+        c.close()
+
+
+def test_0018_adds_free_text_to_a_real_pre_0018_database(tmp_path):
+    """The only test that exercises what 0017 actually DOES.
+
+    Baseline 0001 is metadata-driven (db.metadata.create_all), so a fresh
+    database has every current column the moment it exists — including
+    free_text — and 0018's `_has_column` guard then makes it a no-op. Asserting
+    the column's shape after `upgrade head` therefore tests the MODEL, not the
+    migration, and passes even if the migration adds a nullable column with no
+    default. (Confirmed: mutating it that way left the naive version green.)
+
+    A genuine pre-0018 install is simulated by dropping the column back off,
+    with a row already in the table — which is the case that matters, because
+    the row must land on False rather than NULL under NOT NULL."""
+    db = str(tmp_path / "m.db")
+    assert _run_alembic(db, "upgrade", "0017_group_calendar_token").returncode == 0
+    c = sqlite3.connect(db)
+    c.execute("PRAGMA foreign_keys=ON")
+    _insert(c, "groups", {"id": "g", "name": "G"})
+    _insert(c, "recipes", {"id": "r", "group_id": "g", "name": "R", "slug": "r"})
+    _insert(c, "recipe_ingredients",
+            {"id": "i1", "recipe_id": "r", "position": 0, "display": "x"})
+    c.execute("ALTER TABLE recipe_ingredients DROP COLUMN free_text")
+    c.commit()
+    c.close()
+    assert _col(db, "recipe_ingredients", "free_text") is None  # arranged
+
+    assert _run_alembic(db, "upgrade", "head").returncode == 0
+
+    col = _col(db, "recipe_ingredients", "free_text")
+    assert col is not None, "0018 did not add the column"
+    assert col[3] == 1, "free_text should be NOT NULL"
+    c = sqlite3.connect(db)
+    rows = c.execute("SELECT free_text FROM recipe_ingredients").fetchall()
+    c.close()
+    assert rows == [(0,)], f"pre-existing row is not False: {rows}"
+
+
+def test_0018_downgrade_then_upgrade_round_trips_with_rows_present(tmp_path):
+    """An empty database migrates fine, which is why the rest of the suite
+    misses table-rebuild bugs — so seed a real row first."""
+    db = str(tmp_path / "m.db")
+    assert _run_alembic(db, "upgrade", "head").returncode == 0
+    c = sqlite3.connect(db)
+    c.execute("PRAGMA foreign_keys=ON")
+    _insert(c, "groups", {"id": "g", "name": "G"})
+    _insert(c, "recipes", {"id": "r", "group_id": "g", "name": "R", "slug": "r"})
+    _insert(c, "recipe_ingredients",
+            {"id": "i1", "recipe_id": "r", "position": 0,
+             "display": "a good knob of butter", "free_text": 1})
+    c.commit()
+    c.close()
+
+    down = _run_alembic(db, "downgrade", "0017_group_calendar_token")
+    assert down.returncode == 0, down.stderr[-800:]
+    assert _col(db, "recipe_ingredients", "free_text") is None
+    c = sqlite3.connect(db)
+    kept = c.execute("SELECT COUNT(*) FROM recipe_ingredients").fetchone()[0]
+    tmp = c.execute("SELECT name FROM sqlite_master WHERE name LIKE "
+                    "'_alembic_tmp_%'").fetchall()
+    c.close()
+    assert kept == 1, "the rebuild dropped the row"
+    assert tmp == [], f"leftover temp table wedges the next boot: {tmp}"
+
+    up = _run_alembic(db, "upgrade", "head")
+    assert up.returncode == 0, up.stderr[-800:]
+    assert _col(db, "recipe_ingredients", "free_text") is not None
+
+
+def test_0018_migrated_and_create_all_agree_on_free_text(tmp_path):
+    """The invariant this file exists for: a create_all database and a migrated
+    one must describe the same column."""
+    from app.models import RecipeIngredient
+
+    db = str(tmp_path / "m.db")
+    assert _run_alembic(db, "upgrade", "head").returncode == 0
+    migrated = _col(db, "recipe_ingredients", "free_text")
+    declared = RecipeIngredient.__table__.columns["free_text"]
+
+    assert declared.nullable is False
+    assert bool(migrated[3]) is True
+    assert declared.server_default is not None

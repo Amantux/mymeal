@@ -47,7 +47,14 @@ def build_from_entries(pairs) -> list[dict]:
                 food_key = ing.food_id
                 aisle = ing.food.aisle
             else:
-                name = (parse_line(text)["rest"] or text).strip()
+                # A declared free-text line is prose, not a qty/unit/food split,
+                # and it deliberately stores no quantity or unit — so there is
+                # nothing for the UI to prepend and stripping the leading amount
+                # simply DELETES it ("2 handfuls of rocket, to serve" became
+                # "of rocket, to serve" × 0). Keep the author's line whole; that
+                # is the point of the lane.
+                name = (text if ing.free_text
+                        else (parse_line(text)["rest"] or text)).strip()
                 # Group by canonical food, not by the raw text. Grouping on
                 # name.lower() meant "olive oil" and "extra virgin olive oil"
                 # were two things to buy, and so were "cinnamon" and
