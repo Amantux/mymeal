@@ -3,7 +3,7 @@
 // from Edibl's ChatAssistant so the two apps share one chat experience. Reuses
 // myMeal's session-based /ai/chat backend (multi-turn within an open panel);
 // shows suggestion chips when empty and action chips for what the assistant did.
-import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { api, streamPost } from '../api'
 import { useUI } from '../stores/ui'
 import { hideMarker, finalizeReply } from '../utils/bugMarker'
@@ -73,6 +73,14 @@ async function scrollDown() {
 function toggle() {
   ui.toggleAssistant()
 }
+
+// Escape closes the panel. On a phone the sheet covers the whole viewport, so
+// without this (and the header's ✕) a reload was the only way out.
+function onKeydown(e) {
+  if (e.key === 'Escape' && open.value) toggle()
+}
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 
 // React to the panel being opened from anywhere. When another view opens it
 // with a prompt, send that prompt once the panel is up.
@@ -203,6 +211,10 @@ async function send(text) {
           </div>
           <div style="display:flex;gap:10px;align-items:center">
             <button v-if="msgs.length" class="linkish" @click="reset">New chat</button>
+            <!-- The ONLY close control on a phone: at =<560px the panel is a
+                 full-viewport sheet above the FAB, so the FAB cannot be
+                 clicked to dismiss it. Never gate this on anything. -->
+            <button class="pclose" aria-label="Close assistant" @click="toggle">✕</button>
           </div>
         </header>
 
@@ -292,6 +304,12 @@ async function send(text) {
   z-index: 60;
 }
 .fab.open { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); }
+
+.pclose {
+  background: none; border: 0; padding: 0 2px; line-height: 1;
+  font-size: 1rem; color: var(--muted); cursor: pointer;
+}
+.pclose:hover { color: var(--text); }
 
 .panel {
   position: fixed;

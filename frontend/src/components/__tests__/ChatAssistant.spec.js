@@ -117,3 +117,46 @@ describe('ChatAssistant mid-chat provider loss', () => {
     expect(wrapper.html()).toContain('no provider configured')
   })
 })
+
+describe('the panel can always be dismissed', () => {
+  // At <=560px the panel is a full-viewport sheet at z-index 80 while the FAB
+  // that opens it sits at 60 — so on a phone the FAB is physically covered and
+  // cannot close it. Verified empirically before this fix: elementFromPoint at
+  // the FAB returned the panel's Send button and a real click timed out,
+  // leaving a page reload as the only escape. These two controls are the exit.
+  it('offers a header close button even with no messages', async () => {
+    statusResponses()
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const w = mount(ChatAssistant, {
+      global: { plugins: [pinia], stubs: { 'router-link': { template: '<a><slot/></a>' } } },
+    })
+    useUI().assistantOpen = true
+    await flush()
+
+    const close = w.find('.pclose')
+
+    expect(close.exists()).toBe(true)
+    expect(close.attributes('aria-label')).toBe('Close assistant')
+    await close.trigger('click')
+    expect(useUI().assistantOpen).toBe(false)
+    w.unmount()
+  })
+
+  it('closes on Escape', async () => {
+    statusResponses()
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const w = mount(ChatAssistant, {
+      global: { plugins: [pinia], stubs: { 'router-link': { template: '<a><slot/></a>' } } },
+    })
+    useUI().assistantOpen = true
+    await flush()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flush()
+
+    expect(useUI().assistantOpen).toBe(false)
+    w.unmount()
+  })
+})
