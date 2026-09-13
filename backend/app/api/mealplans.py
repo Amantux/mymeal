@@ -91,7 +91,18 @@ def list_entries():
         query = query.filter(MealPlanEntry.date >= start)
     if end:
         query = query.filter(MealPlanEntry.date <= end)
-    entries = query.order_by(MealPlanEntry.date.asc()).all()
+    # An unbounded, undated call returns EVERY entry the household has ever
+    # created, each fully serialized — two years of history downloaded to answer
+    # "has anything ever been planned?". `limit` bounds that; the empty-state
+    # probe asks for 1.
+    # Order BEFORE limiting: SQLAlchemy refuses order_by() on a query that
+    # already has LIMIT applied, and "the first N by date" is the only sensible
+    # reading of the two together anyway.
+    query = query.order_by(MealPlanEntry.date.asc())
+    limit = request.args.get("limit", type=int)
+    if limit is not None:
+        query = query.limit(max(1, min(limit, 500)))
+    entries = query.all()
     return jsonify({"items": [mealplan_entry_out(e) for e in entries]})
 
 

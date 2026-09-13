@@ -384,7 +384,7 @@ def _col(db, table, column):
 
 
 def test_0018_adds_free_text_to_a_real_pre_0018_database(tmp_path):
-    """The only test that exercises what 0017 actually DOES.
+    """The only test that exercises what 0018 actually DOES.
 
     Baseline 0001 is metadata-driven (db.metadata.create_all), so a fresh
     database has every current column the moment it exists — including

@@ -73,7 +73,13 @@ def build_from_entries(pairs) -> list[dict]:
                 # hyphen). Unknown names still group by their canonical key, so
                 # two spellings of the same unknown thing merge; the label just
                 # stays as the user wrote it.
-                if canonical and food_resolve.is_known(canonical):
+                # ...but never for a declared free-text line. Grouping by the
+                # canonical key is still right (two prose lines about butter
+                # belong together), yet RELABELLING would throw the author's
+                # sentence away exactly like the strip above did — "a good knob
+                # of butter, for finishing" would reach the list as "butter".
+                # The lane's whole promise is that the human's line survives.
+                if canonical and food_resolve.is_known(canonical) and not ing.free_text:
                     name = canonical
                 aisle = ""
             unit = (ing.unit.abbreviation or ing.unit.name) if ing.unit else ""

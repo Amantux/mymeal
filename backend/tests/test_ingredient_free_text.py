@@ -172,11 +172,18 @@ def test_free_text_line_keeps_its_whole_text_on_a_shopping_list(auth_client, app
     nothing to prepend — but its no-food branch strips the leading amount out
     of the name on the assumption that it does. That combination deleted the
     author's own words: "2 handfuls of rocket, to serve" was bought as
-    "of rocket, to serve" × 0."""
+    "of rocket, to serve" × 0.
+
+    The line below is deliberately the module's OWN motivating example, whose
+    head word is a food the catalog knows. An earlier fixture ("2 handfuls of
+    rocket, to serve") canonicalised to something unknown, so it sailed past a
+    SECOND rewriter four lines further down — the canonical relabel — which
+    turned recognised prose into a bare food name. A fixture that avoids the
+    known-food path cannot see that bug."""
     from app.models import Recipe
     from app.services.shopping import build_from_recipes
 
-    line = "2 handfuls of rocket, to serve"
+    line = "a good knob of butter, for finishing"
     auth_client.post("/api/v1/recipes", json={
         "name": "Prose", "ingredients": [{"display": line, "freeText": True}],
     })
@@ -235,7 +242,7 @@ def test_free_text_row_that_opens_with_a_number_still_splits_losslessly(auth_cli
     that number in the amount column is correct — it is the author's own text,
     and it is removed from restText, so the row still reads as one line. What
     must not happen is the number surviving in both halves or vanishing."""
-    line = "2 handfuls of rocket, to serve"
+    line = "a good knob of butter, for finishing"
     rid = auth_client.post("/api/v1/recipes", json={
         "name": "Prose", "ingredients": [{"display": line, "freeText": True}],
     }).get_json()["id"]

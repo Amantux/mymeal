@@ -101,10 +101,19 @@ async function load() {
     // Anything in view proves they have planned before — free, no extra call.
     everPlanned.value = true
   } else if (everPlanned.value === null) {
-    // Only when the view is genuinely empty AND we don't already know, so the
-    // probe runs at most once per session and never on the common path.
-    const all = await api.get('/mealplans')
-    everPlanned.value = all.items.length > 0
+    // Only when the view is genuinely empty and we don't already know. `limit=1`
+    // because the question is "has anything EVER been planned?" — the undated
+    // call returns the household's entire history to answer a yes/no.
+    //
+    // Outside the loader's try: this only chooses WHICH empty state to show, so
+    // a failed probe must not turn a perfectly-loaded plan into an error screen.
+    // Unknown falls back to the gentler range-empty copy.
+    try {
+      const any = await api.get('/mealplans?limit=1')
+      everPlanned.value = any.items.length > 0
+    } catch (e) {
+      everPlanned.value = true
+    }
   }
 }
 const { loading, error, reload } = useLoader(load)

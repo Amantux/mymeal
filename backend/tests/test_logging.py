@@ -196,6 +196,10 @@ def test_gunicorn_access_logging_is_redacted_too(tmp_path, restore_logging):
     path = configure(_Settings(tmp_path), process="test", force=True)
     access = logging.getLogger("gunicorn.access")
     # Emulate gunicorn: its own handler, writing the access line itself.
+    # restore_logging only snapshots root, so this logger's flags are ours to
+    # put back — leaving propagate=False on a process-global logger silently
+    # changes what a later test sees under random ordering.
+    was_propagate, was_level = access.propagate, access.level
     access.propagate = False
     access.setLevel(logging.INFO)
     access.addHandler(logging.FileHandler(path))
@@ -206,6 +210,7 @@ def test_gunicorn_access_logging_is_redacted_too(tmp_path, restore_logging):
         for h in list(access.handlers):
             access.removeHandler(h)
             h.close()
+        access.propagate, access.level = was_propagate, was_level
 
     assert token not in open(path).read()
 
