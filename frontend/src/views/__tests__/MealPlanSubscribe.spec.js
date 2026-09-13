@@ -22,16 +22,26 @@ import MealPlan from '../MealPlan.vue'
 const TOKEN = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 const TOKEN2 = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 
-function routeApi({ token = null, fail = false } = {}) {
+function routeApi({ token = null, fail = false, entries = [] } = {}) {
   get.mockImplementation((url) => {
     if (url.startsWith('/calendar/subscription')) {
       return fail
         ? Promise.reject(new Error('Service unavailable'))
         : Promise.resolve({ token })
     }
+    if (url.startsWith('/mealplans')) return Promise.resolve({ items: entries })
     return Promise.resolve({ items: [] })
   })
 }
+
+// A planned week. "Build shopping list" only holds the accent when there IS a
+// plan to build from — with nothing planned it drops to secondary and the
+// accent moves to the empty state's CTA, so the two cases assert different
+// things and both have to be checked.
+const PLANNED = [{
+  id: 'e1', date: '2026-09-14', slot: 'dinner',
+  recipe: { id: 'r1', name: 'Chili', slug: 'chili' },
+}]
 
 // The card is inline at the foot of the page and loads on mount, so there is
 // nothing to open — mounting IS the arrange step.
@@ -72,7 +82,7 @@ beforeEach(() => {
 
 describe('meal plan calendar subscription', () => {
   test('the page head keeps exactly one primary action', async () => {
-    const w = await mountPage({ token: TOKEN })
+    const w = await mountPage({ token: TOKEN, entries: PLANNED })
 
     const head = w.find('.page-head')
 
@@ -85,6 +95,28 @@ describe('meal plan calendar subscription', () => {
     expect(primaries).toHaveLength(1)
     expect(primaries[0].text()).toContain('Build shopping list')
   })
+
+  test('an empty plan has exactly one primary, and it is the empty-state CTA',
+    async () => {
+      // The subscription card must not become the accent by default: with
+      // nothing planned the head's action is deliberately demoted, so a fourth
+      // unclassed button anywhere on the page would silently take over the
+      // view's single primary.
+      const w = await mountPage({ token: TOKEN, entries: [] })
+
+      // Scoped to the two surfaces that compete for the accent: the head and
+      // the empty state. (The rest of the page renders plain day-cell buttons
+      // that are styled as cells, not actions — counting those would make this
+      // assert something it does not mean.)
+      const unstyled = (el) => el.findAll('button').filter(
+        (b) => !b.classes().some((c) => ['secondary', 'ghost', 'sm'].includes(c)),
+      )
+
+      expect(unstyled(w.find('.page-head'))).toHaveLength(0)
+      const cta = unstyled(w.find('.empty-state'))
+      expect(cta).toHaveLength(1)
+      expect(cta[0].text()).toMatch(/Plan your first meal|Add a meal/)
+    })
 
   test('an unpublished household is offered the publish action', async () => {
     const w = await mountPage({ token: null })
