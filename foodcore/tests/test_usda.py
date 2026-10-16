@@ -1,20 +1,24 @@
 """The adapter's job: turn the published CSV schema into usable portion weights.
 
 Every expected number here was read out of the real USDA export, not invented.
+
+Two fixtures, two concerns. `export` is the PARSE result and is what the tests
+about reading USDA's schema assert against. `dataset` is a real built dataset
+file, and is what the tests about *resolution policy* use — that policy moved
+into the one `Dataset` when the two Dataset classes were collapsed, and it is
+only honest to test it where it now lives.
 """
 import os
 
 import pytest
 
 from foodcore.sources.usda import (
-    Dataset,
-    ReferenceStore,
+    NUTRIENT_NAMES,
+    UsdaImportError,
     load_fdc_csv,
-    normalise_unit,
     parse_portion_text,
-    singularise,
-    unit_kind,
 )
+from foodcore.units import normalise_unit, singularise, unit_kind
 
 from .conftest import FIXTURE_DIR, FIXTURE_RETRIEVED, FIXTURE_VERSION
 
@@ -37,13 +41,19 @@ def test_fixture_is_small_enough_to_commit():
     assert total < 256 * 1024, "the bulk USDA export must never be committed"
 
 
-def test_loads_foods_and_portions(dataset):
-    assert len(dataset.foods) >= 30
-    assert dataset.source == "usda"  # provenance.SOURCES member, not an edition
-    assert dataset.license == "CC0-1.0"
-    assert dataset.version == FIXTURE_VERSION
-    assert dataset.retrieved == FIXTURE_RETRIEVED
-    assert dataset.food(FLOUR).description.startswith("Wheat flour, white, all-purpose")
+def test_loads_foods_and_portions(export):
+    assert len(export.foods) >= 30
+    assert export.source == "usda"  # provenance.SOURCES member, not an edition
+    assert export.license == "CC0-1.0"
+    assert export.version == FIXTURE_VERSION
+    assert export.retrieved == FIXTURE_RETRIEVED
+    assert export.food(FLOUR).description.startswith("Wheat flour, white, all-purpose")
+
+
+def test_a_food_key_namespaces_the_provider(export):
+    # Two providers may both number a food "1"; the dataset key must not.
+    assert export.food(FLOUR).key == f"usda:{FLOUR}"
+    assert export.food(FLOUR).provider == "usda"
 
 
 def test_retrieved_defaults_to_the_datasets_own_publication_date():
@@ -60,6 +70,18 @@ def test_version_inferred_from_an_upstream_directory_name():
         "/data/FoodData_Central_sr_legacy_food_csv_2018-04"
     ) == "sr_legacy_food/2018-04"
     assert infer_version("/data/whatever") == "unknown"
+
+
+def test_a_missing_directory_is_a_typed_error():
+    with pytest.raises(UsdaImportError):
+        load_fdc_csv("/nonexistent/fdc")
+
+
+def test_a_directory_that_is_not_an_export_is_a_typed_error(tmp_path):
+    with pytest.raises(UsdaImportError) as exc:
+        load_fdc_csv(str(tmp_path))
+
+    assert "food.csv" in str(exc.value)
 
 
 # --- schema trap 1: the unit hides in `modifier` ----------------------------
@@ -103,29 +125,53 @@ def test_unparseable_modifiers_are_kept_but_not_guessed():
     assert unit is None and size is None
 
 
+def test_an_unnameable_portion_is_counted_not_guessed_at(export):
+    """The 'lemon yields' rows above reach the loader too. They are skipped —
+    and the skip is REPORTED, because a silent drop is indistinguishable from
+    an export that never had the row."""
+    assert export.stats.skipped_portions > 0
+    assert "skipped" in export.stats.report()
+
+
 # --- schema trap 2: `amount` is not always 1 --------------------------------
 
-def test_grams_per_unit_divides_by_amount(dataset):
+def test_grams_per_unit_divides_by_amount(export):
     """'3 cloves = 9 g' is 3 g per clove, not 9."""
-    garlic = dataset.food(GARLIC)
-    rows = [p for p in garlic.portions if p.unit == "clove"]
+    garlic = export.food(GARLIC)
+    rows = [p for p in garlic.portions if p.measure == "clove"]
     assert {round(p.grams_per_unit, 3) for p in rows} == {3.0}
     assert any(p.amount == 3 and p.gram_weight == 9 for p in rows)
 
 
+def test_the_upstream_amount_survives_into_the_dataset_file(dataset):
+    """MUTATION GUARD for the storage layer.
+
+    `amount` is not a parse-time curiosity to be divided away on the way in:
+    a reader must be able to see that upstream published "3 cloves = 9 g". The
+    importer that was deleted stored only `grams/amount` and lost it, which
+    also meant nothing downstream could tell a per-unit figure from a published
+    one. If this goes red, the column was dropped.
+    """
+    garlic = dataset.food_record(f"usda:{GARLIC}")
+    rows = [p for p in garlic.portions if p.measure == "clove"]
+
+    assert any(p.amount == 3 and p.gram_weight == 9 for p in rows)
+    assert {round(p.grams_per_unit, 3) for p in rows} == {3.0}
+
+
 # --- portion selection -------------------------------------------------------
 
-def test_portion_prefers_the_unqualified_row(dataset):
+def test_portion_prefers_the_unqualified_row(export):
     """Onions publish 'cup, chopped' 160 g and 'cup, sliced' 115 g; neither is
     the plain cup, so a bare 'cup' must not silently pick one."""
-    onion = dataset.food(ONION)
+    onion = export.food(ONION)
     assert onion.portion("cup") is None
-    flour = dataset.food(FLOUR)
+    flour = export.food(FLOUR)
     assert flour.portion("cup").grams_per_unit == 125.0
 
 
-def test_size_words_are_first_class(dataset):
-    onion = dataset.food(ONION)
+def test_size_words_are_first_class(export):
+    onion = export.food(ONION)
     assert onion.portion("piece", "small").grams_per_unit == 70.0
     assert onion.portion("piece", "medium").grams_per_unit == 110.0
     assert onion.portion("piece", "large").grams_per_unit == 150.0
@@ -135,26 +181,50 @@ def test_portion_selection_is_stable_across_loads():
     a = load_fdc_csv(FIXTURE_DIR)
     b = load_fdc_csv(FIXTURE_DIR)
     for rec in a.foods:
-        other = b.food(rec.fdc_id)
-        for unit in ("cup", "tbsp", "piece", "slice"):
-            pa, pb = rec.portion(unit), other.portion(unit)
-            assert (pa.portion_id if pa else None) == (pb.portion_id if pb else None)
+        other = b.food(rec.source_id)
+        for measure in ("cup", "tbsp", "piece", "slice"):
+            pa, pb = rec.portion(measure), other.portion(measure)
+            assert (pa.source_id if pa else None) == (pb.source_id if pb else None)
 
 
-def test_nutrients_are_loaded_but_not_interpreted(dataset):
+def test_nutrients_are_loaded_but_not_interpreted(export):
     """Nutrition arithmetic belongs to a sibling module; the adapter only
     carries the per-100 g rows through."""
-    flour = dataset.food(FLOUR)
+    flour = export.food(FLOUR)
     assert flour.nutrients, "expected per-100g nutrient rows on the fixture"
     amount, unit = next(iter(flour.nutrients.values()))
     assert isinstance(amount, float) and isinstance(unit, str)
 
 
+def test_nutrients_are_keyed_by_foodcores_own_vocabulary(export):
+    """Not by USDA's numeric id. An engine must be able to ask for "protein"
+    without knowing that FDC calls it 1003, and the dataset file stores the
+    same key, so the parse and the read agree."""
+    flour = export.food(FLOUR)
+
+    assert set(flour.nutrients) <= set(NUTRIENT_NAMES.values())
+    assert "protein" in flour.nutrients
+
+
+def test_both_published_spellings_of_total_sugars_map_to_one_key():
+    # SR Legacy says "Sugars, Total"; Foundation says the NLEA-qualified name.
+    # Mapping only one silently drops sugar for half the dataset.
+    assert NUTRIENT_NAMES["sugars, total"] == "sugars"
+    assert NUTRIENT_NAMES["sugars, total including nlea"] == "sugars"
+
+
+def test_energy_is_stored_in_kcal_not_upstreams_casing(export):
+    amount, unit = export.food(FLOUR).nutrients["energy"]
+
+    assert unit == "kcal"
+    assert amount > 0
+
+
 # --- name resolution: raw vs cooked must not merge (spec FR-01) -------------
 
-def test_raw_and_cooked_rice_are_different_foods(dataset):
-    raw, cooked = dataset.food(RICE_RAW), dataset.food(RICE_COOKED)
-    assert raw.fdc_id != cooked.fdc_id
+def test_raw_and_cooked_rice_are_different_foods(export):
+    raw, cooked = export.food(RICE_RAW), export.food(RICE_COOKED)
+    assert raw.source_id != cooked.source_id
     assert raw.portion("cup").grams_per_unit == 185.0
     assert cooked.portion("cup").grams_per_unit == 158.0
     assert "raw" in raw.states and "cooked" in cooked.states
@@ -164,7 +234,7 @@ def test_bare_rice_refuses_to_pick_raw_or_cooked(dataset):
     match = dataset.resolve_food("rice")
     assert not match.confident
     assert match.food is None
-    ids = {rec.fdc_id for rec, _ in match.candidates}
+    ids = {rec.source_id for rec, _ in match.candidates}
     assert {RICE_RAW, RICE_COOKED} <= ids
     # The refusal must carry what settles it for a human.
     assert "raw" in match.describe() and "cooked" in match.describe()
@@ -176,7 +246,7 @@ def test_bare_rice_refuses_to_pick_raw_or_cooked(dataset):
 ])
 def test_naming_the_state_resolves_it(dataset, query, fdc_id):
     match = dataset.resolve_food(query)
-    assert match.confident and match.food.fdc_id == fdc_id
+    assert match.confident and match.food.source_id == fdc_id
 
 
 def test_dry_and_cooked_oats_also_stay_apart(dataset):
@@ -193,9 +263,23 @@ def test_a_substring_is_not_evidence_of_being_the_same_substance(dataset):
     assert pb.confident and pb.food.description.startswith("Peanut butter")
 
 
+def test_a_candidate_must_contain_the_query_as_WHOLE_tokens(dataset):
+    """'egg' must never be evidence for 'eggplant'.
+
+    Note on where this is enforced: the SQL prefilter is space-padded
+    (`tokens LIKE '% egg %'`) so it narrows on whole tokens, but that is a
+    SPEED measure only — the Python re-check below it would reject a substring
+    candidate anyway. Mutation-checked 2026-10-16: removing the padding changes
+    no result, so this test is deliberately written against the observable
+    guarantee rather than pretending to guard the padding.
+    """
+    for rec, _ in dataset.resolve_food("egg").candidates:
+        assert "egg" in rec.tokens, rec.description
+
+
 def test_unique_full_token_coverage_resolves(dataset):
-    assert dataset.resolve_food("egg white").food.fdc_id == EGG_WHITE
-    assert dataset.resolve_food("egg whites").food.fdc_id == EGG_WHITE
+    assert dataset.resolve_food("egg white").food.source_id == EGG_WHITE
+    assert dataset.resolve_food("egg whites").food.source_id == EGG_WHITE
 
 
 def test_partial_coverage_is_not_a_match(dataset):
@@ -209,7 +293,19 @@ def test_sugar_without_a_qualifier_is_ambiguous(dataset):
 
 def test_resolving_by_fdc_id_is_always_confident(dataset):
     match = dataset.resolve_food(TOMATO_CAN)
-    assert match.confident and match.food.fdc_id == TOMATO_CAN
+    assert match.confident and match.food.source_id == TOMATO_CAN
+
+
+def test_resolving_by_dataset_key_is_always_confident(dataset):
+    match = dataset.resolve_food(f"usda:{TOMATO_CAN}")
+    assert match.confident and match.food.source_id == TOMATO_CAN
+
+
+def test_a_wildcard_in_a_query_is_not_a_wildcard(dataset):
+    """`%` and `_` are LIKE metacharacters. Unescaped, '_' would match any
+    character and quietly widen every query that contains one."""
+    assert dataset.resolve_food("ric_").candidates == ()
+    assert dataset.resolve_food("%").candidates == ()
 
 
 # --- vocabulary --------------------------------------------------------------
@@ -237,75 +333,3 @@ def test_count_and_package_units_are_not_volumes():
 ])
 def test_singularise(word, expected):
     assert singularise(word) == expected
-
-
-# --- idempotent import (spec §14) -------------------------------------------
-
-def test_reimporting_the_same_version_inserts_nothing(dataset):
-    store = ReferenceStore()
-    first = store.ingest(dataset)
-    assert first.foods_inserted == len(dataset.foods)
-    assert first.portions_inserted > 0
-    foods_after_first = len(store.foods)
-    portions_after_first = len(store.portions)
-
-    second = store.ingest(dataset)
-    assert second.foods_inserted == 0
-    assert second.foods_updated == 0
-    assert second.portions_inserted == 0
-    assert second.foods_unchanged == len(dataset.foods)
-    assert len(store.foods) == foods_after_first
-    assert len(store.portions) == portions_after_first
-
-
-def test_a_reloaded_dataset_is_still_idempotent():
-    """Idempotency must key on the data, not on object identity."""
-    store = ReferenceStore()
-    store.ingest(load_fdc_csv(FIXTURE_DIR, version="v1", retrieved="2026-01-01"))
-    n = len(store.foods)
-    again = store.ingest(load_fdc_csv(FIXTURE_DIR, version="v1",
-                                      retrieved="2026-01-01"))
-    assert again.foods_inserted == 0 and len(store.foods) == n
-
-
-def test_a_new_dataset_version_lands_alongside_the_old_one():
-    store = ReferenceStore()
-    store.ingest(load_fdc_csv(FIXTURE_DIR, version="v1", retrieved="2026-01-01"))
-    n = len(store.foods)
-    store.ingest(load_fdc_csv(FIXTURE_DIR, version="v2", retrieved="2026-06-01"))
-    assert len(store.foods) == 2 * n
-    versions = {k[1] for k in store.foods}
-    assert versions == {"v1", "v2"}
-
-
-def test_a_changed_record_updates_in_place_rather_than_duplicating(dataset):
-    store = ReferenceStore()
-    store.ingest(dataset)
-    n = len(store.foods)
-    edited = dataset.food(FLOUR)
-    mutated = Dataset(
-        version=dataset.version,
-        retrieved=dataset.retrieved,
-        foods=(type(edited)(
-            fdc_id=edited.fdc_id,
-            description="Wheat flour, white, all-purpose, RENAMED",
-            data_type=edited.data_type,
-            category_id=edited.category_id,
-            publication_date=edited.publication_date,
-            portions=edited.portions,
-            nutrients=edited.nutrients,
-        ),),
-    )
-    stats = store.ingest(mutated)
-    assert stats.foods_updated == 1 and stats.foods_inserted == 0
-    assert len(store.foods) == n
-
-
-def test_reference_data_is_not_group_scoped():
-    """A tenant key in reference data would be a modelling error: a gram of
-    flour is the same gram in every household."""
-    keys = ReferenceStore().foods
-    assert keys == {}
-    store = ReferenceStore()
-    store.ingest(load_fdc_csv(FIXTURE_DIR, version="v1", retrieved="2026-01-01"))
-    assert all(len(k) == 3 for k in store.foods)   # (source, version, fdc_id)

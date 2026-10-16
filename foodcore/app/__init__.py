@@ -27,6 +27,7 @@ Public surface (everything else is private)::
         Provenance, Resolved, Unresolved, Outcome,   # the contract
         SourceRecord,                                # dataset registry, plain data
         Dataset, load_dataset, build_dataset,        # reference data
+        FoodRow, FoodRecord, Portion, FoodMatch,     # its record types
         rule_version, __version__,                   # versioning
     )
     from foodcore import convert, nutrition, allergens, dietary  # the engines
@@ -41,7 +42,15 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any
 
-from .datasets import Dataset, FoodRow, build_dataset, load_dataset
+from .datasets import (
+    Dataset,
+    FoodMatch,
+    FoodRecord,
+    FoodRow,
+    Portion,
+    build_dataset,
+    load_dataset,
+)
 from .provenance import (
     LICENSES,
     METHODS,
@@ -66,8 +75,10 @@ __version__ = "0.1.0"
 RULE_EPOCH = 1
 
 #: Dataset files declare the schema they were built with; a Dataset refuses to
-#: open one from a future schema rather than mis-reading it.
-DATASET_SCHEMA_VERSION = 1
+#: open one built for a different schema rather than mis-reading it.
+#: 2 — portion rows carry size/qualifier/amount, so "cup, chopped" and
+#: "cup, sliced" stay distinct instead of colliding on one measure name.
+DATASET_SCHEMA_VERSION = 2
 
 
 def rule_version(kind: str) -> str:
@@ -118,6 +129,9 @@ __all__ = [
     # reference data
     "Dataset",
     "FoodRow",
+    "FoodRecord",
+    "Portion",
+    "FoodMatch",
     "load_dataset",
     "build_dataset",
     # versioning

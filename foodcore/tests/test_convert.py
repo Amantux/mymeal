@@ -33,6 +33,15 @@ CELERY = "169988"
 SPINACH = "168462"
 
 
+def rec(dataset, fdc_id):
+    """The full record for an FDC id, the way a host app asks for one.
+
+    `Dataset.food(key)` is the lightweight candidate projection; the engines
+    take a `FoodRecord`, which is what `food_record(key)` returns.
+    """
+    return dataset.food_record(f"usda:{fdc_id}")
+
+
 def approx(value, expected, tol=0.01):
     assert value == pytest.approx(expected, rel=tol), f"{value} != {expected}"
 
@@ -117,7 +126,7 @@ def test_volume_unit_without_its_own_portion_row_derives_a_density(dataset):
     """Milk publishes cup/tbsp/fl oz/quart but not litres. 244 g per 236.588 ml
     is 1.0313 g/ml, so 2 l is ~2062 g — derived, and flagged as less certain
     than a direct portion row."""
-    got = convert(2, "l", "g", food=dataset.food(MILK), dataset=dataset)
+    got = convert(2, "l", "g", food=rec(dataset, MILK), dataset=dataset)
     assert isinstance(got, Resolved)
     approx(got.value, 2062.6, tol=0.005)
     assert got.provenance.method == "calculated"
@@ -125,7 +134,7 @@ def test_volume_unit_without_its_own_portion_row_derives_a_density(dataset):
 
 
 def test_mass_to_volume_uses_the_same_density(dataset):
-    got = convert(244, "g", "cup", food=dataset.food(MILK), dataset=dataset)
+    got = convert(244, "g", "cup", food=rec(dataset, MILK), dataset=dataset)
     assert isinstance(got, Resolved)
     approx(got.value, 1.0)
     assert got.provenance.method == "calculated"
@@ -185,14 +194,14 @@ def test_user_case_1_can_tomatoes_is_unresolved(dataset):
 def test_the_dataset_really_does_contain_a_tempting_can_row(dataset):
     """Mutation canary: if someone 'fixes' the refusal by using this row, the
     test above goes red — and this one documents what they would have used."""
-    can_rows = [p for p in dataset.food(TOMATO_CAN).portions if p.unit == "can"]
+    can_rows = [p for p in rec(dataset, TOMATO_CAN).portions if p.measure == "can"]
     assert can_rows and can_rows[0].gram_weight == 190.0
 
 
 @pytest.mark.parametrize("unit", ["can", "tin", "jar", "bottle", "package",
                                   "packet", "box", "container", "carton"])
 def test_every_package_unit_refuses_without_a_declared_size(dataset, unit):
-    got = convert(1, unit, "g", food=dataset.food(TOMATO_CAN), dataset=dataset)
+    got = convert(1, unit, "g", food=rec(dataset, TOMATO_CAN), dataset=dataset)
     assert isinstance(got, Unresolved)
     assert got.reason == "no_package_size"
 
@@ -200,7 +209,7 @@ def test_every_package_unit_refuses_without_a_declared_size(dataset, unit):
 def test_a_declared_package_size_resolves_as_declared(dataset):
     pkg = PackageSize(net_g=400.0, label="Mutti polpa 400g",
                       source_id="ean:8005110012345", retrieved="2026-10-01")
-    got = convert(2, "can", "g", food=dataset.food(TOMATO_CAN), dataset=dataset,
+    got = convert(2, "can", "g", food=rec(dataset, TOMATO_CAN), dataset=dataset,
                   package=pkg)
     assert isinstance(got, Resolved)
     approx(got.value, 800.0)
@@ -214,7 +223,7 @@ def test_a_declared_package_size_resolves_as_declared(dataset):
 def test_a_declared_package_in_ml_is_weighed_through_the_food(dataset):
     """A 1-litre carton of milk weighs more than a kilo."""
     pkg = PackageSize(net_ml=1000.0, label="1 l carton", source_id="pkg:milk-1l")
-    got = convert(1, "carton", "g", food=dataset.food(MILK), dataset=dataset,
+    got = convert(1, "carton", "g", food=rec(dataset, MILK), dataset=dataset,
                   package=pkg)
     assert isinstance(got, Resolved)
     approx(got.value, 1031.3, tol=0.005)
@@ -222,14 +231,14 @@ def test_a_declared_package_in_ml_is_weighed_through_the_food(dataset):
 
 def test_mass_to_package_count(dataset):
     pkg = PackageSize(net_g=400.0, source_id="pkg:tin-400")
-    got = convert(1.2, "kg", "can", food=dataset.food(TOMATO_CAN),
+    got = convert(1.2, "kg", "can", food=rec(dataset, TOMATO_CAN),
                   dataset=dataset, package=pkg)
     assert isinstance(got, Resolved)
     approx(got.value, 3.0)
 
 
 def test_package_refusal_survives_an_empty_package(dataset):
-    got = convert(1, "can", "g", food=dataset.food(TOMATO_CAN), dataset=dataset,
+    got = convert(1, "can", "g", food=rec(dataset, TOMATO_CAN), dataset=dataset,
                   package=PackageSize())
     assert isinstance(got, Unresolved)
     assert got.reason == "no_package_size"
@@ -268,7 +277,7 @@ def test_count_units_are_first_class(dataset):
 def test_a_sizeless_count_is_resolved_at_lower_confidence(dataset):
     """'1 onion' — the dataset only knows small/medium/large, so standing
     'medium' in is a convention and must be reported as the weakest estimate."""
-    got = convert(1, "piece", "g", food=dataset.food(ONION), dataset=dataset)
+    got = convert(1, "piece", "g", food=rec(dataset, ONION), dataset=dataset)
     assert isinstance(got, Resolved)
     approx(got.value, 110.0)
     assert got.provenance.method == "estimated"
@@ -277,7 +286,7 @@ def test_a_sizeless_count_is_resolved_at_lower_confidence(dataset):
 
 
 def test_a_size_the_dataset_does_not_publish_is_refused(dataset):
-    got = convert(1, "piece", "g", food=dataset.food(ONION), dataset=dataset,
+    got = convert(1, "piece", "g", food=rec(dataset, ONION), dataset=dataset,
                   size="jumbo")
     assert isinstance(got, Unresolved)
     assert got.reason == "no_portion_record"
@@ -299,7 +308,7 @@ def test_user_case_1_5_pounds_oranges_gives_an_approximate_count(dataset):
 
 def test_mass_to_count_for_egg_whites(dataset):
     """240 g of egg white is about 7 large whites (33 g each)."""
-    got = convert(240, "g", "piece", food=dataset.food(EGG_WHITE),
+    got = convert(240, "g", "piece", food=rec(dataset, EGG_WHITE),
                   dataset=dataset, size="large")
     assert isinstance(got, Resolved)
     approx(got.value, 7.27, tol=0.01)
@@ -307,14 +316,14 @@ def test_mass_to_count_for_egg_whites(dataset):
 
 
 def test_count_to_count_in_the_same_unit_is_measured(dataset):
-    got = convert(3, "clove", "clove", food=dataset.food(GARLIC), dataset=dataset)
+    got = convert(3, "clove", "clove", food=rec(dataset, GARLIC), dataset=dataset)
     assert isinstance(got, Resolved)
     approx(got.value, 3.0)
     assert got.provenance.method == "measured"
 
 
 def test_a_count_with_no_portion_record_is_refused(dataset):
-    got = convert(1, "fillet", "g", food=dataset.food(FLOUR), dataset=dataset)
+    got = convert(1, "fillet", "g", food=rec(dataset, FLOUR), dataset=dataset)
     assert isinstance(got, Unresolved)
     assert got.reason == "no_portion_record"
 
@@ -327,7 +336,7 @@ def test_each_kind_reports_its_own_method(dataset):
     kinds = {
         "physical": convert(1, "lb", "g"),
         "ingredient": convert_text("1 cup flour", "g", dataset=dataset),
-        "package": convert(1, "can", "g", food=dataset.food(TOMATO_CAN),
+        "package": convert(1, "can", "g", food=rec(dataset, TOMATO_CAN),
                            dataset=dataset,
                            package=PackageSize(net_g=400.0, source_id="x")),
         "count": convert_text("1 medium onion", "g", dataset=dataset),
@@ -403,7 +412,7 @@ def test_dry_and_cooked_oats_also_differ(dataset):
     (lambda d: convert_text("2 cups unobtainium", "g", dataset=d), "unknown_food"),
     (lambda d: convert_text("flour", "g", dataset=d), "no_quantity"),
     (lambda d: convert_text("1 cup onions", "g", dataset=d), "qualifier_required"),
-    (lambda d: convert(1, "piece", "g", food=d.food(ONION), dataset=d,
+    (lambda d: convert(1, "piece", "g", food=rec(d, ONION), dataset=d,
                        size="jumbo"), "no_portion_record"),
 ])
 def test_refusal_reasons(dataset, call, reason):
