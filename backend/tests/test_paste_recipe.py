@@ -1090,3 +1090,94 @@ def test_a_synthetic_heading_does_not_land_in_a_neighbours_line():
     ).splitlines()
 
     assert lines == ["12 muffins", "Ingredients", "2 cups flour"]
+
+# --- a bolded terminator must never split onto its own line ----------------
+
+@pytest.mark.xfail(reason="KNOWN DEFECT, pre-existing and not HTML-specific: "
+                          "_until_tail cuts the body at the FIRST tail heading "
+                          "even when the method plainly continues after it. "
+                          "Reproduces from plain text with no HTML — see "
+                          "test_plain_text_tip_also_truncates. Fixing it means "
+                          "deciding when a heading terminates a body, which is "
+                          "a deliberate call and gets its own change.",
+                   strict=True)
+def test_a_mid_method_tip_does_not_truncate_the_method():
+    """REGRESSION, and the reason _is_lead_in_heading only matches REGION
+    headings. A bolded "Tip:" between two step lists is the commonest recipe
+    blog shape there is. When a terminator pattern was allowed to split a
+    lead-in onto its own line, _until_tail cut the body there and three of four
+    steps vanished — with the whole suite green, which is why this asserts
+    through parse_pasted() and not html_to_lines(): the line-level output looks
+    entirely plausible while the parse is losing user data.
+    """
+    html = (
+        "<h2>Ingredients</h2><ul><li>2 cups flour</li><li>1 cup milk</li>"
+        "<li>3 eggs</li></ul>"
+        "<h2>Instructions</h2><ol><li>Mix well.</li></ol>"
+        "<p><strong>Tip:</strong> Use very ripe bananas for the best flavour.</p>"
+        "<ol><li>Bake for 25 minutes.</li><li>Cool on a rack and serve.</li></ol>"
+    )
+
+    got = parse_pasted(html)
+
+    steps = [s["text"] if isinstance(s, dict) else s for s in got["steps"]]
+    assert len(steps) == 4, f"method truncated: {steps}"
+    assert steps[0] == "Mix well."
+    assert steps[-1] == "Cool on a rack and serve."
+
+
+@pytest.mark.xfail(reason="same known _until_tail defect", strict=True)
+def test_other_bolded_terminators_are_equally_harmless():
+    for lead in ("Pro tip:", "Note:", "Substitutions:"):
+        html = ("<h2>Ingredients</h2><ul><li>2 cups flour</li>"
+                "<li>1 cup milk</li><li>3 eggs</li></ul>"
+                "<h2>Instructions</h2><ol><li>Mix well.</li></ol>"
+                f"<p><strong>{lead}</strong> Something advisory here.</p>"
+                "<ol><li>Bake for 25 minutes.</li></ol>")
+
+        got = parse_pasted(html)
+
+        steps = [s["text"] if isinstance(s, dict) else s for s in got["steps"]]
+        assert "Bake for 25 minutes." in steps, f"{lead!r} truncated: {steps}"
+
+
+@pytest.mark.xfail(reason="same family: _SUB_HEAD matches anything ending in "
+                          "a colon, so a definition-style row's food name is "
+                          "promoted to a section and leaves the display empty.",
+                   strict=True)
+def test_a_definition_style_row_keeps_its_food_in_the_display():
+    """`<span>Flour:</span><span>240 g</span>` is a row, not a heading plus a
+    row. Treating the colon-terminated span as a sub-heading left the display
+    as "240 g" with the food name promoted to a section — an ingredient with no
+    ingredient in it."""
+    html = ("<ul class='recipe-ingredients'><li><span>Flour:</span>"
+            "<span>240 g</span></li><li><span>Milk:</span>"
+            "<span>500 ml</span></li></ul>"
+            "<h2>Instructions</h2><ol><li>Mix them together well.</li></ol>")
+
+    got = parse_pasted(html)
+
+    displays = [i["display"] if isinstance(i, dict) else i
+                for i in got["ingredients"]]
+    assert any("Flour" in d for d in displays), displays
+
+
+def test_plain_text_tip_also_truncates_proving_it_is_not_an_html_defect():
+    """Pins WHERE the defect lives, so the fix is aimed correctly.
+
+    A reviewer attributed the truncation to the HTML inline-join work. It is
+    not: the same input as plain text, with no markup whatsoever, loses the
+    same steps. The cause is _until_tail terminating the body at the first
+    tail heading regardless of what follows.
+    """
+    text = ("Ingredients\n2 cups flour\n1 cup milk\n3 eggs\n\n"
+            "Instructions\nMix well.\nTip:\nUse very ripe bananas.\n"
+            "Bake for 25 minutes.\nCool on a rack and serve.")
+
+    got = parse_recipe_text(text)
+
+    steps = [s["text"] if isinstance(s, dict) else s for s in got["steps"]]
+    assert steps == ["Mix well."], (
+        "If this now keeps all the steps, the _until_tail defect is FIXED — "
+        "delete this test and un-xfail its three companions above."
+    )
