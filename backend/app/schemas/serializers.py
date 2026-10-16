@@ -2,7 +2,7 @@
 import json
 from datetime import datetime, date
 
-from ..services import food_resolve, units
+from ..services import food_resolve, step_structure, units
 
 
 def iso(dt):
@@ -307,6 +307,15 @@ def recipe_out(r):
             "shareToken": r.share_token,
             "ingredients": [ingredient_out(i) for i in r.ingredients],
             "steps": [step_out(s) for s in r.steps],
+            # Phase headings and the stated-time summary, derived from the step
+            # text on read. Derived rather than stored on purpose: it is a view
+            # of the author's words, so editing a step can never leave a stale
+            # heading or a stale clock behind, and no migration is involved.
+            # `steps` above stays the authoritative, unannotated list — every
+            # existing consumer is untouched.
+            "stepStructure": step_structure.structure_steps(
+                [{"title": s.title, "text": s.text} for s in r.steps]
+            ),
         }
     )
     return data
