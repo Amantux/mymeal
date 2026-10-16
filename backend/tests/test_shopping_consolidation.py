@@ -93,3 +93,20 @@ def test_two_spellings_of_one_unit_are_one_line_to_buy(auth_client, app, a, b):
     items = _two(auth_client, app, a, b)
     assert len(items) == 1, f"{a!r} and {b!r} produced " \
                             f"{[(i['quantity'], i['unit']) for i in items]}"
+
+
+def test_an_unmeasured_line_buys_as_one_row_with_no_quantity(auth_client, app):
+    """Checked by running it rather than reasoned about. "Salt, to taste" and
+    "Oil ... for the pan" carry no amount, so they aggregate to quantity 0.
+
+    That is the RIGHT outcome and is deliberately left alone: dropping the rows
+    would mean forgetting the oil, and inventing an amount would be a lie. The
+    shopping view renders the quantity behind `v-if="item.quantity"`, so a 0
+    never reaches the page — the row reads "salt", not "0 salt". Two recipes
+    both wanting salt is one line to buy, which is what a shopping list is for.
+    """
+    items = _two(auth_client, app, "Salt, to taste", "Salt, to taste")
+
+    assert len(items) == 1
+    assert items[0]["quantity"] == 0        # falsy -> the UI shows no number
+    assert items[0]["unit"] == ""

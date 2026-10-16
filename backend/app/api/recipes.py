@@ -538,6 +538,14 @@ def _apply_view(out: dict, recipe: Recipe, args):
         # with the food text.
         ing["amountText"], ing["unitText"], ing["restText"] = units.split_amount(
             line, ing.get("quantity"))
+        # Re-derived from the REWRITTEN line for the same reason: scale_line
+        # scales the alternative measure too, so the serializer's copy (taken
+        # from the stored, unscaled display) would say "or 1/2 tsp" beside a
+        # tripled amount.
+        shown = units.parse_line(line)
+        ing["altText"] = shown["alt"]
+        ing["optional"] = shown["optional"]
+        ing["unmeasured"] = shown["qty"] is None
 
 
 @bp.put("/recipes/<recipe_id>")
@@ -703,7 +711,7 @@ def parse_ingredient_lines():
         if not display:
             continue
         p = units.parse_line(display)
-        # NOTE stays empty. Writing the range's high end here ("or up to 3")
+        # The range's high end stays OUT of the note. Writing it here ("or up to 3")
         # looked like it preserved information, but the editor bakes the note
         # into `display` on save and nothing then scales it — so doubling
         # "2-3 cloves garlic" produced "4 cloves garlic, or up to 3", a range
@@ -712,6 +720,16 @@ def parse_ingredient_lines():
         # The range survives where it can actually be scaled — inside `display`,
         # handled by units.scale_line — and the row's original line is shown in
         # the editor beside the parsed fields, so the drop is visible and fixable.
+        # The alternative measure and "optional" DO go in the note, unlike the
+        # range above, and the difference is whether the editor baking the note
+        # into `display` loses anything. A range's ceiling cannot be scaled once
+        # it is prose; an alternative can — scale_line parses "…, or 1/2 tsp"
+        # straight back out and scales it with the line. Keeping them here is
+        # what stops the paste parser dropping them, while leaving the FOOD
+        # field clean so the shared catalog never grows a "Garlic Powder or
+        # ½ teaspoon (1 g)" row.
+        note = ", ".join(x for x in (f"or {p['alt']}" if p["alt"] else "",
+                                     "optional" if p["optional"] else "") if x)
         rows.append({
             "display": display,
             "quantity": p["qty"] or 0,
@@ -721,7 +739,7 @@ def parse_ingredient_lines():
             # it, and dropping it would lose a word the user typed the moment
             # they save.
             "food": " ".join(x for x in (p["prefix"], p["rest"]) if x),
-            "note": "",
+            "note": note,
         })
     return jsonify({"ingredients": rows})
 

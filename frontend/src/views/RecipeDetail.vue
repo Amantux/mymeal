@@ -109,11 +109,25 @@ function splitOne(ing) {
   // Compare the tail at its ORIGINAL length. Slicing by note.length after a
   // toLowerCase() match is wrong for characters whose lowercase is longer
   // ('İ' -> 2 chars), which shifted the cut and ate a letter of the food name.
+  // An alternative way to measure the same amount, and the "optional" flag,
+  // both lifted out of the food name by the backend. `alt` is the one a cook
+  // with no kitchen scale actually reads, so it is rendered, not dropped —
+  // split_amount's three parts no longer account for the whole line on their
+  // own. `amount` becomes an explicit dash when the line HAS no amount: an
+  // empty cell in a bordered grid reads as a rendering fault, and these rows
+  // ("Salt, to taste") are deliberate. Only when the backend says the line is
+  // unmeasured — "About 2 cups milk" also has an empty amount cell, but its
+  // amount is real and is being shown inside the text beside it.
+  const extra = {
+    alt: ing.altText || '',
+    optional: !!ing.optional,
+    amount: ing.unmeasured ? '—' : amountOf(ing),
+  }
   const tail = rest.slice(-(note.length + 2))
   if (note && tail.toLowerCase() === `, ${note.toLowerCase()}`) {
-    return { amount: amountOf(ing), food: rest.slice(0, rest.length - tail.length), note, weight }
+    return { ...extra, food: rest.slice(0, rest.length - tail.length), note, weight }
   }
-  return { amount: amountOf(ing), food: rest, note: '', weight }
+  return { ...extra, food: rest, note: '', weight }
 }
 // Mapped once per render rather than calling the splitter twice per row in the
 // template (once for the food, once for the note).
@@ -782,9 +796,12 @@ const imageSrc = computed(() =>
           <template v-for="(g, gi) in shownGroups" :key="`g${gi}`">
             <li v-if="g.section" class="ing-sec">{{ g.section }}</li>
             <li v-for="row in g.rows" :key="row.id">
-              <span class="ing-amt tnum">{{ row.amount }}</span>
+              <span class="ing-amt tnum" :class="{ 'is-none': row.amount === '—' }"
+                    :aria-label="row.amount === '—' ? 'No set amount' : null">{{ row.amount }}</span>
               <span class="ing-food">{{ row.food
-                }}<span v-if="row.weight" class="ing-weight">{{ row.weight }}</span
+                }}<span v-if="row.alt" class="ing-alt">or {{ row.alt }}</span
+                ><span v-if="row.optional" class="ing-opt">optional</span
+                ><span v-if="row.weight" class="ing-weight">{{ row.weight }}</span
                 ><span v-if="row.note" class="ing-note">· {{ row.note }}</span></span>
             </li>
           </template>
@@ -1045,6 +1062,23 @@ const imageSrc = computed(() =>
    generated content, so copying a row yields readable text. */
 .ing-note { color: var(--muted); margin-left: 6px; }
 .ing-weight { color: var(--muted); margin-left: 6px; }
+/* The alternative measure — "or 1/2 tsp" beside "1 g garlic powder". Quiet, but
+   NOT the same quiet as a note: this one is an amount you may cook from, so it
+   keeps tabular figures and sits closer to the food than the preparation aside.
+   No separator glyph, because "or" already is one. */
+.ing-alt { color: var(--muted); margin-left: 6px; font-variant-numeric: tabular-nums; }
+/* A property of the ingredient, so it reads as a label rather than more of the
+   name. Deliberately --border and not the accent: the accent belongs to the
+   page's primary action, and "optional" is the least urgent thing on the row. */
+.ing-opt {
+  margin-left: 8px; padding: 1px 6px; border: 1px solid var(--border);
+  border-radius: 999px; font-size: 0.72rem; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--muted); white-space: nowrap;
+}
+/* An em dash where an amount would be. Lighter than a real amount so a column
+   of them doesn't compete with the numbers it sits among, but present — the
+   empty cell it replaces read as a bug. */
+.ing-amt.is-none { color: var(--muted); font-weight: 400; }
 .scale-note { font-size: 0.875rem; margin: 0 0 12px; }
 /* A one-word way back to the authored amounts, mid-cook, without stepping down
    one serving at a time. */
