@@ -22,6 +22,13 @@ beautifulsoup4>=4.15.0
 # MCP server exposed to Home Assistant (runs alongside the app in the same container)
 mcp==1.29.1  # pin: newer mcp dropped mcp.server.fastmcp (breaks the MCP server + CI)
 uvicorn>=0.29.0
+# foodcore (shared food-reference library) is NOT listed here on purpose: it is
+# a path dependency inside this repo, and a relative requirement line would be
+# resolved against the working directory, which differs between Docker, CI and
+# a dev checkout. It is installed explicitly instead — `pip install ./foodcore`
+# in the Dockerfile and in the CI backend job. Imported lazily, so the backend
+# still runs (on its built-in densities) if it is not installed.
+
 # Pluggable AI providers (all optional at runtime — imported lazily).
 anthropic>=0.39.0
 openai>=2.53.0
