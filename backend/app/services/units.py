@@ -308,10 +308,109 @@ def _match_unit(rest: str):
     return None, rest
 
 
+# --- Things buried in the food name -----------------------------------------
+# A real pasted line: "1 gram Garlic Powder or ¹/₂ teaspoon (1 g)". Parsed
+# naively the food name comes out as "Garlic Powder or ¹/₂ teaspoon (1 g)" —
+# which contains a DUPLICATE of its own amount, an ALTERNATIVE way to measure
+# it, and (on the next line of the same recipe) the word "optional". All three
+# then travel as part of the name: into the ingredient column, into shopping,
+# and into the shared Food catalog, where "Italian Seasoning optional (1 g)"
+# becomes a food you can pick from an autocomplete forever.
+#
+# Each is pulled out of the name and returned separately, so the name is clean
+# and nothing is lost. They are DERIVED, never stored: the alternative is a
+# restatement of the amount we already parsed, so a column would be a second
+# truth that scaling has to keep in sync — and scaling it is just arithmetic on
+# the alternative's own quantity, which needs no stored state. The text in
+# `display` stays the single source of truth; scale_line rewrites it whole,
+# alternative included, and DROPS a restatement that has gone stale (keeping
+# "(1 g)" beside a scaled "3 g" would be actively wrong).
+_OPTIONAL_PAREN_RE = re.compile(r"\s*\(\s*optional\s*\)\s*", re.IGNORECASE)
+_OPTIONAL_TAIL_RE = re.compile(r"(?:\s*[,;]\s*|\s+)optional\s*$", re.IGNORECASE)
+_TRAILING_PAREN_RE = re.compile(r"\s*\(([^()]*)\)\s*$")
+_OR_RE = re.compile(r"\s+or\s+", re.IGNORECASE)
+
+
+def _base_amount(qty: float | None, unit: str | None):
+    """(dimension, amount in the dimension's base unit), or (None, None)."""
+    if qty is None or not unit:
+        return None, None
+    if unit in _WEIGHT_G:
+        return "weight", qty * _WEIGHT_G[unit]
+    if unit in _VOLUME_ML:
+        return "volume", qty * _VOLUME_ML[unit]
+    return None, None
+
+
+def _render_measure(qty: float | None, unit: str | None) -> str:
+    if qty is None:
+        return ""
+    return f"{format_qty_for_unit(qty, unit)} " \
+           f"{pluralize_unit(unit, round(qty, 2))}".strip()
+
+
+def _restates(inner: dict, qty: float | None, unit: str | None) -> bool:
+    """Whether a bracketed amount is the SAME measure as the line's own.
+
+    Compared in base units and within a whisker, so "(1 g)" beside "1 gram" and
+    "(8.8 oz)" beside "250 g" are both recognised however they were spelled.
+    Deliberately refuses to compare ACROSS dimensions: "2 cups flour (250 g)" is
+    a genuine weight annotation a cook wants to keep, and converting it would
+    need a density — a guess this has no business making while it decides
+    whether to delete someone's text.
+    """
+    dim_a, base_a = _base_amount(inner["qty"], inner["unit"])
+    dim_b, base_b = _base_amount(qty, unit)
+    if dim_a is None or dim_a != dim_b or not base_b:
+        return False
+    return abs(base_a - base_b) <= 0.02 * base_b
+
+
+def _split_measure_parts(rest: str, qty: float | None, unit: str | None):
+    """``(food, alternative, optional)`` for an ingredient's food text."""
+    # Order matters. "(optional)" comes off first wherever it sits, then the
+    # restated bracket, and only then the bare word "optional" — which is
+    # anchored at the end and so was invisible behind a trailing bracket:
+    # "Italian Seasoning optional (1 g)" kept "optional" in the food name.
+    alt = ""
+    optional = bool(_OPTIONAL_PAREN_RE.search(rest))
+    food = _OPTIONAL_PAREN_RE.sub(" ", rest).strip()
+
+    # A trailing bracket holding NOTHING BUT the line's own amount again. It is
+    # the one piece deleted rather than reported: it duplicates the amount the
+    # first column already shows, and after scaling it would contradict it.
+    m = _TRAILING_PAREN_RE.search(food)
+    if m:
+        inner = parse_line(m.group(1))
+        if inner["qty"] is not None and inner["unit"] and not inner["rest"] \
+                and _restates(inner, qty, unit):
+            food = food[:m.start()].rstrip()
+
+    if _OPTIONAL_TAIL_RE.search(food):
+        optional = True
+        food = _OPTIONAL_TAIL_RE.sub("", food)
+
+    # "X or <amount>" — an alternative WAY TO MEASURE the same thing, which is
+    # what a cook without a scale reads. Accepted only when the text after "or"
+    # is an amount and nothing else: "milk or 240 ml water" names a different
+    # FOOD (a substitution, not a measure) and "salt or pepper to taste" names
+    # no amount at all, and silently restructuring either would be a guess.
+    last = None
+    for found in _OR_RE.finditer(food):
+        last = found
+    if last:
+        after = parse_line(food[last.end():])
+        if after["qty"] is not None and after["unit"] and not after["rest"]:
+            alt = _render_measure(after["qty"], after["unit"])
+            food = food[:last.start()].rstrip()
+
+    return food.strip(" ,;"), alt, optional
+
+
 def parse_line(text: str) -> dict:
     """Parse a free-text ingredient line into
-    {qty, unit(canonical), rest, range_hi, prefix}. Any part may be None/''
-    when it isn't present. Never raises.
+    {qty, unit(canonical), rest, range_hi, prefix, alt, optional}. Any part may
+    be None/''/False when it isn't present. Never raises.
 
     ``range_hi`` is the high end of "2-3 cloves" — the low end remains the
     authoritative structured quantity, so every existing consumer is unaffected;
@@ -321,6 +420,18 @@ def parse_line(text: str) -> dict:
     reach it (an approximator, an "(optional)" bracket). A caller that rewrites
     the line puts it back at the FRONT; appending it to ``rest`` instead moved it
     into the middle of the ingredient ("2 tbsp (optional) chili flakes").
+
+    ``rest`` is the FOOD, with an alternative measure, a bracket that merely
+    restated the amount, and the word "optional" taken out of it and reported in
+    ``alt``/``optional`` instead (see the block above _split_measure_parts).
+    Every consumer wanted the clean name — the density lookup, shopping's
+    grouping, the Food catalog — and the pieces are returned rather than
+    discarded, so scale_line can put them back.
+
+    That cleaning happens ONLY when the line has a leading amount to carry. A
+    line with no parseable quantity comes back exactly as written: it renders as
+    one unstructured string, so there is nowhere for a lifted-out part to go,
+    and stripping a word from text we are showing whole would simply lose it.
     """
     raw = strip_list_marker((text or "").strip())
     approx, body = _split_approximator(raw)
@@ -342,15 +453,28 @@ def parse_line(text: str) -> dict:
                 bracket = body[:lead.end()].strip()
                 inner["prefix"] = " ".join(
                     p for p in (approx, bracket, inner["prefix"]) if p)
+                # The bracket is where "(optional)" ends up on this path, so the
+                # flag has to be read from it too — otherwise the same line
+                # reports differently depending on which end the author put the
+                # word, which is exactly the inconsistency a flag exists to end.
+                inner["optional"] = inner["optional"] or bool(
+                    _OPTIONAL_PAREN_RE.search(bracket))
                 return inner
         # Nothing was lifted out, so nothing needs restoring: return the line
         # with only the bullet gone. Stripping the approximator here would drop
         # "About" with no prefix to carry it back.
-        return {"qty": None, "unit": None, "rest": raw, "range_hi": None, "prefix": ""}
+        # `optional` is still REPORTED for a line like "Salt, optional" — a
+        # caller may want to badge it — but the text is handed back whole.
+        return {"qty": None, "unit": None, "rest": raw, "range_hi": None,
+                "prefix": "", "alt": "",
+                "optional": bool(_OPTIONAL_PAREN_RE.search(raw)
+                                 or _OPTIONAL_TAIL_RE.search(raw))}
     qty = _parse_number(m.group("qty"))
     unit, rest = _match_unit(body[m.start("rest"):].strip())
     hi = _parse_number(m.group("qty_hi")) if m.group("qty_hi") else None
-    return {"qty": qty, "unit": unit, "rest": rest, "range_hi": hi, "prefix": approx}
+    food, alt, optional = _split_measure_parts(rest, qty, unit)
+    return {"qty": qty, "unit": unit, "rest": food, "range_hi": hi,
+            "prefix": approx, "alt": alt, "optional": optional}
 
 
 # Canonical unit -> plural spelling, for rendering a quantity back as text a
@@ -597,8 +721,15 @@ def agree_food_noun(food_text: str, qty: float | None) -> str:
 
 def split_amount(display: str, quantity: float | None = None) -> tuple[str, str, str]:
     """Split an ingredient line into ``(amount, unit, rest)`` for a two-column
-    display. Lossless: the three parts together always account for every word of
-    ``display``, so a reader never sees less than was typed.
+    display.
+
+    Accounts for every word of ``display`` between these three parts and the two
+    that parse_line reports alongside them — the alternative measure and the
+    ``optional`` flag. A caller that renders the three and drops those two DOES
+    lose text, so ingredient_out ships them as ``altText``/``optional`` and the
+    recipe view renders both. Nothing is dropped silently; the restated amount
+    is the one deliberate deletion, because it duplicates the amount already in
+    the first column.
 
     ONE decision drives both halves, deliberately. Deriving the amount from the
     stored ``quantity`` while stripping it from the text independently meant a row
@@ -660,7 +791,27 @@ def scale_line(text: str, factor: float) -> str:
     # one: "1 onion" x1.5 read "1 1/2 onion". With a unit the unit already
     # carries it ("3 cloves garlic"), so the food is left alone.
     rest = parsed["rest"] if parsed["unit"] else agree_food_noun(parsed["rest"], shown)
+    # Put back what parse_line lifted out of the food name, so the rewritten
+    # line still says everything the author's did. The alternative is SCALED,
+    # not copied: "1 g garlic powder or 1/2 tsp" tripled has to read "or 1 1/2
+    # tsp", and a stale alternative beside a scaled amount is worse than none.
+    # A restatement is deliberately NOT put back — "(1 g)" beside "3 g" is not
+    # stale text, it is a contradiction.
+    alt = parsed.get("alt") or ""
+    if alt:
+        ap = parse_line(alt)
+        if ap["qty"] is not None:
+            alt = _render_measure(
+                round_count(ap["qty"] * factor, ap["unit"], parsed["rest"]),
+                ap["unit"])
     tail = " ".join(p for p in (unit_text, rest) if p)
+    if alt:
+        tail = f"{tail} or {alt}"
+    # ...unless the word is already coming back at the front in `prefix`. The
+    # author wrote "(optional) 1 tbsp chili flakes" and must not get it twice.
+    if parsed.get("optional") \
+            and not _OPTIONAL_PAREN_RE.search(parsed.get("prefix") or ""):
+        tail = f"{tail}, optional"
     # Restore whatever sat in front of the quantity — "About" (the amount is
     # still approximate after scaling) or a leading "(optional)" bracket. Goes
     # back at the FRONT, where the user wrote it.

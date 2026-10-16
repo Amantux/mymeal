@@ -215,6 +215,7 @@ def test_a_bracket_with_no_quantity_after_it_is_left_alone():
 
     assert units.parse_line(line) == {
         "qty": None, "unit": None, "rest": line, "range_hi": None, "prefix": "",
+        "alt": "", "optional": False,
     }
 
 
@@ -542,3 +543,122 @@ def test_a_counted_food_noun_agrees_with_the_scaled_count(line, factor, expected
 ])
 def test_food_nouns_outside_the_countable_classes_are_left_alone(line, factor, expected):
     assert units.scale_line(line, factor) == expected
+
+
+# --- Measure alternatives, restatements and "optional" ----------------------
+# All three arrive buried in the food name, which is where they then travel: to
+# the ingredient column, to shopping, and into the shared Food catalog.
+
+@pytest.mark.parametrize("line,food,alt,optional", [
+    # The user's real line: the name contains a duplicate of its own amount AND
+    # an alternative way to measure it.
+    ("1 gram Garlic Powder or ¹/₂ teaspoon (1 g)", "Garlic Powder", "1/2 tsp", False),
+    ("½ g peppercorns or ¼ tsp", "peppercorns", "1/4 tsp", False),
+    # "optional" hiding behind a trailing bracket — it is anchored at the end,
+    # so it was invisible until the bracket came off first.
+    ("1 gram Italian Seasoning optional (1 g)", "Italian Seasoning", "", True),
+    ("1 tsp chili flakes, optional", "chili flakes", "", True),
+    ("(optional) 1 tbsp chili flakes", "chili flakes", "", True),
+    # A restatement in a different unit of the same dimension is still a
+    # restatement: 8.8 oz IS 250 g.
+    ("250 g flour (8.8 oz)", "flour", "", False),
+    # Nothing to lift out.
+    ("240 g egg whites", "egg whites", "", False),
+])
+def test_an_amount_restated_in_the_food_name_is_lifted_out_of_it(
+        line, food, alt, optional):
+    p = units.parse_line(line)
+    assert (p["rest"], p["alt"], p["optional"]) == (food, alt, optional)
+
+
+@pytest.mark.parametrize("line,food", [
+    # A different FOOD after "or" is a substitution, not a way to measure the
+    # same thing. Restructuring it would be a guess about what the cook meant.
+    ("1 cup milk or 240 ml water", "milk or 240 ml water"),
+    ("2 cloves garlic or 1 tsp garlic powder", "garlic or 1 tsp garlic powder"),
+    # No amount after "or" at all.
+    ("1 tsp salt or pepper to taste", "salt or pepper to taste"),
+    # A bracket in a DIFFERENT dimension is a genuine weight annotation a cook
+    # wants to keep — converting it would need a density, which is a guess this
+    # has no business making while deciding to delete someone's text.
+    ("2 cups flour (250 g)", "flour (250 g)"),
+    # ...and one that is not the same amount is not a restatement either.
+    ("250 g flour (500 g bag)", "flour (500 g bag)"),
+])
+def test_text_that_only_looks_like_an_alternative_is_left_in_the_name(line, food):
+    p = units.parse_line(line)
+    assert p["rest"] == food
+    assert p["alt"] == ""
+
+
+def test_a_line_with_no_amount_is_handed_back_whole():
+    """Cleaning needs an amount column to lift things INTO. With no parsed
+    quantity the whole line renders as one string, so stripping a word from it
+    would simply lose that word."""
+    line = "Salt, to taste, optional"
+
+    p = units.parse_line(line)
+
+    assert p["rest"] == line
+    assert p["optional"] is True          # still reported, just not removed
+
+
+def test_scaling_rewrites_the_alternative_and_drops_the_stale_restatement():
+    """A copied alternative beside a tripled amount is worse than none, and
+    "(1 g)" beside "3 g" is not stale text — it is a contradiction."""
+    line = "1 gram Garlic Powder or ¹/₂ teaspoon (1 g)"
+
+    assert units.scale_line(line, 3) == "3 g Garlic Powder or 1 1/2 tsp"
+    assert units.scale_line(line, 0.5) == "0.5 g Garlic Powder or 1/4 tsp"
+
+
+def test_optional_is_not_said_twice_when_it_was_written_in_front():
+    """`prefix` already carries a leading "(optional)" back to the front."""
+    assert units.scale_line("(optional) 1 tbsp chili flakes", 2) \
+        == "(optional) 2 tbsp chili flakes"
+
+
+# --- The acid test ----------------------------------------------------------
+
+REAL_RECIPE = [
+    "240 g egg whites",
+    "40 g parmesan",
+    "1 gram Garlic Powder or ¹/₂ teaspoon (1 g)",
+    "½ g peppercorns or ¼ tsp",
+    "Oil or 1 tsps oil for the pan",
+]
+
+
+@pytest.mark.parametrize("factor,expected", [
+    (0.5, [
+        "120 g egg whites",
+        "20 g parmesan",
+        "0.5 g Garlic Powder or 1/4 tsp",
+        "0.2 g peppercorns or 1/8 tsp",
+        "Oil or 1 tsps oil for the pan",
+    ]),
+    (1.5, [
+        "360 g egg whites",
+        "60 g parmesan",
+        "2 g Garlic Powder or 3/4 tsp",
+        "0.8 g peppercorns or 3/8 tsp",
+        "Oil or 1 tsps oil for the pan",
+    ]),
+    (3, [
+        "720 g egg whites",
+        "120 g parmesan",
+        "3 g Garlic Powder or 1 1/2 tsp",
+        "2 g peppercorns or 3/4 tsp",
+        "Oil or 1 tsps oil for the pan",
+    ]),
+])
+def test_a_real_pasted_recipe_scales_into_lines_a_human_would_write(factor, expected):
+    """The whole point, asserted on the actual lines that exposed every defect
+    in this module: one spelling of the gram, the superscript fraction read
+    rather than dropped, the alternative measure scaled alongside the amount,
+    the restated "(1 g)" gone, and the unmeasured line left exactly alone.
+
+    Every string here is the line as it must appear to a cook. If one of them
+    stops reading like English, this test is the place that says so.
+    """
+    assert [units.scale_line(line, factor) for line in REAL_RECIPE] == expected

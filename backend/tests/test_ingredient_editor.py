@@ -200,3 +200,47 @@ def test_parse_lines_keeps_leading_text_in_the_food(auth_client):
     assert row["quantity"] == 1
     assert row["unit"] == "tbsp"
     assert row["food"] == "(optional) chili flakes"
+
+
+def test_parse_lines_keeps_the_food_field_clean_of_its_own_measurements(auth_client):
+    """`food` is what _find_or_create_food writes into the shared catalog, so
+    anything left in it is a Food row every ingredient autocomplete in the app
+    offers forever. "Garlic Powder or ½ teaspoon (1 g)" was one."""
+    res = auth_client.post("/api/v1/recipes/parse", json={
+        "lines": ["1 gram Garlic Powder or ¹/₂ teaspoon (1 g)",
+                  "1 gram Italian Seasoning optional (1 g)"]})
+    rows = res.get_json()["ingredients"]
+
+    assert [r["food"] for r in rows] == ["Garlic Powder", "Italian Seasoning"]
+    assert [r["unit"] for r in rows] == ["g", "g"]
+
+
+def test_parse_lines_keeps_the_alternative_measure_in_the_note(auth_client):
+    """Unlike a range's high end, an alternative CAN be scaled once the editor
+    bakes the note into `display` — scale_line parses "…, or 1/2 tsp" straight
+    back out. So it belongs in the note, where the round-trip preserves it,
+    rather than in the food field, where it pollutes the catalog."""
+    res = auth_client.post("/api/v1/recipes/parse", json={
+        "lines": ["1 gram Garlic Powder or ¹/₂ teaspoon (1 g)",
+                  "1 gram Italian Seasoning optional (1 g)"]})
+    rows = res.get_json()["ingredients"]
+
+    assert rows[0]["note"] == "or 1/2 tsp"
+    assert rows[1]["note"] == "optional"
+
+
+def test_a_composed_row_still_scales_its_alternative(auth_client):
+    """The round trip the note exists for: saved as "1 g Garlic Powder, or 1/2
+    tsp", the alternative has to come back out and scale with the line."""
+    rid = auth_client.post("/api/v1/recipes", json={
+        "name": "Rub", "servings": 1,
+        "ingredients": [{"display": "1 g Garlic Powder, or 1/2 tsp",
+                         "quantity": 1, "unit": "g", "food": "Garlic Powder"}],
+    }).get_json()["id"]
+
+    ing = auth_client.get(
+        f"/api/v1/recipes/{rid}?servings=3").get_json()["ingredients"][0]
+
+    assert ing["display"] == "3 g Garlic Powder or 1 1/2 tsp"
+    assert ing["restText"] == "Garlic Powder"
+    assert ing["altText"] == "1 1/2 tsp"

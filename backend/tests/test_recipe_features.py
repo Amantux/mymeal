@@ -156,6 +156,26 @@ def test_a_scaled_count_agrees_between_the_text_and_the_amount_column(auth_clien
     assert ing["amountText"] == "5"
 
 
+def test_a_line_with_no_amount_says_so_rather_than_leaving_a_blank_column(auth_client):
+    """`unmeasured` is NOT "amountText is empty". A line whose amount sits
+    behind leading text renders whole inside restText, with an empty amount
+    cell — and the view must not mark that one as having no amount."""
+    rid = auth_client.post("/api/v1/recipes", json={
+        "name": "Pan", "servings": 2,
+        "ingredients": [{"display": "Salt, to taste"},
+                        {"display": "About 2 cups milk"},
+                        {"display": "240 g egg whites"}],
+    }).get_json()["id"]
+
+    got = auth_client.get(f"/api/v1/recipes/{rid}?servings=4").get_json()["ingredients"]
+
+    assert [i["unmeasured"] for i in got] == [True, False, False]
+    assert [i["amountText"] for i in got] == ["", "", "480"]
+    # ...and the unmeasured one is not scaled, while the hedged one is.
+    assert got[0]["display"] == "Salt, to taste"
+    assert got[1]["display"] == "About 4 cups milk"
+
+
 def test_create_recipe_tool_requires_ingredients_and_steps(app):
     gid = _group(app)
     with app.app_context():
