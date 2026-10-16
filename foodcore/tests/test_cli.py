@@ -173,7 +173,53 @@ def test_build_usda_on_a_bad_directory_writes_no_dataset(tmp_path):
           "--dataset-version", "v1"])
 
     assert not out.exists()
-    assert not (tmp_path / "x.sqlite.partial").exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_an_unwritable_out_path_is_a_curated_message_not_a_traceback(
+    tmp_path, capsys
+):
+    """MUTATION GUARD for the CLI's error boundary.
+
+    The parse half was inside a `try` and the STORAGE half was not, so a
+    `--out` under a non-existent directory printed a raw
+    `sqlite3.OperationalError` traceback — in a function whose own comment
+    promises "not a raw traceback". A malformed row escaped the same way,
+    printing the whole row.
+    """
+    export = write_fdc_export(tmp_path / "export")
+
+    code = main(["build-usda", "--fdc-dir", str(export),
+                 "--out", str(tmp_path / "no_such_dir" / "fc.sqlite"),
+                 "--dataset-version", "v1"])
+
+    err = capsys.readouterr().err
+    assert code == 1
+    assert err.startswith("foodcore:")
+    assert "Traceback" not in err
+    assert "sqlite3" not in err.lower()
+
+
+def test_the_build_says_so_when_rows_collapse_on_a_primary_key(tmp_path, capsys):
+    """Two portion rows sharing every key column but `grams`.
+
+    The writer counts what landed, so the operator is told the parsed count and
+    the stored count differ. Printing two numbers and hoping somebody compares
+    them is how 8 missing portion weights go unnoticed.
+    """
+    export = write_fdc_export(tmp_path / "export")
+    (export / "food_portion.csv").write_text(
+        "id,fdc_id,amount,measure_unit_id,portion_description,modifier,gram_weight\n"
+        "dup,1001,1,9,,,125\n"
+        "dup,1001,1,9,,,160\n"
+    )
+
+    code = main(["build-usda", "--fdc-dir", str(export),
+                 "--out", str(tmp_path / "fc.sqlite"),
+                 "--dataset-version", "v1"])
+
+    assert code == 0
+    assert "collapsed on a primary key" in capsys.readouterr().err
 
 
 def test_info_describes_the_bundled_fallback_as_minimal(monkeypatch, capsys):

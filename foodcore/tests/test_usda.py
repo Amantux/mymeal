@@ -187,6 +187,26 @@ def test_portion_selection_is_stable_across_loads():
             assert (pa.source_id if pa else None) == (pb.source_id if pb else None)
 
 
+def test_the_dataset_file_picks_the_same_portion_as_the_parse(export, dataset):
+    """The stability claim has to hold where it now lives.
+
+    `portion()` ties-break on seq_num then source_id, and after the collapse
+    the rows reach it via `ORDER BY measure, size, qualifier, source_id` out of
+    SQLite rather than in CSV order. Comparing the two paths is what proves the
+    round trip did not change which row wins — the test above only ever
+    compared the parser against itself.
+    """
+    for rec in export.foods:
+        stored = dataset.food_record(rec.key)
+        assert stored is not None, rec.key
+        for measure in ("cup", "tbsp", "piece", "slice", "clove"):
+            parsed = rec.portion(measure)
+            from_file = stored.portion(measure)
+            assert (parsed.source_id if parsed else None) == (
+                from_file.source_id if from_file else None
+            ), f"{rec.description} / {measure}"
+
+
 def test_nutrients_are_loaded_but_not_interpreted(export):
     """Nutrition arithmetic belongs to a sibling module; the adapter only
     carries the per-100 g rows through."""
@@ -211,6 +231,38 @@ def test_both_published_spellings_of_total_sugars_map_to_one_key():
     # Mapping only one silently drops sugar for half the dataset.
     assert NUTRIENT_NAMES["sugars, total"] == "sugars"
     assert NUTRIENT_NAMES["sugars, total including nlea"] == "sugars"
+
+
+def test_two_spellings_disagreeing_is_reported_not_silently_last_wins(tmp_path):
+    """MUTATION GUARD for the two-spellings map added alongside it.
+
+    Mapping two upstream names onto one foodcore key means a food publishing
+    BOTH rows gets whichever appeared later in `food_nutrient.csv` — a silent
+    choice between two different numbers. This module's stated rule is that
+    nothing is dropped silently, so the first is kept (file order is stable, so
+    the choice is reproducible) and the clash is counted like any other
+    unusable row.
+    """
+    tmp_path.joinpath("food.csv").write_text(
+        'fdc_id,data_type,description\n1,sr_legacy_food,"Jam, strawberry"\n'
+    )
+    tmp_path.joinpath("nutrient.csv").write_text(
+        "id,name,unit_name\n"
+        "2000,\"Sugars, Total\",G\n"
+        "1063,\"Sugars, total including NLEA\",G\n"
+    )
+    tmp_path.joinpath("food_nutrient.csv").write_text(
+        "fdc_id,nutrient_id,amount\n"
+        "1,2000,48.0\n"
+        "1,1063,51.5\n"
+    )
+
+    export = load_fdc_csv(str(tmp_path), version="v1", retrieved="2026-01-01")
+
+    assert export.food("1").nutrients["sugars"] == (48.0, "g")   # first, not last
+    clashes = [k for k in export.stats.unmapped_nutrients if "duplicate" in k]
+    assert clashes, export.stats.unmapped_nutrients
+    assert "sugars" in export.stats.report()
 
 
 def test_energy_is_stored_in_kcal_not_upstreams_casing(export):

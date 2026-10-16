@@ -415,9 +415,12 @@ def load_fdc_csv(directory: str, *, version: str | None = None,
     for r in _read(directory, "nutrient.csv", stats):
         nid = (r.get("id") or "").strip()
         name = (r.get("name") or "").strip()
+        # Every nutrient's published name, mapped or not: an unmapped row is
+        # reported by name, and a MAPPED row needs its name available too so a
+        # duplicate-mapping clash can say which spelling it came from.
+        unmapped_names[nid] = name
         key = NUTRIENT_NAMES.get(name.lower())
         if key is None or (nutrient_keys is not None and key not in nutrient_keys):
-            unmapped_names[nid] = name
             continue
         unit = (r.get("unit_name") or "").strip().lower() or "g"
         # FDC writes energy in KCAL (and sometimes kJ rows we do not map);
@@ -443,7 +446,20 @@ def load_fdc_csv(directory: str, *, version: str | None = None,
             # return Unresolved, which is the honest answer.
             continue
         key, unit = mapped
-        nutrients.setdefault(fdc_id, {})[key] = (amount, unit)
+        bucket = nutrients.setdefault(fdc_id, {})
+        if key in bucket and bucket[key] != (amount, unit):
+            # Two upstream rows map to one foodcore key with DIFFERENT values —
+            # "Sugars, Total" and "Sugars, total including NLEA" are the real
+            # case. Last-wins would be silent, so the first is kept (file order
+            # is stable, so the choice is reproducible) and the clash is
+            # counted like any other thing we could not use.
+            label = unmapped_names.get(nid) or key
+            clash = f"{label} (duplicate mapping to {key!r})"
+            stats.unmapped_nutrients[clash] = (
+                stats.unmapped_nutrients.get(clash, 0) + 1
+            )
+            continue
+        bucket[key] = (amount, unit)
 
     foods = tuple(
         FoodRecord(
