@@ -523,7 +523,15 @@ def _apply_view(out: dict, recipe: Recipe, args):
         # consumer that reads `quantity` (shopping list, MCP, HA, the SPA) used
         # the un-scaled one.
         if factor != 1.0 and isinstance(ing.get("quantity"), (int, float)):
-            ing["quantity"] = round(ing["quantity"] * factor, 4)
+            # Through the SAME count-rounding policy scale_line just applied to
+            # the text, keyed off the original line's unit and food. Without it
+            # the row carried 4.5 next to a text reading "5 large eggs", and
+            # split_amount below prefers the structured quantity — so the amount
+            # column would have re-introduced the half egg the text had just
+            # rounded away.
+            parsed = units.parse_line(original)
+            ing["quantity"] = units.round_count(
+                round(ing["quantity"] * factor, 4), parsed["unit"], parsed["rest"])
         # Re-split the REWRITTEN line, from the same function the serializer used,
         # so the amount column can never disagree with the text beside it — a raw
         # 0.6667 must never surface, and the weight view's "(120 g)" has to travel

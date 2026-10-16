@@ -137,6 +137,25 @@ def test_recipe_scaling_and_weight_view(auth_client):
     assert dishes[1] == "2 eggs"          # no unit/density → unchanged
 
 
+def test_a_scaled_count_agrees_between_the_text_and_the_amount_column(auth_client):
+    """The response carries three views of one amount — the rewritten line, the
+    structured quantity every machine consumer reads, and the display-ready
+    amount column. Rounding "3 eggs" x1.5 to 5 in the text while the quantity
+    stayed 4.5 would put the half egg straight back on the page, because
+    split_amount prefers the structured number."""
+    rid = auth_client.post("/api/v1/recipes", json={
+        "name": "Omelette", "servings": 2,
+        "ingredients": [{"display": "3 large eggs"}],
+    }).get_json()["id"]
+
+    ing = auth_client.get(
+        f"/api/v1/recipes/{rid}?servings=3").get_json()["ingredients"][0]
+
+    assert ing["display"] == "5 large eggs"
+    assert ing["quantity"] == 5
+    assert ing["amountText"] == "5"
+
+
 def test_create_recipe_tool_requires_ingredients_and_steps(app):
     gid = _group(app)
     with app.app_context():
