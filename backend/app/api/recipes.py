@@ -14,7 +14,7 @@ from ..extensions import db
 from ..services import videos
 from ..models import RecipeVideo, Recipe, RecipeIngredient, RecipeStep, Category, Tag, Unit, Food
 from ..auth import login_required, current_group
-from ..schemas.serializers import recipe_video_out, recipe_out, recipe_summary
+from ..schemas.serializers import recipe_media_out, recipe_out, recipe_summary
 from ..services import recipe_resolve
 from ..utils import unique_slug
 
@@ -580,7 +580,7 @@ def delete_recipe(recipe_id):
 
 # --- Image ---------------------------------------------------------------
 def _image_path(filename: str) -> str:
-    # safe_join, matching _video_path: the stored name is a server-generated
+    # safe_join, matching _media_path: the stored name is a server-generated
     # UUID+ext today so traversal isn't currently reachable, but the repo rule
     # is safe_join even for an existence check — one hardened path, not two
     # that differ, so a future caller can't reintroduce the hole.
@@ -740,116 +740,160 @@ def unshare_recipe(recipe_id):
     return "", 204
 
 
-# --- How-to videos -------------------------------------------------------
+# --- Media (photos and how-to videos) ------------------------------------
 #
-# A video is EITHER a link (YouTube/Vimeo/anything http(s)) or an uploaded file
-# under <DATA_DIR>/videos. Links cost nothing and cover most cases; uploads are
-# for the clip you filmed yourself.
+# One slot per recipe holding both. An item is EITHER a link (YouTube/Vimeo/
+# anything http(s)) or an uploaded file under <DATA_DIR>/videos. Links cost
+# nothing and cover most clips; uploads are for the photo you took and the
+# video you filmed. Images are uploads only — see services/videos.py rule 4.
+#
+# `/media` is the name; the former `/videos` paths are kept as additional rules
+# on the same view functions, so a client written against them still works and
+# there is no second copy of the logic to drift.
+#
+# Distinct from the single hero `image` column above, which is the recipe's
+# thumbnail in cards and lists. One identity picture, one growable gallery.
 
-def _video_path(filename: str) -> str:
-    # secure_filename at write time and a stored name we generated, so this can
-    # never escape the directory. safe_join belts-and-braces it anyway.
+def _media_path(filename: str) -> str:
+    # The stored name is one we generated (uuid4 + an extension from our own
+    # allowlist), so this can never escape the directory. safe_join
+    # belts-and-braces it anyway — the repo rule is safe_join even for an
+    # existence check, so a future caller cannot reintroduce the hole.
     path = safe_join(current_app.config["videos_dir"](), filename)
     if path is None:
         abort(404)
     return path
 
 
-def _get_video(recipe: Recipe, video_id: str) -> RecipeVideo:
-    video = db.session.get(RecipeVideo, video_id)
-    # Checked against the RECIPE we already tenant-scoped, so a video id from
+def _get_media(recipe: Recipe, media_id: str) -> RecipeVideo:
+    item = db.session.get(RecipeVideo, media_id)
+    # Checked against the RECIPE we already tenant-scoped, so a media id from
     # another household 404s rather than being served.
-    if not video or video.recipe_id != recipe.id:
+    if not item or item.recipe_id != recipe.id:
         abort(404)
-    return video
+    return item
 
 
+@bp.get("/recipes/<recipe_id>/media")
 @bp.get("/recipes/<recipe_id>/videos")
 @login_required
-def list_videos(recipe_id):
+def list_media(recipe_id):
     recipe = _get(recipe_id)
-    return jsonify([recipe_video_out(v) for v in recipe.videos])
+    return jsonify([recipe_media_out(v) for v in recipe.videos])
 
 
+@bp.post("/recipes/<recipe_id>/media")
 @bp.post("/recipes/<recipe_id>/videos")
 @login_required
-def add_video(recipe_id):
-    """Add a link (JSON: {url, title}) or an upload (multipart: file, title)."""
+def add_media(recipe_id):
+    """Add a link (JSON: {url, title}) or an upload (multipart: file, title).
+
+    `kind` may be given explicitly, but for an upload it is normally left out
+    and read off the file's extension instead: that is the one case where the
+    type is reliably derivable, because the extension has to be on one of our
+    allowlists to be accepted at all. It lets the UI offer a single
+    "add a photo or video" picker rather than asking the user to classify
+    their own file.
+    """
     recipe = _get(recipe_id)
     upload = request.files.get("file")
-    title = (request.form.get("title") if upload else
-             (request.get_json(silent=True) or {}).get("title")) or ""
+    body = request.get_json(silent=True) or {}
+    title = (request.form.get("title") if upload else body.get("title")) or ""
+    raw_kind = (request.form.get("kind") if upload else body.get("kind")) or ""
 
-    video = RecipeVideo(recipe_id=recipe.id, group_id=recipe.group_id,
-                        title=str(title)[:videos.MAX_TITLE_LENGTH].strip(),
-                        position=len(recipe.videos))
+    item = RecipeVideo(recipe_id=recipe.id, group_id=recipe.group_id,
+                       title=str(title)[:videos.MAX_TITLE_LENGTH].strip(),
+                       position=len(recipe.videos))
     if upload:
-        mime = videos.video_mime(upload.filename or "")
-        if not mime:
-            return jsonify({"error": "that file is not a video we can play "
-                                     f"({', '.join(sorted(videos.VIDEO_MIME_BY_EXT))})"}), 422
-        ext = os.path.splitext(secure_filename(upload.filename))[1].lower()
-        video.filename = f"{uuid.uuid4().hex}{ext}"
-        if not video.title:
-            video.title = os.path.basename(upload.filename or "")[:videos.MAX_TITLE_LENGTH]
+        name = upload.filename or ""
+        if raw_kind:
+            try:
+                item.kind = videos.normalize_kind(raw_kind)
+            except videos.VideoError as exc:
+                return jsonify({"error": str(exc)}), 422
+            ext = videos.upload_ext(item.kind, name)
+            if not ext:
+                return jsonify({"error": f"that file is not a {item.kind} we can show "
+                                         f"({videos.accepted_extensions(item.kind)})"}), 422
+        else:
+            # Derive: try each kind's allowlist. Unknown to both is a 422 that
+            # names everything accepted, so the user is not left guessing.
+            for kind in videos.KINDS:
+                ext = videos.upload_ext(kind, name)
+                if ext:
+                    item.kind = kind
+                    break
+            else:
+                accepted = ", ".join(videos.accepted_extensions(k) for k in videos.KINDS)
+                return jsonify({"error": "that file is not a photo or video we can "
+                                         f"show ({accepted})"}), 422
+        # The stored name is ours end to end: a uuid plus an extension taken
+        # from the allowlist table, never the client's filename.
+        item.filename = f"{uuid.uuid4().hex}{ext}"
+        if not item.title:
+            item.title = secure_filename(os.path.basename(name))[:videos.MAX_TITLE_LENGTH]
     else:
-        raw = (request.get_json(silent=True) or {}).get("url", "")
         try:
-            video.url = videos.normalize_url(raw)
+            item.kind = videos.normalize_kind(raw_kind)
+            item.url = videos.normalize_url(body.get("url", ""))
         except videos.VideoError as exc:
             return jsonify({"error": str(exc)}), 422
-        if not video.title:
-            video.title = "Video"
+        if not item.title:
+            item.title = "Video"
 
     try:
-        videos.validate(video)
+        videos.validate(item)
     except videos.VideoError as exc:
         return jsonify({"error": str(exc)}), 422
 
     # Write the file only once the row is known-good, so a rejected request
     # never leaves an orphan on disk.
     if upload:
-        upload.save(_video_path(video.filename))
-    db.session.add(video)
+        upload.save(_media_path(item.filename))
+    db.session.add(item)
     db.session.commit()
-    return jsonify(recipe_video_out(video)), 201
+    return jsonify(recipe_media_out(item)), 201
 
 
-@bp.delete("/recipes/<recipe_id>/videos/<video_id>")
+@bp.delete("/recipes/<recipe_id>/media/<media_id>")
+@bp.delete("/recipes/<recipe_id>/videos/<media_id>")
 @login_required
-def delete_video(recipe_id, video_id):
+def delete_media(recipe_id, media_id):
     recipe = _get(recipe_id)
-    video = _get_video(recipe, video_id)
-    if video.filename:
+    item = _get_media(recipe, media_id)
+    if item.filename:
         try:
-            os.remove(_video_path(video.filename))
+            os.remove(_media_path(item.filename))
         except OSError:
             # Best-effort, matching the image path: the row is the source of
             # truth and a missing file must not block the delete.
             pass
-    db.session.delete(video)
+    db.session.delete(item)
     db.session.commit()
     return "", 204
 
 
-@bp.get("/recipes/<recipe_id>/videos/<video_id>/stream")
+@bp.get("/recipes/<recipe_id>/media/<media_id>/file")
+@bp.get("/recipes/<recipe_id>/videos/<media_id>/stream")
 @login_required
-def stream_video(recipe_id, video_id):
-    """Serve an uploaded video for inline playback.
+def get_media_file(recipe_id, media_id):
+    """Serve an uploaded photo or video for inline display.
 
-    conditional=True (send_file's default) answers Range requests, which is what
-    lets the player seek. The Content-Type comes from our own extension
-    allowlist, never from the uploaded filename — that is what stops a file
-    called "clip.mp4" full of HTML executing in the app's origin.
+    conditional=True (send_file's default) answers Range requests, which is
+    what lets a video player seek. The Content-Type comes from our own
+    extension allowlist keyed on the row's kind, never from the uploaded
+    filename — that is what stops a file called "clip.mp4" full of HTML
+    executing in the app's origin, and what stops an image row ever being
+    served as a video (or the reverse).
     """
     recipe = _get(recipe_id)
-    video = _get_video(recipe, video_id)
-    if not video.filename:
-        abort(404)  # a link has nothing to stream
-    mime = videos.video_mime(video.filename)
+    item = _get_media(recipe, media_id)
+    if not item.filename:
+        abort(404)  # a link has nothing to serve
+    mime = videos.media_mime(item.kind, item.filename)
     if not mime:
         abort(404)
-    path = _video_path(video.filename)
+    path = _media_path(item.filename)
     if not os.path.isfile(path):
         abort(404)
     return send_file(path, mimetype=mime, conditional=True)
