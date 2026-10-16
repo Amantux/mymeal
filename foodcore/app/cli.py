@@ -20,7 +20,6 @@ import datetime
 import sys
 
 from .datasets import DatasetError, build_dataset, load_dataset
-from .registry import SourceRecord
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,11 +56,15 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _build_usda(args) -> int:
-    from .usda_import import PROVIDER, UsdaImportError, collect
+    # Imported here, not at module scope: the adapter is only needed by a build,
+    # and `foodcore.cli info` must work on a host that never imports a parser.
+    from .sources.usda import UsdaImportError, load_fdc_csv
 
     try:
-        foods, portions, nutrients, stats = collect(
+        export = load_fdc_csv(
             args.fdc_dir,
+            version=args.dataset_version,
+            retrieved=args.retrieved,
             data_types=tuple(args.data_type) or None,
             limit=args.limit,
         )
@@ -71,27 +74,17 @@ def _build_usda(args) -> int:
         print(f"foodcore: {exc}", file=sys.stderr)
         return 1
 
-    record = SourceRecord(
-        provider=PROVIDER,
-        dataset_version=args.dataset_version,
-        retrieved_at=args.retrieved,
-        # USDA FoodData Central is public domain. Hardcoded rather than taken
-        # from a flag: letting an operator relabel the licence would let a
-        # share-alike dataset be laundered into a CC0 claim.
-        license="CC0-1.0",
-        record_count=len(foods),
-        notes=stats.report(),
-    )
+    foods, portions, nutrients = export.rows()
     counts = build_dataset(
         args.out,
-        sources=[record],
+        sources=[export.source_record()],
         foods=foods,
         portions=portions,
         nutrients=nutrients,
         builder="foodcore.cli build-usda",
     )
     print(f"wrote {args.out}")
-    print(stats.report())
+    print(export.stats.report())
     print("rows: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
     return 0
 

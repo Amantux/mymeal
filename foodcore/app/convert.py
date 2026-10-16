@@ -28,15 +28,14 @@ import re
 from dataclasses import dataclass
 from fractions import Fraction
 
+from .datasets import Dataset, FoodRecord
 from .provenance import Provenance, Resolved, Unresolved
-from .sources.usda import (
+from .units import (
     COUNT_UNITS,
     MASS_G,
     PACKAGE_UNITS,
     SIZE_WORDS,
     VOLUME_ML,
-    Dataset,
-    FoodRecord,
     normalise_unit,
     unit_kind,
 )
@@ -125,10 +124,21 @@ def _prov(source: str, source_id: str, retrieved: str, method: str,
     )
 
 
-def _dataset_prov(dataset: Dataset, source_id: str, method: str,
+def _dataset_prov(dataset: Dataset, food: FoodRecord, row_id: str, method: str,
                   confidence: float) -> Provenance:
-    return _prov(dataset.source, source_id, dataset.retrieved, method,
-                 dataset.version, confidence, dataset.license)
+    """Cite the snapshot the portion row actually came from.
+
+    Delegated to the dataset rather than assembled here: the provider, the
+    retrieval date and the LICENCE must agree with the `source` row in the file,
+    and an engine that assembles its own provenance is how CC0 ends up stamped
+    on ODbL data. `version` is this module's rule version — the dataset's own
+    edition travels in `SourceRecord.dataset_version`, which is where a reader
+    looks it up.
+    """
+    return dataset.provenance_for(
+        food.provider, f"{food.source_id}#{row_id}", method, confidence,
+        CONVERT_VERSION,
+    )
 
 
 def _physical_prov(from_unit: str, to_unit: str) -> Provenance:
@@ -156,12 +166,12 @@ def _physical(amount: float, from_unit: str, to_unit: str) -> Resolved | None:
 def _grams_per_ml(food: FoodRecord) -> tuple[float, str, float] | None:
     """Density from any volume portion: (g_per_ml, portion_id, confidence)."""
     p = food.volume_portion()
-    if p is None or p.unit is None:
+    if p is None or p.measure is None:
         return None
-    ml = VOLUME_ML[p.unit] * p.amount
+    ml = VOLUME_ML[p.measure] * p.amount
     if ml <= 0:
         return None
-    return (p.gram_weight / ml, p.portion_id, CONF_PORTION_DERIVED)
+    return (p.gram_weight / ml, p.source_id, CONF_PORTION_DERIVED)
 
 
 def _volume_to_grams(amount: float, unit: str, food: FoodRecord,
@@ -169,7 +179,7 @@ def _volume_to_grams(amount: float, unit: str, food: FoodRecord,
     direct = food.portion(unit)
     if direct is not None:
         return (amount * direct.grams_per_unit,
-                _dataset_prov(dataset, f"{food.fdc_id}#{direct.portion_id}",
+                _dataset_prov(dataset, food, direct.source_id,
                               "calculated", CONF_PORTION_DIRECT))
     derived = _grams_per_ml(food)
     if derived is None:
@@ -184,12 +194,12 @@ def _volume_to_grams(amount: float, unit: str, food: FoodRecord,
             )
         return Unresolved(
             "no_portion_record",
-            f"{dataset.source} {food.fdc_id} ({food.description}) publishes no "
+            f"{food.provider} {food.source_id} ({food.description}) publishes no "
             f"volume portion, so {unit} cannot be weighed",
         )
     g_per_ml, pid, conf = derived
     return (amount * VOLUME_ML[unit] * g_per_ml,
-            _dataset_prov(dataset, f"{food.fdc_id}#{pid}", "calculated", conf))
+            _dataset_prov(dataset, food, pid, "calculated", conf))
 
 
 # --- (d) counts and size words ----------------------------------------------
@@ -206,13 +216,13 @@ def _count_to_grams(amount: float, unit: str, size: str | None, food: FoodRecord
                 + (f"; published sizes: {', '.join(available)}" if available else ""),
             )
         return (amount * p.grams_per_unit,
-                _dataset_prov(dataset, f"{food.fdc_id}#{p.portion_id}",
+                _dataset_prov(dataset, food, p.source_id,
                               "estimated", CONF_COUNT_SIZED))
 
     p = food.portion(unit)
     if p is not None:
         return (amount * p.grams_per_unit,
-                _dataset_prov(dataset, f"{food.fdc_id}#{p.portion_id}",
+                _dataset_prov(dataset, food, p.source_id,
                               "estimated", CONF_COUNT_SIZED))
 
     # No size asked for and no sizeless row: the dataset only knows small /
@@ -222,7 +232,7 @@ def _count_to_grams(amount: float, unit: str, size: str | None, food: FoodRecord
     medium = food.portion(unit, "medium")
     if medium is not None:
         return (amount * medium.grams_per_unit,
-                _dataset_prov(dataset, f"{food.fdc_id}#{medium.portion_id}?size=medium",
+                _dataset_prov(dataset, food, f"{medium.source_id}?size=medium",
                               "estimated", CONF_COUNT_UNSIZED))
     sizes = sorted({x.size for x in food.sized_portions(unit) if x.size})
     if sizes:
@@ -233,7 +243,7 @@ def _count_to_grams(amount: float, unit: str, size: str | None, food: FoodRecord
         )
     return Unresolved(
         "no_portion_record",
-        f"{dataset.source} {food.fdc_id} ({food.description}) publishes no "
+        f"{food.provider} {food.source_id} ({food.description}) publishes no "
         f"'{unit}' portion",
     )
 
@@ -252,7 +262,7 @@ def _grams_to_count(grams: float, unit: str, size: str | None, food: FoodRecord,
             f"cannot be estimated from a mass",
         )
     return (grams / p.grams_per_unit,
-            _dataset_prov(dataset, f"{food.fdc_id}#{p.portion_id}", "estimated",
+            _dataset_prov(dataset, food, p.source_id, "estimated",
                           CONF_MASS_TO_COUNT))
 
 
@@ -327,11 +337,11 @@ def convert(amount: float, unit: str, to_unit: str, *,
         if derived is None:
             return Unresolved(
                 "no_portion_record",
-                f"{dataset.source} {food.fdc_id} ({food.description}) publishes no "
+                f"{food.provider} {food.source_id} ({food.description}) publishes no "
                 f"volume portion, so a mass cannot become {dst}",
             )
         g_per_ml, pid, conf = derived
-        prov = _dataset_prov(dataset, f"{food.fdc_id}#{pid}", "calculated",
+        prov = _dataset_prov(dataset, food, pid, "calculated",
                              min(gprov.confidence, conf))
         return Resolved(grams / g_per_ml / VOLUME_ML[dst], dst, prov)
     if dst_kind == "count":
@@ -376,10 +386,11 @@ def _convert_package(amount: float, src: str, dst: str, src_kind: str | None,
         )
 
     pid = package.source_id or package.label or "caller-declared"
-    retrieved = package.retrieved or (dataset.retrieved if dataset else "")
-    dprov = _prov(package.source or PACKAGE_DEFAULT_SOURCE, pid, retrieved,
-                  "declared", CONVERT_VERSION, CONF_PACKAGE_DECLARED,
-                  _license_for(package.source or PACKAGE_DEFAULT_SOURCE))
+    declared_by = package.source or PACKAGE_DEFAULT_SOURCE
+    retrieved = package.retrieved or (
+        dataset.retrieved_for(declared_by) if dataset else "")
+    dprov = _prov(declared_by, pid, retrieved, "declared", CONVERT_VERSION,
+                  CONF_PACKAGE_DECLARED, _license_for(declared_by))
 
     if src_kind == "package" and dst_kind == "package":
         if src != dst:
@@ -425,9 +436,10 @@ def _convert_package(amount: float, src: str, dst: str, src_kind: str | None,
                 )
             g_per_ml, _pid, conf = derived
             return Resolved(grams / g_per_ml / VOLUME_ML[dst], dst,
-                            _prov(package.source or PACKAGE_DEFAULT_SOURCE, pid, retrieved, "calculated",
-                                  package.label or "", min(CONF_PACKAGE_DECLARED, conf),
-                                  _license_for(package.source or PACKAGE_DEFAULT_SOURCE)))
+                            _prov(declared_by, pid, retrieved, "calculated",
+                                  package.label or "",
+                                  min(CONF_PACKAGE_DECLARED, conf),
+                                  _license_for(declared_by)))
         return Unresolved(
             "no_package_size",
             f"converting a package into '{dst}' is not defined; {PACKAGE_REFUSAL_NOTE}",
@@ -565,7 +577,7 @@ def convert_text(text: str, to_unit: str, *, dataset: Dataset,
         if not match.candidates:
             return Unresolved(
                 "unknown_food",
-                f"no {dataset.source} food matches {parsed.food_text!r}",
+                f"no food in the reference dataset matches {parsed.food_text!r}",
             )
         if not match.confident:
             return Unresolved(
