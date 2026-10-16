@@ -128,7 +128,7 @@ These are the seams to build on, all present today:
 | Seam | Where | Reuse for |
 |---|---|---|
 | Provider registry + ABC | `services/ai/registry.py` | A **food-data provider registry** — `usda`, `off`, `local`, each a class + one line, same shape |
-| `Field` settings registry | `settings.py` | `foodcore_url`, `foodcore_token`, dataset refresh cadence — with generated docs + add-on schema for free |
+| `Field` settings registry | `settings.py` | `foodcore_dataset` path + refresh cadence — with generated docs + add-on schema for free. No URL or token: there is no service to reach |
 | Sibling client w/ graceful absence | `services/edibl.py` | The same degrade-when-absent discipline applies to a MISSING DATASET: `import foodcore` always works; no data means `Unresolved`, never a crash |
 | MCP tool catalog | `mcp_server.py` | `convert_ingredient_quantity`, `calculate_recipe_nutrition` as read-only tools |
 | Host data dir | `settings.py` DATA_DIR | Each app points foodcore at its own compact dataset file — no shared DB |
