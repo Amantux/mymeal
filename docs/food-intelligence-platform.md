@@ -32,14 +32,17 @@ that myMeal and Edibl both need — for three reasons already true in the code:
    not by myMeal. myMeal keeps the matching logic (which is about recipes, its
    own domain) but no longer stores a pantry."* The spec's FR-12 (pantry) and
    FR-11 (barcodes) are **Edibl's**, not myMeal's — and already partly built.
-3. **There is a precedent for a shared service add-on**: `shared_postgres`
-   provisions a database per app over Supervisor discovery. A `foodcore` add-on
-   is the same shape — one dataset, many consumers, discovered not configured.
+3. **Reference data has no tenants.** What a gram of flour weighs is identical
+   in every household, so it does not belong in either app's group-scoped
+   `Food`/`FoodConcept` tables. It needs a tier of its own, shared by both.
 
-So the deliverable is **`foodcore`**: a read-mostly reference service. The apps
-stay the system of record for *their user's* data (recipes, lots); foodcore owns
-*reference* data (what a gram of flour is), which is identical for every
-household on earth and therefore has no business being group-scoped.
+So the deliverable is **`foodcore`**: a read-mostly reference *library*. The apps
+stay the system of record for *their user's* data (recipes, lots) and own the
+dataset file on disk; foodcore owns the logic and the reference values.
+
+(An earlier draft proposed this as an add-on modelled on `shared_postgres`.
+Rejected by the owner: a second container and an install step buy nothing when
+the consumers are two Python apps that can simply import the code.)
 
 ## 2. Spec vs. what exists today
 
@@ -114,8 +117,9 @@ apps run on a NUC in someone's cupboard next to Home Assistant. Proportionality:
   gets the same user outcome.
 - **pgvector / semantic search** — defer until deterministic alias matching
   demonstrably fails. It already works well (`food_resolve`).
-- **Microservice split** — the spec's own §9 says start as modules. Agreed:
-  foodcore is one Flask app, same stack as its siblings.
+- **Microservice split, and any service at all** — the spec's own §9 says start
+  as modules. We go further: foodcore is a *library*, not a process. No HTTP hop
+  between an app and its own unit conversion.
 
 ## 5. Extension capacity that already exists
 
