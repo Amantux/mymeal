@@ -430,6 +430,24 @@ def match_key(raw: str) -> str:
     return food_key(" ".join(words)) if words else ""
 
 
+def classification(raw: str) -> str:
+    """The lexicon's classification for a food name — "vegetable", "egg",
+    "meat", "spice" — or "" when the food is unrecognised.
+
+    SEED_FOODS already carries this for the allergen/material guard, so a caller
+    that needs to know what KIND of thing an ingredient is reads it from here
+    rather than keeping a second list that would drift from this one.
+    ``units`` uses it to decide how a scaled count may be rounded: you can halve
+    an onion and you cannot halve an egg, and the catalog is the only place that
+    already knows the difference.
+
+    Goes through ``match_key``, so preparation and grade come off first and
+    "3 large eggs" classifies the same as "egg".
+    """
+    entry = SEED_FOODS.get(match_key(raw))
+    return entry[0] if entry else ""
+
+
 def food_key(raw: str) -> str:
     """The canonical name alone — the cache/consolidation key.
 

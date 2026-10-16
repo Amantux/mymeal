@@ -8,6 +8,7 @@ flour"), converting under the covers. Pure functions, no DB, never raises.
 """
 from __future__ import annotations
 
+import math
 import re
 from fractions import Fraction
 
@@ -447,6 +448,153 @@ def format_qty_for_unit(value: float, unit: str | None) -> str:
     return f"{round(value, places):g}"
 
 
+# --- Rounding a scaled COUNT -------------------------------------------------
+# "3 large eggs" x1.5 came out as "4 1/2 large eggs". You cannot buy half an
+# egg, and nobody has ever acted on that line.
+#
+# The policy: a count is rounded to the coarsest increment the ingredient can
+# actually be USED in, then nudged in whichever direction fails safe. BOTH
+# halves are needed, and that is why one global rule cannot work — rounding up
+# is right for aromatics and wrong for expensive protein; a half is legitimate
+# for an onion and meaningless for an egg. Four tiers:
+#
+#   WHOLE_UP    increment 1, ties UP — indivisible things bought as units: eggs,
+#       cans, jars, packets, slices, bunches. A half has no meaning, and
+#       under-buying is the worse error (you cannot use the half you don't
+#       have). "1 can" x0.5 -> "1 can" is correct: you buy the whole can.
+#   HALVES      increment 0.5, ties up — produce a cook cuts: onion, pepper,
+#       lemon, apple, courgette, a stick of butter. "1 1/2 onions" is a line
+#       people write and act on, so forcing a whole number here would be the
+#       opposite error.
+#   UP          increment 1, always ceil — cheap, forgiving, hard to overdo:
+#       garlic cloves, pinches, sprigs, herbs, spices. More garlic has never
+#       ruined a dish; under-seasoning routinely does.
+#   WHOLE_DOWN  increment 1, ties DOWN — expensive protein counted by the piece:
+#       chicken breasts, salmon fillets. These dominate the bill, so thrift is
+#       the safe direction: a cook who wants more adds one, whereas a surplus
+#       fillet is waste the app chose on their behalf.
+#
+# Nothing ever rounds to zero. A line that asked for an ingredient still asks
+# for it at x0.25, so the result floors at one increment.
+#
+# The tier comes from the FOOD CATALOG — food_resolve's SEED_FOODS already
+# classifies egg / vegetable / fruit / meat / fish / herb / spice for the
+# allergen guard — rather than from a second hardcoded list here that would
+# drift from it. An unrecognised food falls to WHOLE_UP, which is the safe
+# default for a bare count: "0.37 tortillas" is never an answer.
+_WHOLE_UP, _WHOLE_DOWN, _HALVES, _UP = "whole_up", "whole_down", "halves", "up"
+
+# A count UNIT beats the food, because the unit names the discrete thing being
+# counted: "2 cloves garlic" counts cloves, not garlic bulbs.
+_COUNT_UNIT_TIERS = {
+    "can": _WHOLE_UP, "tin": _WHOLE_UP, "jar": _WHOLE_UP, "bottle": _WHOLE_UP,
+    "packet": _WHOLE_UP, "package": _WHOLE_UP, "slice": _WHOLE_UP,
+    "bunch": _WHOLE_UP, "head": _WHOLE_UP,
+    "stick": _HALVES,
+    "clove": _UP, "pinch": _UP, "dash": _UP, "handful": _UP, "sprig": _UP,
+}
+_FOOD_CLASS_TIERS = {
+    "egg": _WHOLE_UP,
+    "vegetable": _HALVES, "fruit": _HALVES,
+    "herb": _UP, "spice": _UP, "seasoning": _UP,
+    "meat": _WHOLE_DOWN, "fish": _WHOLE_DOWN, "shellfish": _WHOLE_DOWN,
+    "protein": _WHOLE_DOWN,
+}
+
+# Guards the float ties. 4.5 is exact in binary, but 0.1*45 is not, and a tie
+# that lands a hair below its boundary rounds the wrong way — which is the one
+# thing a reader would notice ("x1.5 of 3 gives 4, x1.5 of 3.0 gives 5").
+_TIE = 1e-9
+
+
+def _count_tier(unit: str | None, food_text: str) -> str | None:
+    """Which rounding tier a count amount falls in, or None when the amount
+    isn't a count at all (grams, millilitres, cups — those keep their decimals
+    and fractions, which are meaningful)."""
+    if unit:
+        if unit not in _COUNT_UNITS:
+            return None
+        tier = _COUNT_UNIT_TIERS.get(unit)
+        if tier:
+            return tier
+    from . import food_resolve  # local: keeps this module import-light
+
+    return _FOOD_CLASS_TIERS.get(food_resolve.classification(food_text), _WHOLE_UP)
+
+
+def round_count(value: float, unit: str | None, food_text: str = "") -> float:
+    """Round a COUNT to something a cook can act on — see the policy above.
+
+    Returns ``value`` unchanged for any real measure (g, ml, cup, tsp), where a
+    fraction is information rather than noise. Pure and idempotent; never
+    raises, and never returns 0 for a positive input.
+    """
+    if value is None or value <= 0:
+        return value
+    tier = _count_tier(unit, food_text)
+    if tier is None:
+        return value
+    if tier == _HALVES:
+        return max(math.floor(value * 2 + 0.5 + _TIE) / 2, 0.5)
+    if tier == _UP:
+        return float(max(math.ceil(value - _TIE), 1))
+    if tier == _WHOLE_DOWN:
+        return float(max(math.ceil(value - 0.5 - _TIE), 1))
+    return float(max(math.floor(value + 0.5 + _TIE), 1))
+
+
+# Classifications whose foods are COUNTABLE — things you buy and count as
+# individual objects. Only these may have their noun made to agree with a scaled
+# count, and the restriction is the whole safety story: "chicken", "salmon",
+# "beef", "rice" and "butter" are mass nouns in recipe English, so a general
+# rule would produce "2 chickens" and "2 salmons". Vegetables, fruit and eggs
+# are exactly the foods a bare count is ever written against.
+_COUNTABLE_CLASSES = frozenset({"vegetable", "fruit", "egg"})
+
+
+def _pluralize_noun(word: str) -> str:
+    """The plural of a food noun — the inverse of food_resolve.singularize, so a
+    name that folds one way comes back the other ("tomato" -> "tomatoes", not
+    "tomatos")."""
+    if word.endswith(("s", "x", "z", "ch", "sh")):
+        return word + "es"
+    if len(word) > 1 and word.endswith("y") and word[-2] not in "aeiou":
+        return word[:-1] + "ies"
+    if len(word) > 1 and word.endswith("o") and word[-2] not in "aeiou":
+        return word + "es"
+    return word + "s"
+
+
+def agree_food_noun(food_text: str, qty: float | None) -> str:
+    """Make a counted food's noun agree with ``qty`` — "1 1/2 onions", not
+    "1 1/2 onion"; "1 egg", not "1 eggs".
+
+    Only for a BARE count. When a unit is present the unit carries the number
+    ("3 cloves garlic") and pluralizing the food as well would give "3 cloves
+    garlics", so callers must not use this there.
+
+    Conservative by construction: the word is only touched when the food
+    catalog recognises it AND classifies it as countable, so an unrecognised
+    name ("bone-in chicken thighs") and every mass noun are returned untouched.
+    Rewriting food text we do not understand is how names get mangled.
+    """
+    if not food_text or qty is None:
+        return food_text
+    from . import food_resolve  # local: keeps this module import-light
+
+    # The head noun is the last word before any preparation clause: the comma in
+    # "onion, diced" means the rest is not part of the name.
+    head, sep, tail = food_text.partition(",")
+    words = head.split()
+    if not words:
+        return food_text
+    singular = food_resolve.singularize(words[-1])
+    if food_resolve.classification(singular) not in _COUNTABLE_CLASSES:
+        return food_text
+    words[-1] = _pluralize_noun(singular) if qty > 1 else singular
+    return " ".join(words) + sep + tail
+
+
 def split_amount(display: str, quantity: float | None = None) -> tuple[str, str, str]:
     """Split an ingredient line into ``(amount, unit, rest)`` for a two-column
     display. Lossless: the three parts together always account for every word of
@@ -486,7 +634,13 @@ def scale_line(text: str, factor: float) -> str:
     parsed = parse_line(text)
     if parsed["qty"] is None:
         return text
-    scaled = parsed["qty"] * factor
+    # A count is rounded to an amount a cook can act on; a real measure keeps
+    # its arithmetic. See the policy block above round_count — this is the only
+    # place scaling is allowed to change a number for reasons other than the
+    # factor, and it is deliberately NOT applied to an unscaled line: a cook who
+    # typed "1.5 eggs" meant it, and rewriting what they typed is a different
+    # (and unasked-for) behaviour from rounding what WE computed.
+    scaled = round_count(parsed["qty"] * factor, parsed["unit"], parsed["rest"])
     new_qty = format_qty_for_unit(scaled, parsed["unit"])
     # Scale BOTH ends of a range. Only the display text grows a range here — the
     # structured quantity stays the low end (see parse_line), so shopping
@@ -495,13 +649,18 @@ def scale_line(text: str, factor: float) -> str:
     # regex and silently destroyed.
     hi = parsed.get("range_hi")
     if hi is not None:
-        new_qty = f"{new_qty}-{format_qty_for_unit(hi * factor, parsed['unit'])}"
+        hi = round_count(hi * factor, parsed["unit"], parsed["rest"])
+        new_qty = f"{new_qty}-{format_qty_for_unit(hi, parsed['unit'])}"
     # Pluralize on the value we actually RENDER, not the raw product: format_qty
     # rounds, so 1.0003 prints "1" and an exact comparison would print "1 cups".
     # A range is plural whenever its high end is.
-    shown = round(hi * factor if hi is not None else scaled, 2)
+    shown = round(hi if hi is not None else scaled, 2)
     unit_text = pluralize_unit(parsed["unit"], shown)
-    tail = " ".join(p for p in (unit_text, parsed["rest"]) if p)
+    # With no unit the FOOD carries the number, so it has to agree with the new
+    # one: "1 onion" x1.5 read "1 1/2 onion". With a unit the unit already
+    # carries it ("3 cloves garlic"), so the food is left alone.
+    rest = parsed["rest"] if parsed["unit"] else agree_food_noun(parsed["rest"], shown)
+    tail = " ".join(p for p in (unit_text, rest) if p)
     # Restore whatever sat in front of the quantity — "About" (the amount is
     # still approximate after scaling) or a leading "(optional)" bracket. Goes
     # back at the FRONT, where the user wrote it.

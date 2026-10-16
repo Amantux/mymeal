@@ -458,3 +458,87 @@ def test_a_glyph_fraction_scales_like_any_other_quantity():
     """The point of reading it: the user's real paste uses this form, so until
     now those lines did not scale at all."""
     assert units.scale_line("¹/₂ tsp salt", 3) == "1 1/2 tsp salt"
+
+
+# --- Scaled counts round to something a cook can act on ---------------------
+# The policy and its reasoning live in a comment above units.round_count. These
+# assert the four tiers behave as that comment claims, through the public
+# surface (the rewritten line) rather than against the tier table.
+
+@pytest.mark.parametrize("line,factor,expected", [
+    # WHOLE_UP — indivisible. You cannot buy half an egg or half a can.
+    ("3 large eggs", 1.5, "5 large eggs"),
+    ("1 can chopped tomatoes", 1.5, "2 cans chopped tomatoes"),
+    ("2 slices bread", 1.5, "3 slices bread"),
+    # ...and never down to nothing: a halved recipe still needs the egg, and
+    # buys the whole can it cannot buy half of.
+    ("1 egg", 0.5, "1 egg"),
+    ("1 can chopped tomatoes", 0.5, "1 can chopped tomatoes"),
+    # HALVES — produce a cook cuts. The half here is real information.
+    ("1 onion, diced", 1.5, "1 1/2 onions, diced"),
+    ("1 lemon", 0.5, "1/2 lemon"),
+    ("2 red peppers", 0.75, "1 1/2 red peppers"),
+    # UP — cheap and forgiving. More garlic has never ruined a dish.
+    ("2 cloves garlic", 1.5, "3 cloves garlic"),
+    ("1 clove garlic", 1.5, "2 cloves garlic"),
+    ("2 sprigs thyme", 1.6, "4 sprigs thyme"),
+    # WHOLE_DOWN — expensive protein by the piece: the tie goes to thrift.
+    ("3 chicken breasts", 1.5, "4 chicken breasts"),
+    ("2 salmon fillets", 1.5, "3 salmon fillets"),
+    # An unrecognised bare count still has to come out whole.
+    ("3 tortillas", 1.5, "5 tortillas"),
+])
+def test_a_scaled_count_is_an_amount_a_cook_can_act_on(line, factor, expected):
+    assert units.scale_line(line, factor) == expected
+
+
+@pytest.mark.parametrize("line,factor,expected", [
+    ("2 cups flour", 1.5, "3 cups flour"),
+    ("1 tsp salt", 1.5, "1 1/2 tsp salt"),
+    ("240 g egg whites", 1.5, "360 g egg whites"),
+    ("1 tbsp olive oil", 0.5, "1/2 tbsp olive oil"),
+])
+def test_a_real_measure_keeps_its_arithmetic(line, factor, expected):
+    """Rounding is for counts only. A fraction of a cup or a teaspoon is
+    information, and rounding "1 1/2 tsp" to "2 tsp" would be a 33% error in
+    the seasoning of the dish."""
+    assert units.scale_line(line, factor) == expected
+
+
+def test_rounding_never_touches_a_quantity_the_cook_typed():
+    """Only amounts WE computed are rounded. A cook who typed "1.5 eggs" meant
+    it, and an unscaled render must not rewrite their own line."""
+    assert units.scale_line("1.5 eggs", 1) == "1.5 eggs"
+    assert units.split_amount("1.5 eggs", 1.5) == ("1 1/2", "", "eggs")
+
+
+def test_round_count_is_idempotent():
+    """Scaling runs on every read, and _apply_view rounds the structured
+    quantity as well as the text — a second pass must not drift."""
+    for value in (0.4, 1.0, 1.5, 4.5, 7.3):
+        once = units.round_count(value, None, "eggs")
+        assert units.round_count(once, None, "eggs") == once
+
+
+@pytest.mark.parametrize("line,factor,expected", [
+    ("1 onion, diced", 1.5, "1 1/2 onions, diced"),
+    ("4 eggs", 0.25, "1 egg"),
+    ("1 potato", 2, "2 potatoes"),          # not "2 potatos"
+    ("2 red peppers", 0.5, "1 red pepper"),
+])
+def test_a_counted_food_noun_agrees_with_the_scaled_count(line, factor, expected):
+    assert units.scale_line(line, factor) == expected
+
+
+@pytest.mark.parametrize("line,factor,expected", [
+    # The unit carries the number, so the food must NOT be pluralized too.
+    ("2 cloves garlic", 1.5, "3 cloves garlic"),
+    # A name the catalog does not recognise is never rewritten — this one lost
+    # its hyphen the last time something canonicalised text it didn't know.
+    ("6 bone-in chicken thighs", 1.5, "9 bone-in chicken thighs"),
+    # Mass nouns: "2 chickens"/"2 salmons" is what a general rule would produce.
+    ("1 chicken", 2, "2 chicken"),
+    ("1 salmon", 2, "2 salmon"),
+])
+def test_food_nouns_outside_the_countable_classes_are_left_alone(line, factor, expected):
+    assert units.scale_line(line, factor) == expected
