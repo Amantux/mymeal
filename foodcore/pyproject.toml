@@ -31,7 +31,17 @@ foodcore = "foodcore.cli:main"
 package-dir = { foodcore = "app" }
 # Listed explicitly rather than auto-discovered: with a remapped package dir,
 # discovery would also offer `tests` as a top-level package.
-packages = ["foodcore", "foodcore.sources", "foodcore.data"]
+# NOTE: every subpackage must be listed. A missing entry does NOT fail the
+# build or the checkout test suite — the source tree still has the directory —
+# it only fails at `import foodcore.<missing>` from an INSTALLED wheel. That is
+# why the clean-venv install test is an acceptance criterion and not a nicety:
+# it is the only check that sees the artifact a host app actually gets.
+packages = [
+    "foodcore",
+    "foodcore.sources",
+    "foodcore.data",
+    "foodcore.rules",
+]
 
 [tool.setuptools.package-data]
 "foodcore.data" = ["*.json"]

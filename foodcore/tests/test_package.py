@@ -155,3 +155,34 @@ def test_no_service_artefacts_remain():
                   "ha_discovery.py", "alembic.ini", "migrations", "app/api",
                   "app/models", "app/extensions.py", "app/settings.py"):
         assert not os.path.exists(root / stale), stale
+
+
+def test_every_subpackage_is_declared_for_distribution():
+    """MUTATION GUARD for the packaging list.
+
+    A subpackage missing from pyproject's `packages` is invisible in the source
+    checkout (the directory is right there) and only explodes on
+    `import foodcore.<name>` from an installed wheel. `foodcore.rules` shipped
+    exactly that way: 506 tests green, and the installed package could not load
+    the allergen rules at all.
+    """
+    # Parsed with a regex rather than tomllib: that is 3.11+, foodcore supports
+    # 3.10, and taking a TOML dependency to read our own manifest would violate
+    # the zero-dependency rule this very test file enforces elsewhere.
+    import re
+
+    pyproject = (PKG_DIR.parent / "pyproject.toml").read_text()
+    block = re.search(r"^packages\s*=\s*\[(.*?)\]", pyproject,
+                      re.S | re.M)
+    assert block, "pyproject.toml has no `packages = [...]` array"
+    declared = set(re.findall(r'"([^"]+)"', block.group(1)))
+    on_disk = {
+        f"foodcore.{p.name}"
+        for p in PKG_DIR.iterdir()
+        if p.is_dir() and (p / "__init__.py").exists()
+    } | {"foodcore"}
+
+    assert on_disk <= declared, (
+        f"subpackage(s) {sorted(on_disk - declared)} exist on disk but are not "
+        "declared in pyproject.toml, so they will be missing from the wheel."
+    )
