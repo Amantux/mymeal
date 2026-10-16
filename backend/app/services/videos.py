@@ -9,7 +9,13 @@ the on-disk directory are already called that, and renaming them would be a
 wide diff for no behaviour change. The name users and API clients see is
 "media".
 
-Four rules live here, in one place, because every write path needs all of them:
+Four rules live here, in one place, so that a write path gets all of them from
+one call. They are not enforced structurally — there is no `before_flush` hook
+and no CHECK constraint — so a NEW writer (an importer, an MCP tool, a backfill)
+that builds a ``RecipeVideo`` and flushes it bypasses every rule below. Today
+there is exactly one such constructor, in ``api/recipes.py::add_media``, and it
+calls :func:`validate`. If a second appears, make it call `validate` too, or
+promote this to an ORM event — do not copy the checks:
 
 1. A stored link is **http(s) only**. The server never fetches this URL; the
    browser renders it, so the risk is a ``javascript:`` or ``data:`` address
@@ -76,18 +82,38 @@ MediaError = VideoError
 
 
 def normalize_kind(raw) -> str:
-    """The stored `kind` for a caller-supplied value.
+    """The stored `kind` for a caller-supplied value. **Raises** — input only.
 
     Falsy means video: that is what every row written before the column
     existed is, and what an unspecified `kind` has always meant on this
     endpoint. Anything else unrecognised is a 422 rather than a silent
     coercion — a typo'd kind would otherwise be stored as a video and render
     a photo in a `<video>` element.
+
+    Use :func:`display_kind` on READ paths. This one is for validating what a
+    caller sent, where refusing is the right answer.
     """
     value = (raw or KIND_VIDEO).strip().lower()
     if value not in KINDS:
         raise VideoError(f"kind must be one of {', '.join(KINDS)}")
     return value
+
+
+def display_kind(raw) -> str:
+    """The `kind` to RENDER a stored row as. Never raises.
+
+    Separate from :func:`normalize_kind` because a validator on a read path is
+    a denial-of-service waiting to happen: the serializer runs for every row
+    of every recipe, so one unexpected value in the database took out the
+    whole library listing with a 500 rather than mis-rendering one tile.
+    Refusing is right for input and wrong for output.
+
+    Anything unrecognised reads as a video, which is what an unknown row most
+    likely is (every row predating the column is one) and which degrades to a
+    player that will not load rather than to a broken page.
+    """
+    value = (raw or KIND_VIDEO).strip().lower()
+    return value if value in KINDS else KIND_VIDEO
 
 
 def normalize_url(raw: str) -> str:
@@ -130,9 +156,11 @@ def media_mime(kind: str, filename: str) -> str | None:
 
     Keyed on the row's `kind` rather than searching both maps, so a row stored
     as an image can never be served with a video Content-Type (or the reverse)
-    even if someone hand-edits a filename in the database.
+    even if someone hand-edits a filename in the database. `display_kind`, not
+    `normalize_kind`: this is a serving path, and an unparseable kind should
+    end as a 404 (no mime → the caller aborts), never a 500.
     """
-    if normalize_kind(kind) == KIND_IMAGE:
+    if display_kind(kind) == KIND_IMAGE:
         return image_mime(filename)
     return video_mime(filename)
 
@@ -187,12 +215,16 @@ def validate(media) -> None:
 def embed_url(url: str) -> str | None:
     """A same-page embed URL for the providers we allow framing, else None.
 
-    Only YouTube and Vimeo are recognised. The allowlist is the control here:
-    myMeal ships no Content-Security-Policy (unlike its sibling add-ons), so
-    nothing else would stop an arbitrary URL being framed — which is exactly why
-    the decision of what may be embedded is made HERE rather than by handing the
-    UI any URL and letting it build an iframe. Anything unrecognised is rendered
-    as a plain link that opens in a new tab.
+    Only YouTube and Vimeo are recognised, and the app's CSP names those two
+    hosts in `frame-src` — the allowlist here and the CSP are deliberately the
+    same pair, so an URL this function refuses could not be framed even if the
+    UI tried. The decision of what may be embedded is made HERE rather than by
+    handing the UI any URL and letting it build an iframe. Anything
+    unrecognised is rendered as a plain link that opens in a new tab.
+
+    (This comment used to say myMeal shipped no CSP. It does — see
+    `app/__init__.py::_register_security_headers` — and rule 4 above depends
+    on that being true, so the two statements could not both stand.)
     """
     try:
         parsed = urlparse(url or "")

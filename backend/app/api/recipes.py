@@ -8,7 +8,7 @@ import httpx
 from flask import Blueprint, request, jsonify, abort, current_app, send_file
 from sqlalchemy.orm import selectinload
 
-from werkzeug.utils import safe_join, secure_filename
+from werkzeug.utils import safe_join
 
 from ..extensions import db
 from ..services import videos
@@ -579,6 +579,12 @@ def delete_recipe(recipe_id):
     recipe = _get(recipe_id)
     if recipe.image:
         _remove_image_file(recipe.image)
+    # The media rows cascade away with the recipe (delete-orphan), so this is
+    # the LAST moment anything knows these filenames — after the commit the
+    # files on disk are unreferenced and unreclaimable. Photos made this the
+    # common case rather than the rare one.
+    for item in recipe.videos:
+        _remove_media_file(item.filename)
     # Detach any component links pointing at this recipe so no dangling ref is
     # left. The FK is ON DELETE SET NULL, but do it explicitly so the guarantee
     # holds even on installs whose migrated schema lacks that constraint.
@@ -598,7 +604,12 @@ def delete_recipe(recipe_id):
 
 # --- Image ---------------------------------------------------------------
 def _image_path(filename: str) -> str:
-    # safe_join, matching _media_path: the stored name is a server-generated
+    # safe_join, as in _media_path — the traversal guard is the only thing the
+    # two paths share. The hero-image UPLOAD is looser than the media one: it
+    # keys the extension off the client's mimetype and falls back to .jpg,
+    # where add_media uses a closed extension allowlist. Worth converging on
+    # the stricter rule; not changed here to keep this diff to one feature.
+    # The stored name is a server-generated
     # UUID+ext today so traversal isn't currently reachable, but the repo rule
     # is safe_join even for an existence check — one hardened path, not two
     # that differ, so a future caller can't reintroduce the hole.
@@ -793,6 +804,27 @@ def _media_path(filename: str) -> str:
     return path
 
 
+def _remove_media_file(filename: str) -> None:
+    """Unlink an uploaded media file, best-effort.
+
+    A function rather than inline code because there are two callers that must
+    not diverge: deleting ONE media item, and deleting the recipe that owns
+    them all. The second was missing, and because the rows cascade away with
+    the recipe, nothing afterwards recorded the filename — the bytes were
+    unreclaimable. On an add-on where /data is the only durable path and is
+    what Home Assistant backs up, that is permanent growth in the user's
+    backups for every deleted recipe.
+    """
+    if not filename:
+        return
+    try:
+        os.remove(_media_path(filename))
+    except OSError:
+        # Best-effort, matching the hero image: the row is the source of truth
+        # and a missing file must never block the delete the caller asked for.
+        pass
+
+
 def _get_media(recipe: Recipe, media_id: str) -> RecipeVideo:
     item = db.session.get(RecipeVideo, media_id)
     # Checked against the RECIPE we already tenant-scoped, so a media id from
@@ -859,10 +891,23 @@ def add_media(recipe_id):
         # from the allowlist table, never the client's filename.
         item.filename = f"{uuid.uuid4().hex}{ext}"
         if not item.title:
-            item.title = secure_filename(os.path.basename(name))[:videos.MAX_TITLE_LENGTH]
+            # basename only, NOT secure_filename: this is a display string that
+            # never touches the filesystem (the stored name is the uuid above),
+            # and secure_filename strips non-ASCII — so a photo off a phone
+            # called "我的照片.png" came out titled "png". Control characters
+            # are dropped because this gets rendered and logged.
+            raw_title = os.path.basename(name)
+            item.title = "".join(
+                c for c in raw_title if c.isprintable())[:videos.MAX_TITLE_LENGTH]
     else:
         try:
             item.kind = videos.normalize_kind(raw_kind)
+            # validate() BEFORE normalize_url for a declared image: otherwise
+            # `{"kind": "image"}` with no url answers "a video link is
+            # required", which tells the user to supply the one thing an image
+            # may not have. The kind-specific refusal is the useful message.
+            if item.kind == videos.KIND_IMAGE:
+                videos.validate(item)
             item.url = videos.normalize_url(body.get("url", ""))
         except videos.VideoError as exc:
             return jsonify({"error": str(exc)}), 422
@@ -874,8 +919,10 @@ def add_media(recipe_id):
     except videos.VideoError as exc:
         return jsonify({"error": str(exc)}), 422
 
-    # Write the file only once the row is known-good, so a rejected request
-    # never leaves an orphan on disk.
+    # Write the file only once the row is known-good, so a REJECTED request
+    # never leaves an orphan on disk. (A failed commit still can — the write
+    # is not transactional with the database. Narrow enough to accept rather
+    # than build a two-phase write for.)
     if upload:
         upload.save(_media_path(item.filename))
     db.session.add(item)
@@ -889,13 +936,7 @@ def add_media(recipe_id):
 def delete_media(recipe_id, media_id):
     recipe = _get(recipe_id)
     item = _get_media(recipe, media_id)
-    if item.filename:
-        try:
-            os.remove(_media_path(item.filename))
-        except OSError:
-            # Best-effort, matching the image path: the row is the source of
-            # truth and a missing file must not block the delete.
-            pass
+    _remove_media_file(item.filename)
     db.session.delete(item)
     db.session.commit()
     return "", 204
