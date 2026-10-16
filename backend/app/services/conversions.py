@@ -10,8 +10,9 @@ answer.
 The rules, in priority order:
 
 1. **Built-in physics always wins.** ``units.to_grams`` consults this module only
-   after its own weight and density tables, so a looked-up number can never
-   override a shipped one.
+   after its own weight and density tables — and, when an operator has imported
+   one, after the foodcore reference dataset — so a looked-up number can never
+   override a shipped or measured one.
 2. **A pending conversion is never used in a calculation.** Below the confidence
    threshold it is stored for review and treated as if it did not exist.
 3. **Provenance is recorded, always.** ``source`` and ``source_url`` are what let
