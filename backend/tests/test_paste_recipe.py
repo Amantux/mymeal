@@ -15,6 +15,7 @@ from app.services.recipe_parse import (
     html_to_lines,
     parse_pasted,
     parse_recipe_text,
+    segment_runon_lines,
 )
 
 BLOB = """Grandma's Lemon Drizzle Cake
@@ -505,3 +506,99 @@ def test_a_huge_paste_is_capped():
     got = parse_recipe_text("Thing\nIngredients\n" + "1 cup flour\n" * 50000)
 
     assert got is None or len(got["ingredients"]) < 2000
+
+
+# --- Run-on blobs: recovering line boundaries the source threw away ----------
+#
+# Copied verbatim from the paste that prompted this: the site wraps each amount
+# and each name in adjacent inline elements, so the clipboard holds ONE line
+# with no separator anywhere. Note "¹/₂" is a superscript-solidus-subscript
+# trio, not "½" — that is what the page renders.
+RUN_ON = (
+    "240 gramsEgg Whites(240 g)"
+    "40 gramsParmesan Cheese finely grated(40 g)"
+    "1 gramGarlic Powder or ¹/₂ teaspoon(1 g)"
+    "1 gramOnion Powder or ¹/₂ teaspoon(1 g)"
+    "¹/₂ Gram Black Pepperorns or ¹/₄ teaspoon"
+    "1 gramItalian Seasoning optional(1 g)"
+    "1 gramPaprika or red pepper flakes optional(1 g)"
+    "Oil or 1 tsps oil for the pan"
+)
+
+
+def test_a_run_on_ingredient_blob_is_split_at_every_glued_quantity():
+    """The whole point: eight ingredients out of one unseparated line."""
+    got, changed = segment_runon_lines(RUN_ON)
+
+    assert changed is True
+    assert got.splitlines() == [
+        "240 grams Egg Whites(240 g)",
+        "40 grams Parmesan Cheese finely grated(40 g)",
+        "1 gram Garlic Powder or ¹/₂ teaspoon(1 g)",
+        "1 gram Onion Powder or ¹/₂ teaspoon(1 g)",
+        "¹/₂ Gram Black Pepperorns or ¹/₄ teaspoon",
+        "1 gram Italian Seasoning optional(1 g)",
+        "1 gram Paprika or red pepper flakes optional(1 g)",
+        "Oil or 1 tsps oil for the pan",
+    ]
+
+
+def test_an_alternative_measure_inside_a_line_is_not_a_boundary():
+    """"or ¹/₂ teaspoon" belongs to the line it qualifies. A SPACE in front of
+    the quantity is what says "same line"; only a glued one starts a new one."""
+    got, _ = segment_runon_lines(RUN_ON)
+
+    assert "or ¹/₂ teaspoon" in got.splitlines()[2]
+
+
+# Every paste fixture in this suite, as the text parser actually receives it.
+# Segmentation must be a no-op on all of them, byte for byte.
+_TEXT_FIXTURES = [BLOB, KNIFE_REVIEW]
+_HTML_FIXTURES = [COPIED_HTML, MICRODATA, WPRM]
+
+
+@pytest.mark.parametrize("text", _TEXT_FIXTURES
+                         + [html_to_lines(h) for h in _HTML_FIXTURES])
+def test_existing_pastes_are_untouched_by_segmentation(text):
+    got, changed = segment_runon_lines(text)
+
+    assert changed is False
+    assert got == text
+
+
+@pytest.mark.parametrize("line", [
+    "1 1/2 cups plain flour, sifted, plus 2 tablespoons for dusting the tin",
+    "Bake in a 9x13 pan at 180°C for 45 minutes until the top is golden brown",
+    "Use 1.5 kg of Grade A2 flour, a can of 7UP and 500ml of V8 for the batter",
+    "Chop 2-3 cloves of garlic, then add 1 1/2 cups of water to the saucepan",
+    "Beat the butter and sugar for 2 minutes, then fold in 200g of the flour",
+])
+def test_a_quantity_that_is_not_glued_to_a_word_is_never_a_boundary(line):
+    """The traps. Several have a digit next to a letter; none has a bare
+    quantity-plus-unit glued onto the end of the previous word."""
+    got, changed = segment_runon_lines(line)
+
+    assert changed is False
+    assert got == line
+
+
+# --- Refusing, which is the recoverable failure ------------------------------
+
+@pytest.mark.parametrize("line", [
+    # A segment that is only a measurement — the cuts landed between amounts,
+    # so there is no ingredient there to name.
+    "Sift the flour250 grams300 grams400 grams of golden caster sugar",
+    # More rows than any recipe has.
+    "Flour" + "100 gramsSugar" * 70,
+    # One absurdly long segment: the method ran on into the list.
+    ("2 cupsFlour1 cupSugar2 tspSalt" + "and then beat the mixture "
+     "thoroughly until it is pale and completely smooth before baking " * 4),
+])
+def test_an_implausible_segmentation_is_refused_and_the_text_left_alone(line):
+    """Refusing returns the original, so the existing "couldn't parse" path
+    answers and the user still has the AI import. Silent garbage would not be
+    recoverable; a refusal is."""
+    got, changed = segment_runon_lines(line)
+
+    assert changed is False
+    assert got == line
