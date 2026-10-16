@@ -30,6 +30,16 @@ RUN apt-get update \
 COPY backend/requirements.txt ./backend/requirements.txt
 RUN pip install --no-cache-dir -r backend/requirements.txt
 
+# foodcore (shared food-reference library: unit conversion, USDA portion
+# weights) is INSTALLED as a package, not imported off a relative path. The
+# directory is named `foodcore/` but its source dir is `app/`, so an
+# uninstalled sys.path reach into it would shadow this app's own `app` package.
+# Zero runtime dependencies, so this adds nothing but the package itself.
+# No reference DATA is baked in: the USDA export is gigabytes and the dataset
+# file belongs in the operator's /data (see MYMEAL_FOODCORE_DATASET).
+COPY foodcore/ ./foodcore/
+RUN pip install --no-cache-dir ./foodcore
+
 COPY backend/ ./backend/
 COPY --from=frontend /build/dist ./frontend/dist
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh

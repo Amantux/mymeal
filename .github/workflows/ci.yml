@@ -35,6 +35,10 @@ jobs:
           # an unpinned `ruff` silently pulls new releases whose changed lint
           # defaults then fail CI on unrelated, pre-existing code.
           pip install -r requirements.txt pytest ruff==0.15.12
+          # foodcore is a path dependency in this repo, installed as a package
+          # (never imported off sys.path — its source dir is `app/` and would
+          # shadow the backend's own `app` package). Zero runtime deps.
+          pip install ../foodcore
       - name: Ruff
         working-directory: backend
         run: ruff check .
