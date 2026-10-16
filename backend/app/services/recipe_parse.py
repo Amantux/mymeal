@@ -30,6 +30,11 @@ from bs4 import BeautifulSoup, NavigableString
 from bs4.element import CData
 
 from . import units
+# The app's one cooking-action vocabulary (Mix/Fold/Chill/Bake/Preheat/Cool),
+# used by _until_tail to tell a mid-method advisory from the trailing Notes
+# block. Imported, never re-listed. ``step_structure`` is pure and imports only
+# ``cooking``, so there is no cycle back to here.
+from .step_structure import infer_phase
 
 # Section headings people actually write, including the ALL-CAPS and
 # "INGREDIENTS:" variants. Matched on a short line only, so an instruction that
@@ -547,17 +552,72 @@ def _is_main_heading(line: str) -> bool:
     return len(s) <= _HEADING_MAX and bool(_ING_HEAD.match(s) or _STEP_HEAD.match(s))
 
 
-def _until_tail(body: list[str]) -> list[str]:
-    """``body`` up to the first "Notes"/"Tips"/"Comments" style heading.
+def _resumes_after(rest: list[str]) -> bool:
+    """Whether the body visibly carries on, somewhere in ``rest``.
 
-    Everything after one belongs to the article, not the recipe: a trailing Notes
-    block was importing as extra method steps, and on a copied page the comments
-    became steps too.
+    Two signals, both BORROWED rather than invented, because a second copy of
+    either vocabulary is exactly the drift the house rule forbids:
+
+    * an explicit step number — the strongest "this is a step" evidence there
+      is, and already parsed by ``_STEP_NUMBER``;
+    * a cooking-action cue from ``step_structure``'s phase vocabulary, which is
+      the one place in this app that knows Mix/Fold/Chill/Bake/Preheat/Cool.
+
+    Deliberately ANY line rather than the next one: a run-in label introduces
+    its own advisory sentence first ("Tip:" / "Use very ripe bananas.") and the
+    method resumes on the line after that. Scanning the whole remainder is also
+    the generous reading, which is the direction this must err in.
     """
+    return any(_STEP_NUMBER.match(ln) or infer_phase(ln) for ln in rest)
+
+
+def _until_tail(body: list[str]) -> list[str]:
+    """``body`` up to the "Notes"/"Tips"/"Comments" heading that ENDS it.
+
+    Everything after a real one belongs to the article, not the recipe: a
+    trailing Notes block was importing as extra method steps, and on a copied
+    page the comments became steps too.
+
+    The hard part is that the same words appear in two opposite roles, and in
+    flat text they look nearly identical:
+
+        …steps…  "Notes"  "Store in an airtight container…"   <- terminator
+        …steps…  "Tip:"   "Use very ripe bananas."  "Bake 25 minutes."  <- not
+
+    The rule: a tail heading terminates the body UNLESS it is a run-in label —
+    one ending in a colon — and the body visibly resumes after it. A colon is
+    what English typography puts on a label that introduces the sentence
+    following it ("Tip: use very ripe bananas"); a section heading stands alone
+    ("Notes"). Both gates must hold before any content is kept, and the colon
+    gate alone is what keeps every existing terminator terminating.
+
+    **This fails SAFE, by construction.** The cut can only ever move LATER than
+    the old unconditional one, never earlier, so nothing this used to keep can
+    now disappear. When the signal is ambiguous the content stays: a junk
+    trailing step is visible in the editor and one click to delete, whereas a
+    method that silently lost three of its four steps is neither — which is the
+    defect this replaces. Being wrong about "Notes:" therefore costs a stray
+    row; being wrong about "Tip:" cost the user their recipe.
+
+    Rejected, with the evidence, so they are not re-tried: the phase vocabulary
+    on its OWN does not separate the two cases — "Keep refrigerated for up to
+    three days." (a Notes line that must terminate) infers *Chill*, while "Use
+    very ripe bananas." (a tip that must not) infers nothing. Narrowing it to
+    production phases does separate today's fixtures, but then "Tip: use
+    full-fat cream / Chill 4 hours / Serve cold" truncates — it fails UNSAFE,
+    which is disqualifying. Used only as the second gate, the full vocabulary
+    is safe precisely because any cue at all means "keep".
+    """
+    out: list[str] = []
     for i, ln in enumerate(body):
-        if len(ln) <= _HEADING_MAX and _TAIL_HEAD.match(ln.strip()):
-            return body[:i]
-    return body
+        s = ln.strip()
+        if len(s) > _HEADING_MAX or not _TAIL_HEAD.match(s):
+            out.append(ln)
+            continue
+        if s.endswith(":") and _resumes_after(body[i + 1:]):
+            continue        # a run-in label: drop the label, keep the body
+        return out
+    return out
 
 
 def _reads_as_prose(line: str) -> bool:

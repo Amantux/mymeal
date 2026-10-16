@@ -1093,14 +1093,6 @@ def test_a_synthetic_heading_does_not_land_in_a_neighbours_line():
 
 # --- a bolded terminator must never split onto its own line ----------------
 
-@pytest.mark.xfail(reason="KNOWN DEFECT, pre-existing and not HTML-specific: "
-                          "_until_tail cuts the body at the FIRST tail heading "
-                          "even when the method plainly continues after it. "
-                          "Reproduces from plain text with no HTML — see "
-                          "test_plain_text_tip_also_truncates. Fixing it means "
-                          "deciding when a heading terminates a body, which is "
-                          "a deliberate call and gets its own change.",
-                   strict=True)
 def test_a_mid_method_tip_does_not_truncate_the_method():
     """REGRESSION, and the reason _is_lead_in_heading only matches REGION
     headings. A bolded "Tip:" between two step lists is the commonest recipe
@@ -1126,7 +1118,6 @@ def test_a_mid_method_tip_does_not_truncate_the_method():
     assert steps[-1] == "Cool on a rack and serve."
 
 
-@pytest.mark.xfail(reason="same known _until_tail defect", strict=True)
 def test_other_bolded_terminators_are_equally_harmless():
     for lead in ("Pro tip:", "Note:", "Substitutions:"):
         html = ("<h2>Ingredients</h2><ul><li>2 cups flour</li>"
@@ -1141,9 +1132,18 @@ def test_other_bolded_terminators_are_equally_harmless():
         assert "Bake for 25 minutes." in steps, f"{lead!r} truncated: {steps}"
 
 
-@pytest.mark.xfail(reason="same family: _SUB_HEAD matches anything ending in "
-                          "a colon, so a definition-style row's food name is "
-                          "promoted to a section and leaves the display empty.",
+@pytest.mark.xfail(reason="STILL OPEN, and a DIFFERENT mechanism from the "
+                          "_until_tail truncation it was filed alongside: "
+                          "_SUB_HEAD matches anything ending in a colon, so a "
+                          "definition-style row's food name is promoted to a "
+                          "section and the display keeps only the amount. "
+                          "_until_tail now distinguishes a run-in label from a "
+                          "section heading, but this row is not a tail heading "
+                          "at all — it never reaches that code. Fixing it means "
+                          "teaching _is_sub_heading that a colon-terminated "
+                          "line followed by a bare amount is a row, which is a "
+                          "separate rule and gets its own change rather than "
+                          "being forced into this one.",
                    strict=True)
 def test_a_definition_style_row_keeps_its_food_in_the_display():
     """`<span>Flour:</span><span>240 g</span>` is a row, not a heading plus a
@@ -1162,22 +1162,118 @@ def test_a_definition_style_row_keeps_its_food_in_the_display():
     assert any("Flour" in d for d in displays), displays
 
 
-def test_plain_text_tip_also_truncates_proving_it_is_not_an_html_defect():
-    """Pins WHERE the defect lives, so the fix is aimed correctly.
+# --- a run-in label vs a section heading -------------------------------------
+#
+# The same words head two opposite things, so these come in pairs: the shape
+# that must keep its body, and the shape that must still lose it. Each is
+# asserted from PLAIN TEXT as well as HTML, because the rule lives in the text
+# parser and a fix that only worked on markup would leave the other path broken.
 
-    A reviewer attributed the truncation to the HTML inline-join work. It is
-    not: the same input as plain text, with no markup whatsoever, loses the
-    same steps. The cause is _until_tail terminating the body at the first
-    tail heading regardless of what follows.
+_ING_TEXT = "Ingredients\n2 cups flour\n1 cup milk\n3 eggs\n\n"
+
+
+def test_a_mid_method_tip_does_not_truncate_the_method_in_plain_text():
+    """The plain-text twin of test_a_mid_method_tip_does_not_truncate_the_method.
+
+    Not markup-specific: with no HTML whatsoever, a "Tip:" between two runs of
+    steps used to take three of the four steps with it.
     """
-    text = ("Ingredients\n2 cups flour\n1 cup milk\n3 eggs\n\n"
-            "Instructions\nMix well.\nTip:\nUse very ripe bananas.\n"
+    text = (_ING_TEXT + "Instructions\nMix well.\nTip:\nUse very ripe bananas.\n"
             "Bake for 25 minutes.\nCool on a rack and serve.")
 
     got = parse_recipe_text(text)
 
-    steps = [s["text"] if isinstance(s, dict) else s for s in got["steps"]]
-    assert steps == ["Mix well."], (
-        "If this now keeps all the steps, the _until_tail defect is FIXED — "
-        "delete this test and un-xfail its three companions above."
-    )
+    steps = [s["text"] for s in got["steps"]]
+    assert steps == ["Mix well.", "Use very ripe bananas.",
+                     "Bake for 25 minutes.", "Cool on a rack and serve."]
+
+
+def test_an_imperative_tip_is_still_only_a_tip():
+    """The advisory text of a tip is itself an imperative sentence, so "does
+    this read like an instruction" cannot be the signal — "Use very ripe
+    bananas" and "Bake for 25 minutes" are the same grammatical shape. What
+    separates them is the colon on the label, not the mood of the prose."""
+    text = (_ING_TEXT + "Method\n1. Mash the bananas.\n"
+            "Note:\nSift the flour first, it makes a lighter crumb.\n"
+            "2. Bake for 50 minutes.")
+
+    got = parse_recipe_text(text)
+
+    steps = [s["text"] for s in got["steps"]]
+    assert "Bake for 50 minutes." in steps, steps
+    assert "Sift the flour first, it makes a lighter crumb." in steps, steps
+
+
+def test_a_multi_sentence_notes_block_still_ends_the_method():
+    """A real Notes block runs to several sentences, and those sentences talk
+    about chilling, freezing and serving — so they carry cooking cue words. The
+    bare heading is what keeps them out, which is why the colon gate is checked
+    before anything else."""
+    text = (_ING_TEXT + "Method\n1. Mash the bananas.\n2. Bake for 50 minutes.\n"
+            "Notes\nKeep refrigerated for up to three days.\n"
+            "These freeze beautifully for a month.\n"
+            "Serve warm with ice cream.")
+
+    got = parse_recipe_text(text)
+
+    assert [s["text"] for s in got["steps"]] == [
+        "Mash the bananas.", "Bake for 50 minutes."]
+
+
+def test_a_multi_sentence_notes_block_still_ends_the_method_in_html():
+    html = ("<h2>Ingredients</h2><ul><li>2 cups flour</li><li>1 cup milk</li>"
+            "<li>3 eggs</li></ul>"
+            "<h2>Instructions</h2><ol><li>Mash the bananas.</li>"
+            "<li>Bake for 50 minutes.</li></ol>"
+            "<h3>Notes</h3><p>Keep refrigerated for up to three days.</p>"
+            "<p>These freeze beautifully for a month.</p>"
+            "<p>Serve warm with ice cream.</p>")
+
+    got = parse_pasted(html)
+
+    assert [s["text"] for s in got["steps"]] == [
+        "Mash the bananas.", "Bake for 50 minutes."]
+
+
+def test_a_mid_method_tip_survives_a_later_real_notes_block():
+    """Both shapes in one document, which is the common blog layout. The tip
+    must not cut, and the Notes heading after it must."""
+    text = (_ING_TEXT + "Instructions\nMix well.\nTip:\nUse very ripe bananas.\n"
+            "Bake for 25 minutes.\n"
+            "Notes\nBest eaten within two days.")
+
+    got = parse_recipe_text(text)
+
+    assert [s["text"] for s in got["steps"]] == [
+        "Mix well.", "Use very ripe bananas.", "Bake for 25 minutes."]
+
+
+def test_a_colon_label_with_no_method_after_it_still_ends_the_method():
+    """The colon is necessary but not sufficient: a labelled trailing block with
+    nothing step-like after it is still a trailing block."""
+    text = (_ING_TEXT + "Method\n1. Mash the bananas.\n2. Bake for 50 minutes.\n"
+            "Notes:\nBest eaten within two days.")
+
+    got = parse_recipe_text(text)
+
+    assert [s["text"] for s in got["steps"]] == [
+        "Mash the bananas.", "Bake for 50 minutes."]
+
+
+def test_an_ambiguous_tail_label_keeps_its_content_rather_than_losing_it():
+    """The deliberate trade, pinned so it is a decision and not a surprise.
+
+    "Notes:" with a cue-bearing sentence under it is genuinely ambiguous — it
+    is shaped exactly like a mid-method aside. The rule keeps the content, so
+    the cost of being wrong here is one stray row the user can see and delete,
+    rather than a method that silently lost most of its steps. If this ever
+    needs to flip, the asymmetry in that sentence is the thing to argue with.
+    """
+    text = (_ING_TEXT + "Method\n1. Mash the bananas.\n2. Bake for 50 minutes.\n"
+            "Notes:\nChill for an hour before slicing.")
+
+    got = parse_recipe_text(text)
+
+    steps = [s["text"] for s in got["steps"]]
+    assert "Chill for an hour before slicing." in steps, steps
+    assert "Notes:" not in steps, "the label itself is a heading, not a step"
