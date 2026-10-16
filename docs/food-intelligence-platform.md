@@ -6,9 +6,19 @@
 
 ## 1. The headline recommendation
 
-**Do not build this inside myMeal.** It is a fourth sibling service — a shared
-*food reference* backend that myMeal and Edibl both consume — for three reasons
-that are already true in the code:
+> **DECIDED (owner, this session): foodcore is a standalone Python MODULE that
+> both myMeal and Edibl import — not a fourth add-on, not an HTTP service.**
+> No extra container, no second database, no discovery, no install step for the
+> user. The reasoning below for "don't build it inside myMeal" still holds and
+> is what rules out a myMeal-only implementation; the delivery mechanism is a
+> shared library rather than a service. Consequences: the engines stay pure
+> Python with no Flask/SQLAlchemy dependency, the host app owns the dataset file
+> and persistence, and lifting `foodcore/` into its own repo must remain a no-op.
+> Sections below that say "service", "add-on" or "foodcore API" should be read
+> as "module" and "function call".
+
+**Do not build this inside myMeal alone.** It is shared *food reference* logic
+that myMeal and Edibl both need — for three reasons already true in the code:
 
 1. **Both apps already need the same thing and already duplicate it.** Edibl has
    a dimension-aware `Quantity` value object with its own unit registry
@@ -115,15 +125,20 @@ These are the seams to build on, all present today:
 |---|---|---|
 | Provider registry + ABC | `services/ai/registry.py` | A **food-data provider registry** — `usda`, `off`, `local`, each a class + one line, same shape |
 | `Field` settings registry | `settings.py` | `foodcore_url`, `foodcore_token`, dataset refresh cadence — with generated docs + add-on schema for free |
-| Supervisor discovery | `ha_discovery.py`, `shared_postgres` | foodcore advertises host/port/token; apps auto-configure |
-| Sibling client w/ graceful absence | `services/edibl.py` | `FoodcoreClient` — **must degrade to today's behaviour when absent** |
+| Sibling client w/ graceful absence | `services/edibl.py` | The same degrade-when-absent discipline applies to a MISSING DATASET: `import foodcore` always works; no data means `Unresolved`, never a crash |
 | MCP tool catalog | `mcp_server.py` | `convert_ingredient_quantity`, `calculate_recipe_nutrition` as read-only tools |
-| Shared DB provisioning | `shared_postgres` add-on | foodcore gets its own DB + least-privilege role |
+| Host data dir | `settings.py` DATA_DIR | Each app points foodcore at its own compact dataset file — no shared DB |
 | ADR 0001 food contract | `docs/adr/` | Extend to cover the reference tier |
 
-**The load-bearing constraint:** every app must keep working with foodcore
-absent. It is an *enrichment* service, not a dependency. That rule is what makes
-this safe to ship incrementally and is non-negotiable.
+**The load-bearing constraint:** every app must keep working when foodcore has
+no dataset loaded. It is an *enrichment* layer, not a hard dependency — a
+missing dataset degrades to today's behaviour and `Unresolved`, never an error.
+That rule is what makes this safe to ship incrementally and is non-negotiable.
+
+**Second constraint, from the module decision:** foodcore must never import from
+a host app, and extracting `foodcore/` into its own repository must not change a
+single import line. Enforced by a test that installs the package into a venv
+with neither Flask nor SQLAlchemy present.
 
 ## 6. Staged plan (each stage independently shippable)
 
@@ -132,10 +147,11 @@ this safe to ship incrementally and is non-negotiable.
 regardless of foodcore and removes the duplication that makes everything else
 ambiguous. *Exit: one unit system across two apps.*
 
-**Stage 1 — foodcore skeleton + USDA portions.** Add-on, own DB, discovery,
-`POST /v1/measurements/convert`. myMeal's `to_grams()` consults it, falls back to
-the 41-density table when absent. *Exit: "2 cups flour" → 240 g with provenance,
-and "1 can tomatoes" honestly returns unresolved.*
+**Stage 1 — foodcore package + USDA portions.** Installable module, pure
+Python, dataset file owned by the host app. myMeal's `to_grams()` calls
+`foodcore.convert`, falling back to the 41-density table when the dataset is
+absent. *Exit: "2 cups flour" → 240 g with provenance, and "1 can tomatoes"
+honestly returns unresolved.*
 
 **Stage 2 — deterministic nutrition.** USDA per-100 g × edible grams, per serving,
 with completeness/uncertainty. The LLM path becomes the *matcher*, not the
@@ -158,9 +174,10 @@ Stages 0–2 are where essentially all the user-visible value sits for a househo
 1. Is "discover recipes you don't have" ever a goal? If no, the entire restricted
    recipe-corpus tier (§3.2 of the spec, and most of its licensing complexity)
    drops out permanently.
-2. Is foodcore a **fourth add-on**, or a module inside Edibl (which already owns
-   products and barcodes)? A module is cheaper; a separate add-on keeps reference
-   data alive when Edibl isn't installed, which matters for myMeal-only users.
+2. ~~Is foodcore a fourth add-on, or a module?~~ **Answered: a standalone module
+   both apps import.** Remaining sub-question: how does Edibl consume it — vendored
+   copy, git-pinned dependency, or submodule? Whichever is chosen must make the
+   SOP's §8 rule enforceable: shared code changes in all consumers together.
 3. Does anyone else install these? If this estate is one household, the licensing
    tiers (§12) collapse to "attribute OFF, stay CC0 elsewhere" and a lot of the
    spec's governance machinery is unnecessary.
