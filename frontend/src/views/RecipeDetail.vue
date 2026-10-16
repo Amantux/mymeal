@@ -216,7 +216,7 @@ async function tidyIngredients() {
     structuring.value = false
   }
 }
-const editSteps = ref([]) // [{text}]
+const editSteps = ref([]) // [{title, text}]
 
 async function load() {
   loading.value = true
@@ -291,7 +291,11 @@ async function startEdit() {
     } catch { /* keep the display-in-food fallback */ }
   }
   editIngredients.value = rows
-  editSteps.value = r.steps.map((s) => ({ text: s.text }))
+  // `title` must be carried, not just `text`. The schema.org and AI import
+  // paths both populate step titles, and dropping them here silently wiped a
+  // cook's own phase headings the first time they opened the editor — which is
+  // why the column looked unused despite three writers.
+  editSteps.value = r.steps.map((s) => ({ title: s.title || '', text: s.text }))
   editing.value = true
 }
 
@@ -301,10 +305,12 @@ async function save() {
     categoryIds: selectedCategoryIds.value,
     nutrition: nutritionForm.value,
     ingredients: filledRows().map((r, position) => rowToPayload(r, position)),
+    // A heading with no step under it is not a step, so the filter stays on
+    // text; the title rides along with whatever survives it.
     steps: editSteps.value
-      .map((s) => (s.text || '').trim())
-      .filter(Boolean)
-      .map((text, position) => ({ text, position })),
+      .map((s) => ({ title: (s.title || '').trim(), text: (s.text || '').trim() }))
+      .filter((s) => s.text)
+      .map((s, position) => ({ ...s, position })),
   }
   try {
     if (editingVersionId.value) {
@@ -364,7 +370,7 @@ function loadBuffersFrom(snap) {
     return { quantity: i.quantity || '', unit: i.unit || '',
              food: i.food || i.display || '', freeText: false, ...carried }
   })
-  editSteps.value = (snap.steps || []).map((s) => ({ text: s.text }))
+  editSteps.value = (snap.steps || []).map((s) => ({ title: s.title || '', text: s.text }))
 }
 
 async function startExperiment() {

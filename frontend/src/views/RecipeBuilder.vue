@@ -138,9 +138,9 @@ async function save() {
       cookMinutes: Number(form.value.cookMinutes) || 0,
       ingredients: ings,
       steps: steps.value
-        .map((s) => (s.text || '').trim())
-        .filter(Boolean)
-        .map((text, position) => ({ text, position })),
+        .map((s) => ({ title: (s.title || '').trim(), text: (s.text || '').trim() }))
+        .filter((s) => s.text)
+        .map((s, position) => ({ ...s, position })),
       tags: form.value.tags.split(',').map((t) => t.trim()).filter(Boolean),
     })
     ui.toast('Recipe created')

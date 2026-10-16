@@ -19,14 +19,52 @@ describe('StepRows', () => {
   test('remove drops a step (but never below one row)', async () => {
     const w = mount(StepRows, { props: { modelValue: [{ text: 'a' }, { text: 'b' }] } })
     await w.findAll('.icon.rm')[0].trigger('click')
-    expect(lastEmit(w)).toEqual([{ text: 'b' }])
+    expect(lastEmit(w)).toEqual([{ title: '', text: 'b' }])
   })
 
   test('move reorders steps', async () => {
     const w = mount(StepRows, { props: { modelValue: [{ text: 'a' }, { text: 'b' }] } })
     // second row's "move up" button
     await w.findAll('.step-row')[1].findAll('.icon')[0].trigger('click')
-    expect(lastEmit(w)).toEqual([{ text: 'b' }, { text: 'a' }])
+    expect(lastEmit(w)).toEqual([{ title: '', text: 'b' }, { title: '', text: 'a' }])
+  })
+
+  // ---- Author phase headings (RecipeStep.title) ----
+
+  test('heading inputs are hidden until asked for', async () => {
+    const w = mount(StepRows, { props: { modelValue: [{ text: 'a' }, { text: 'b' }] } })
+    expect(w.findAll('.title-in').length).toBe(0)
+
+    await w.get('.titles-on').trigger('click')
+
+    expect(w.findAll('.title-in').length).toBe(2)
+  })
+
+  // An author who already has headings (typed here, or carried in from the
+  // schema.org / AI import paths) must not find the fields hidden and conclude
+  // they were lost.
+  test('heading inputs are forced open when a step already has one', () => {
+    const w = mount(StepRows, { props: { modelValue: [{ title: 'Dough', text: 'a' }, { text: 'b' }] } })
+    expect(w.findAll('.title-in').length).toBe(2)
+    expect(w.find('.titles-on').exists()).toBe(false)
+  })
+
+  test('an edited heading is emitted on its own step', async () => {
+    const w = mount(StepRows, { props: { modelValue: [{ text: 'a' }, { text: 'b' }] } })
+    await w.get('.titles-on').trigger('click')
+
+    await w.findAll('.title-in')[1].setValue('Bake day')
+
+    expect(lastEmit(w)).toEqual([{ title: '', text: 'a' }, { title: 'Bake day', text: 'b' }])
+  })
+
+  test('a heading travels with its step when reordered', async () => {
+    const w = mount(StepRows, {
+      props: { modelValue: [{ title: 'Dough', text: 'a' }, { title: 'Bake day', text: 'b' }] },
+    })
+    await w.findAll('.step-row')[1].findAll('.icon')[0].trigger('click')
+
+    expect(lastEmit(w)).toEqual([{ title: 'Bake day', text: 'b' }, { title: 'Dough', text: 'a' }])
   })
 
   // Regression: the parent echoing our own emitted array back (v-model) must not
