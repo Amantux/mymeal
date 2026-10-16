@@ -464,3 +464,97 @@ def test_0018_migrated_and_create_all_agree_on_free_text(tmp_path):
     assert declared.nullable is False
     assert bool(migrated[3]) is True
     assert declared.server_default is not None
+
+
+def test_0020_adds_kind_to_a_real_pre_media_database(tmp_path):
+    """The only test that exercises what 0020 actually DOES.
+
+    Same trap as 0018: baseline 0001 is metadata-driven, so a fresh database
+    has `kind` before 0020 runs and the `_has_column` guard makes it a no-op —
+    asserting the column after `upgrade head` would test the MODEL, not the
+    migration, and would pass even if 0020 added a nullable column with no
+    default.
+
+    A genuine pre-media install is therefore built by stepping BACK one
+    revision with a row already in the table. That is the case that matters:
+    every row written before the media slot existed is a how-to video, and it
+    must come back as one rather than as NULL under NOT NULL.
+    """
+    db = str(tmp_path / "m.db")
+    assert _run_alembic(db, "upgrade", "head").returncode == 0
+    c = sqlite3.connect(db)
+    c.execute("PRAGMA foreign_keys=ON")
+    _insert(c, "groups", {"id": "g", "name": "G"})
+    _insert(c, "recipes", {"id": "r", "group_id": "g", "name": "R", "slug": "r"})
+    _insert(c, "recipe_videos",
+            {"id": "v1", "recipe_id": "r", "group_id": "g", "position": 0,
+             "title": "Old clip", "url": "https://youtu.be/abc", "filename": ""})
+    c.commit()
+    c.close()
+    # Stepping back is what makes this a real pre-media database: a hand-rolled
+    # ALTER ... DROP COLUMN leaves alembic_version at head, so `upgrade head`
+    # is then a no-op and the test asserts nothing.
+    assert _run_alembic(db, "downgrade", "-1").returncode == 0
+    assert _col(db, "recipe_videos", "kind") is None  # arranged
+
+    assert _run_alembic(db, "upgrade", "head").returncode == 0
+
+    col = _col(db, "recipe_videos", "kind")
+    assert col is not None, "0020 did not add the column"
+    assert col[3] == 1, "kind should be NOT NULL"
+    c = sqlite3.connect(db)
+    rows = c.execute("SELECT kind FROM recipe_videos").fetchall()
+    c.close()
+    assert rows == [("video",)], f"pre-media row is not a video: {rows}"
+
+
+def test_0020_downgrade_then_upgrade_round_trips_with_rows_present(tmp_path):
+    """An empty database migrates fine, which is why the rest of the suite
+    misses table-rebuild bugs — so seed a real row first. recipe_videos has
+    FKs out to recipes and groups, and the downgrade rebuilds the table."""
+    db = str(tmp_path / "m.db")
+    assert _run_alembic(db, "upgrade", "head").returncode == 0
+    c = sqlite3.connect(db)
+    c.execute("PRAGMA foreign_keys=ON")
+    _insert(c, "groups", {"id": "g", "name": "G"})
+    _insert(c, "recipes", {"id": "r", "group_id": "g", "name": "R", "slug": "r"})
+    _insert(c, "recipe_videos",
+            {"id": "v1", "recipe_id": "r", "group_id": "g", "position": 0,
+             "title": "Dish photo", "url": "", "filename": "abc.png",
+             "kind": "image"})
+    c.commit()
+    c.close()
+
+    # "-1" rather than a named target: the predecessor is named in exactly one
+    # place (the migration's own down_revision) and this test must not become a
+    # second copy of it.
+    down = _run_alembic(db, "downgrade", "-1")
+    assert down.returncode == 0, down.stderr[-800:]
+    assert _col(db, "recipe_videos", "kind") is None
+    c = sqlite3.connect(db)
+    kept = c.execute("SELECT COUNT(*) FROM recipe_videos").fetchone()[0]
+    tmp = c.execute("SELECT name FROM sqlite_master WHERE name LIKE "
+                    "'_alembic_tmp_%'").fetchall()
+    c.close()
+    assert kept == 1, "the rebuild dropped the row"
+    assert tmp == [], f"leftover temp table wedges the next boot: {tmp}"
+
+    up = _run_alembic(db, "upgrade", "head")
+    assert up.returncode == 0, up.stderr[-800:]
+    assert _col(db, "recipe_videos", "kind") is not None
+
+
+def test_0020_migrated_and_create_all_agree_on_kind(tmp_path):
+    """The invariant this file exists for: a create_all database and a migrated
+    one must describe the same column. A Python-only default would make the
+    migrated path nullable and drift from the model."""
+    from app.models import RecipeVideo
+
+    db = str(tmp_path / "m.db")
+    assert _run_alembic(db, "upgrade", "head").returncode == 0
+    migrated = _col(db, "recipe_videos", "kind")
+    declared = RecipeVideo.__table__.columns["kind"]
+
+    assert declared.nullable is False
+    assert bool(migrated[3]) is True
+    assert declared.server_default is not None

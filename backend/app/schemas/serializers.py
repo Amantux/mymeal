@@ -155,6 +155,7 @@ def recipe_summary(r):
     # Local import, matching the other service imports in this module.
     from ..services.cooking import format_temperature
 
+    _media = [recipe_media_out(v) for v in r.videos]
     return {
         "id": r.id,
         "name": r.name,
@@ -163,7 +164,11 @@ def recipe_summary(r):
         "cookTemperatureC": r.cook_temperature_c,
         "cookTemperature": format_temperature(r.cook_temperature_c),
         "image": f"/api/v1/recipes/{r.id}/image" if r.image else None,
-        "videos": [recipe_video_out(v) for v in r.videos],
+        # `media` is the name; `videos` is the same list under its former key,
+        # kept for API clients written against it. Same objects, so the only
+        # cost is JSON bytes on a field that is usually empty.
+        "media": _media,
+        "videos": _media,
         "servings": r.servings,
         "recipeYield": r.recipe_yield,
         "totalMinutes": r.total_minutes,
@@ -285,25 +290,41 @@ def _effective_nutrition(r):
     return {k: round(v, 2) for k, v in total.items()}
 
 
-def recipe_video_out(v):
-    """A recipe's how-to video.
+def recipe_media_out(v):
+    """One item in a recipe's media slot — a photo or a how-to video.
 
-    `streamUrl` is set only for an uploaded file the server is willing to play
-    inline; `embedUrl` only for a provider on the embed allowlist. Anything else
-    is a plain external link the UI opens in a new tab. The server decides what
-    may be framed — the UI never builds an embed URL from a raw address.
+    `fileUrl` is set only for an uploaded file the server is willing to serve
+    inline; `embedUrl` only for a video provider on the embed allowlist.
+    Anything else is a plain external link the UI opens in a new tab. The
+    server decides what may be framed — the UI never builds an embed URL from
+    a raw address.
+
+    `kind` is what the UI switches the rendering element on, so it is always
+    present and always one of the known values (the model's server default
+    makes pre-media rows videos).
+
+    `streamUrl` repeats `fileUrl` under its former name. The field is part of
+    the shipped API, and a one-line alias is cheaper than finding out whose
+    script read it.
     """
-    from ..services.videos import embed_url
+    from ..services.videos import embed_url, normalize_kind
+    file_url = (f"/api/v1/recipes/{v.recipe_id}/media/{v.id}/file"
+                if v.filename else None)
     return {
         "id": v.id,
+        "kind": normalize_kind(v.kind),
         "title": v.title,
         "url": v.url or None,
         "embedUrl": embed_url(v.url) if v.url else None,
-        "streamUrl": (f"/api/v1/recipes/{v.recipe_id}/videos/{v.id}/stream"
-                      if v.filename else None),
+        "fileUrl": file_url,
+        "streamUrl": file_url,
         "position": v.position,
         "createdAt": iso(v.created_at),
     }
+
+
+# Former name, kept because it is imported by name elsewhere.
+recipe_video_out = recipe_media_out
 
 
 def recipe_out(r):
