@@ -165,7 +165,18 @@ with neither Flask nor SQLAlchemy present.
 regardless of foodcore and removes the duplication that makes everything else
 ambiguous. *Exit: one unit system across two apps.*
 
-**Stage 1 — foodcore package + USDA portions.** Installable module, pure
+**Stage 1 — foodcore package + USDA portions. SHIPPED in myMeal.**
+`backend/app/services/food_reference.py` is the only module that imports
+foodcore; `units.to_grams` consults it for volume→mass and falls back to the
+41-density table on any refusal. The dataset is **operator-built** and
+**absent by default** (`MYMEAL_FOODCORE_DATASET` / add-on `foodcore_dataset`,
+blank = today's behaviour, byte-for-byte): the bulk FDC export is gigabytes, so
+it is never committed, never baked into the image and never downloaded at
+startup or request time — see `mymeal/DOCS.md`. A refusal falls back rather
+than surfacing: `to_grams` returns `float | None` and cannot carry "ambiguous,
+here are the candidates", so showing the ambiguity needs a richer return type
+and some UI, which is Stage 2+ work. Original wording follows. Installable
+module, pure
 Python, dataset file owned by the host app. myMeal's `to_grams()` calls
 `foodcore.convert`, falling back to the 41-density table when the dataset is
 absent. *Exit: "2 cups flour" → **250 g** with provenance, and "1 can tomatoes"

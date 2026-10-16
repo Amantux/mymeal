@@ -4,7 +4,15 @@ Recipe ingredient lines are free text ("1 1/2 cups flour"). This module parses
 the leading quantity + unit so the app can (a) SCALE a recipe to a target
 serving count and (b) where a food's density is known, present WEIGHT-based
 measurements regardless of how the recipe was written ("1 cup flour" → "125 g
-flour"), converting under the covers. Pure functions, no DB, never raises.
+flour"), converting under the covers. Pure functions, no app database, never
+raises.
+
+Weights come from three places, in this order: definitional physics for mass
+units, then the shared foodcore reference dataset when an operator has imported
+one (``food_reference`` — the only module that knows foodcore exists), then the
+hand-written density table below. The reference dataset is read-only, optional
+and absent by default; with no dataset configured this module behaves exactly
+as it did before foodcore existed.
 """
 from __future__ import annotations
 
@@ -970,9 +978,24 @@ def _density_for(text: str) -> float | None:
     return None
 
 
+def _reference_grams(unit: str, food_text: str) -> float | None:
+    """Grams for ONE `unit` of this food from the shared foodcore dataset.
+
+    The whole foodcore dependency lives behind this one call (see
+    ``food_reference``), imported locally so this module stays import-light and
+    so the seam is removable. It returns None — not an exception, not a zero —
+    for every unjustified answer, including the shipped default of no dataset
+    configured at all.
+    """
+    from . import food_reference  # local: keeps this module import-light
+
+    return food_reference.grams_per(unit, food_text)
+
+
 def to_grams(text: str, learned=None) -> float | None:
     """Best-effort grams for an ingredient line: direct for weight units, and
-    for volume units when the food's density is known. None otherwise.
+    for volume units when a reference weight or the food's density is known.
+    None otherwise.
 
     ``learned`` is an optional ``(unit, food) -> grams_per_unit | None`` callable
     supplying remembered conversions for units this module has no physics for —
@@ -989,6 +1012,19 @@ def to_grams(text: str, learned=None) -> float | None:
     if p["unit"] in _WEIGHT_G:
         return p["qty"] * _WEIGHT_G[p["unit"]]
     if p["unit"] in _VOLUME_ML:
+        # The reference dataset first: a MEASURED USDA portion weight beats a
+        # hand-written density, and importing reference data only to override
+        # it with folklore would defeat the point. It answers None unless an
+        # operator has imported a dataset, so the default path below is
+        # unchanged and so is every number myMeal has ever printed.
+        reference = _reference_grams(p["unit"], p["rest"])
+        if reference:
+            return p["qty"] * reference
+        # Then the built-in table. This fallback is load-bearing, not
+        # belt-and-braces: foodcore returns Unresolved wherever it cannot
+        # justify an answer (no such food, no portion row, ambiguous
+        # candidates), and a refusal must not withdraw a conversion myMeal has
+        # shipped for years — scaling and the shopping list both read it.
         density = _density_for(p["rest"])
         if density:
             return p["qty"] * _VOLUME_ML[p["unit"]] * density
