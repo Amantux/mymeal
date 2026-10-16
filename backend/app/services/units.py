@@ -368,27 +368,34 @@ def _restates(inner: dict, qty: float | None, unit: str | None) -> bool:
 
 def _split_measure_parts(rest: str, qty: float | None, unit: str | None):
     """``(food, alternative, optional)`` for an ingredient's food text."""
-    # Order matters. "(optional)" comes off first wherever it sits, then the
-    # restated bracket, and only then the bare word "optional" — which is
-    # anchored at the end and so was invisible behind a trailing bracket:
-    # "Italian Seasoning optional (1 g)" kept "optional" in the food name.
     alt = ""
     optional = bool(_OPTIONAL_PAREN_RE.search(rest))
     food = _OPTIONAL_PAREN_RE.sub(" ", rest).strip()
 
-    # A trailing bracket holding NOTHING BUT the line's own amount again. It is
-    # the one piece deleted rather than reported: it duplicates the amount the
-    # first column already shows, and after scaling it would contradict it.
-    m = _TRAILING_PAREN_RE.search(food)
-    if m:
-        inner = parse_line(m.group(1))
-        if inner["qty"] is not None and inner["unit"] and not inner["rest"] \
-                and _restates(inner, qty, unit):
-            food = food[:m.start()].rstrip()
-
-    if _OPTIONAL_TAIL_RE.search(food):
-        optional = True
-        food = _OPTIONAL_TAIL_RE.sub("", food)
+    # The bare word "optional" and a restated bracket are both anchored at the
+    # END, so either one HIDES the other and which one is outermost is up to the
+    # author: both "Seasoning optional (1 g)" and "Seasoning (1 g) optional"
+    # occur. Peeling in a fixed order fixed one spelling and left the other
+    # alone, so this peels repeatedly until nothing more comes off. Bounded
+    # because every pass that does anything makes the string strictly shorter.
+    for _ in range(4):
+        peeled = False
+        if _OPTIONAL_TAIL_RE.search(food):
+            optional, peeled = True, True
+            food = _OPTIONAL_TAIL_RE.sub("", food)
+        # A trailing bracket holding NOTHING BUT the line's own amount again. It
+        # is the one piece deleted rather than reported: it duplicates the
+        # amount the first column already shows, and after scaling it would
+        # contradict it.
+        m = _TRAILING_PAREN_RE.search(food)
+        if m:
+            inner = parse_line(m.group(1))
+            if inner["qty"] is not None and inner["unit"] and not inner["rest"] \
+                    and _restates(inner, qty, unit):
+                food = food[:m.start()].rstrip()
+                peeled = True
+        if not peeled:
+            break
 
     # "X or <amount>" — an alternative WAY TO MEASURE the same thing, which is
     # what a cook without a scale reads. Accepted only when the text after "or"

@@ -796,11 +796,16 @@ const imageSrc = computed(() =>
           <template v-for="(g, gi) in shownGroups" :key="`g${gi}`">
             <li v-if="g.section" class="ing-sec">{{ g.section }}</li>
             <li v-for="row in g.rows" :key="row.id">
+              <!-- The dash needs a name of its own: a screen reader announces a
+                   bare "—" as nothing, which is worse than the blank cell it
+                   replaced, and the sighted explanation ("2 items have no
+                   amount") only appears once the list is scaled. -->
               <span class="ing-amt tnum" :class="{ 'is-none': row.amount === '—' }"
-                    :aria-label="row.amount === '—' ? 'No set amount' : null">{{ row.amount }}</span>
+                    :aria-label="row.amount === '—' ? 'No set amount' : null"
+                    :title="row.amount === '—' ? 'No set amount' : null">{{ row.amount }}</span>
               <span class="ing-food">{{ row.food
                 }}<span v-if="row.alt" class="ing-alt">or {{ row.alt }}</span
-                ><span v-if="row.optional" class="ing-opt">optional</span
+                ><span v-if="row.optional" class="ing-alt">· optional</span
                 ><span v-if="row.weight" class="ing-weight">{{ row.weight }}</span
                 ><span v-if="row.note" class="ing-note">· {{ row.note }}</span></span>
             </li>
@@ -1062,22 +1067,21 @@ const imageSrc = computed(() =>
    generated content, so copying a row yields readable text. */
 .ing-note { color: var(--muted); margin-left: 6px; }
 .ing-weight { color: var(--muted); margin-left: 6px; }
-/* The alternative measure — "or 1/2 tsp" beside "1 g garlic powder". Quiet, but
-   NOT the same quiet as a note: this one is an amount you may cook from, so it
-   keeps tabular figures and sits closer to the food than the preparation aside.
-   No separator glyph, because "or" already is one. */
-.ing-alt { color: var(--muted); margin-left: 6px; font-variant-numeric: tabular-nums; }
-/* A property of the ingredient, so it reads as a label rather than more of the
-   name. Deliberately --border and not the accent: the accent belongs to the
-   page's primary action, and "optional" is the least urgent thing on the row. */
-.ing-opt {
-  margin-left: 8px; padding: 1px 6px; border: 1px solid var(--border);
-  border-radius: 999px; font-size: 0.72rem; text-transform: uppercase;
-  letter-spacing: 0.04em; color: var(--muted); white-space: nowrap;
-}
+/* Annotations lifted out of the food name — the alternative measure ("or 1/2
+   tsp") and "optional". ONE class for both, deliberately: they are the same
+   kind of thing (a property of the ingredient, not part of its name) and giving
+   them two treatments made the row argue with itself.
+   "optional" was a bordered uppercase pill, which was wrong twice over — it was
+   the only 999px radius in an app with a single radius token, and it was the
+   boldest SHAPE on a dense work surface while its muted colour said "ignore
+   me". As muted lowercase it matches the alternative and both read as asides.
+   Each carries its own leading separator ("or", "·") so two of them on one row
+   read as a list instead of running together. */
+.ing-alt { color: var(--muted); margin-left: 8px; }
 /* An em dash where an amount would be. Lighter than a real amount so a column
    of them doesn't compete with the numbers it sits among, but present — the
-   empty cell it replaces read as a bug. */
+   empty cell it replaces read as a rendering fault rather than a deliberate
+   "this one has no amount". */
 .ing-amt.is-none { color: var(--muted); font-weight: 400; }
 .scale-note { font-size: 0.875rem; margin: 0 0 12px; }
 /* A one-word way back to the authored amounts, mid-cook, without stepping down
