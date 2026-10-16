@@ -206,10 +206,31 @@ def test_a_corrupt_file_raises_a_curated_error_not_driver_text(tmp_path):
         load_dataset(str(path))
     message = str(exc.value)
     assert "corrupt.sqlite" in message
-    assert "sqlite3" not in message.lower() or "build-usda" in message
+    # MUTATION-CHECKED 2026-10-16. The previous assertion was
+    #     assert "sqlite3" not in message.lower() or "build-usda" in message
+    # whose right-hand side is ALWAYS true (every curated message ends with
+    # "Rebuild it with `python3 -m foodcore.cli build-usda`"), so the left-hand
+    # side never evaluated. Interpolating the driver's own text into _query's
+    # message left it passing. These assertions fail when that happens.
+    assert "not a database" not in message        # sqlite3's own message text
+    assert "build-usda" in message                # ...but the fix IS named
+    # The exception CLASS name is deliberate and carries no data — it is how an
+    # operator tells a corrupt file from a permissions problem. The driver's
+    # message is what must never appear, because that is where a DSN or a data
+    # row would ride along.
 
 
 def test_an_interrupted_build_leaves_no_half_written_dataset(tmp_path):
+    """MUTATION-CHECKED 2026-10-16.
+
+    The previous version asserted `not (...).exists() or True`, which is
+    unconditionally true, and `not path.exists()`, which passes with no cleanup
+    code at all because `os.replace` is never reached on the failure path.
+    Deleting the whole `except BaseException` block left both passing.
+
+    What actually has to hold is that NO file is left in the directory — the
+    temporary name is now unique, so naming it in the test would be guessing.
+    """
     path = tmp_path / "fc.sqlite"
     with pytest.raises(ValueError):
         build_dataset(
@@ -221,7 +242,23 @@ def test_an_interrupted_build_leaves_no_half_written_dataset(tmp_path):
         )
 
     assert not path.exists()
-    assert not (tmp_path / "fc.sqlite.partial").exists() or True
+    assert list(tmp_path.iterdir()) == [], "a partial dataset was left behind"
+
+
+def test_an_unwritable_destination_is_a_typed_error(tmp_path):
+    # The CLI prints whatever escapes build_dataset. A raw
+    # sqlite3.OperationalError traceback is useless to an operator and is a
+    # place for a path or a data row to leak.
+    with pytest.raises(DatasetError) as exc:
+        build_dataset(
+            tmp_path / "no_such_dir" / "fc.sqlite",
+            sources=[], foods=[], portions=[], nutrients=[],
+        )
+
+    message = str(exc.value)
+    assert "sqlite3" not in message.lower()
+    assert "unable to open" not in message.lower()
+    assert "writable" in message or "exists" in message
 
 
 def test_build_reports_what_it_wrote(tmp_path):
@@ -545,3 +582,167 @@ def test_a_dataset_from_an_older_schema_is_refused(tmp_path):
     with pytest.raises(DatasetError) as exc:
         load_dataset(path)
     assert "rebuild" in str(exc.value).lower()
+
+
+# --- the writer must not claim more than it stored ----------------------
+
+def test_build_counts_come_from_the_file_not_the_input(tmp_path):
+    """MUTATION GUARD for the `build_dataset` return contract.
+
+    `INSERT OR REPLACE` collapses rows sharing a primary key. Returning
+    `len(portions)` reports what the caller HANDED IN, which is a different
+    fact from what the host now has — and the difference is silently-lost
+    portion weights. Two rows below differ only in `grams`, which is NOT part
+    of the key, so exactly one survives and the count must say 1.
+    """
+    counts = build_dataset(
+        tmp_path / "fc.sqlite",
+        sources=[SourceRecord("usda", "v1", "2025-04-01", "CC0-1.0")],
+        foods=[{"key": "usda:1", "name": "Flour", "provider": "usda",
+                "source_id": "1"}],
+        portions=[
+            {"food_key": "usda:1", "measure": "cup", "grams": 125.0,
+             "method": "measured", "confidence": 0.95, "source_id": "same"},
+            {"food_key": "usda:1", "measure": "cup", "grams": 160.0,
+             "method": "measured", "confidence": 0.95, "source_id": "same"},
+        ],
+        nutrients=[],
+    )
+
+    assert counts["portions"] == 1, "the writer reported rows it did not store"
+
+
+def test_a_portion_with_no_source_id_is_refused(tmp_path):
+    """`source_id` is the last column of the portion primary key.
+
+    An FDC export whose `food_portion.csv` lacks its `id` column gives every
+    row a blank one, so all of a food's portions collide and only the last
+    survives — 8 of 157 measured weights disappeared this way. A portion with
+    no identity could not be cited in a Provenance anyway, so refuse it.
+    """
+    with pytest.raises(ValueError) as exc:
+        build_dataset(
+            tmp_path / "fc.sqlite",
+            sources=[SourceRecord("usda", "v1", "2025-04-01", "CC0-1.0")],
+            foods=[{"key": "usda:1", "name": "Flour", "provider": "usda",
+                    "source_id": "1"}],
+            portions=[{"food_key": "usda:1", "measure": "cup", "grams": 125.0,
+                       "method": "measured", "confidence": 0.95,
+                       "source_id": "  "}],
+            nutrients=[],
+        )
+
+    assert "source_id" in str(exc.value)
+
+
+@pytest.mark.parametrize("amount", [0, 0.0, -1.0])
+def test_a_nonpositive_portion_amount_is_refused(tmp_path, amount):
+    # `grams` is measured FOR `amount` of the measure, so grams/amount is the
+    # per-unit weight. Coercing a 0 to 1.0 fabricates a weight from a row that
+    # says nothing — the exact class of defect this package exists to prevent.
+    with pytest.raises(ValueError) as exc:
+        build_dataset(
+            tmp_path / "fc.sqlite",
+            sources=[SourceRecord("usda", "v1", "2025-04-01", "CC0-1.0")],
+            foods=[{"key": "usda:1", "name": "Flour", "provider": "usda",
+                    "source_id": "1"}],
+            portions=[{"food_key": "usda:1", "measure": "cup", "grams": 160.0,
+                       "amount": amount, "method": "measured",
+                       "confidence": 0.95, "source_id": "p1"}],
+            nutrients=[],
+        )
+
+    assert "amount" in str(exc.value)
+
+
+# --- a licence must never evaporate -------------------------------------
+
+def test_equally_recent_snapshots_that_disagree_combine_their_licences(tmp_path):
+    """MUTATION GUARD for `_source_for`.
+
+    `max(matches, key=retrieved_at)` returns the FIRST maximal element, and
+    `_sources` is ordered by `(provider, dataset_version)` — so a date tie
+    resolved to the alphabetically-lowest version and could cite CC0-1.0 for
+    data from an equally-recent ODbL snapshot, dropping the share-alike duty.
+    An obligation must not vanish because a sibling input was more permissive.
+    """
+    path = tmp_path / "fc.sqlite"
+    build_dataset(
+        path,
+        sources=[
+            SourceRecord("off", "2024-a", "2024-01-01", "CC0-1.0"),
+            SourceRecord("off", "2024-b", "2024-01-01", "ODbL-1.0"),
+        ],
+        foods=[{"key": "off:1", "name": "Branded flour", "provider": "off",
+                "source_id": "1"}],
+        portions=[{"food_key": "off:1", "measure": "cup", "grams": 120.0,
+                   "method": "declared", "confidence": 0.7, "source_id": "p1"}],
+        nutrients=[],
+    )
+
+    outcome = load_dataset(str(path)).portion_grams("off:1", "cup",
+                                                    version=VERSION)
+
+    assert outcome.provenance.license == "CC0-1.0 AND ODbL-1.0"
+
+
+def test_a_newer_snapshot_still_wins_outright(tmp_path):
+    # The conjunction above must not become a catch-all that conjoins every
+    # snapshot a provider ever had — only the equally-recent ones.
+    path = tmp_path / "fc.sqlite"
+    build_dataset(
+        path,
+        sources=[
+            SourceRecord("off", "2024-old", "2024-01-01", "CC0-1.0"),
+            SourceRecord("off", "2026-new", "2026-01-01", "ODbL-1.0"),
+        ],
+        foods=[{"key": "off:1", "name": "Branded flour", "provider": "off",
+                "source_id": "1"}],
+        portions=[{"food_key": "off:1", "measure": "cup", "grams": 120.0,
+                   "method": "declared", "confidence": 0.7, "source_id": "p1"}],
+        nutrients=[],
+    )
+
+    prov = load_dataset(str(path)).portion_grams("off:1", "cup",
+                                                 version=VERSION).provenance
+
+    assert prov.license == "ODbL-1.0"
+    assert prov.retrieved == "2026-01-01"
+
+
+# --- every failure path is a DatasetError, not a bare ValueError --------
+
+def test_an_unparseable_schema_version_is_a_typed_error(tmp_path):
+    path = write_dataset(str(tmp_path / "fc.sqlite"))
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE meta SET value = 'two' WHERE key = 'schema_version'")
+    conn.commit()
+    conn.close()
+
+    # `int()` ran before any guard, so this raised a bare ValueError straight
+    # past every host app's `except DatasetError`.
+    with pytest.raises(DatasetError):
+        load_dataset(path)
+
+
+def test_a_dataset_naming_an_unknown_provider_is_a_typed_error(tmp_path):
+    """The forward-compatibility case the schema check cannot catch.
+
+    A structurally valid schema-2 file whose `source` row names a provider this
+    foodcore has never heard of. `SourceRecord` enforces the closed vocabulary
+    with ValueError, and `_read_sources` was not wrapped — so a host app
+    crashed instead of seeing "upgrade foodcore".
+    """
+    path = write_dataset(str(tmp_path / "fc.sqlite"))
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE source SET provider = 'fdc_future'")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(DatasetError) as exc:
+        load_dataset(path)
+    assert "upgrade foodcore" in str(exc.value).lower()

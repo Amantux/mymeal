@@ -59,8 +59,9 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import tempfile
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable, Sequence
 
 from .provenance import Outcome, Provenance, Resolved, Unresolved
@@ -101,10 +102,14 @@ CREATE TABLE food (
     data_type TEXT NOT NULL DEFAULT '',
     -- Search PREFILTER only, never the decision: the singularised tokens of
     -- `name`, space-padded so LIKE '% tok %' narrows on whole tokens rather
-    -- than substrings. It exists so a one-word query on a 300k-row export need
-    -- not read the table into memory. Correctness comes from the Python
-    -- re-check in resolve_food, which is why the padding can be removed
-    -- without changing any answer (only the number of rows examined).
+    -- than substrings. Correctness comes from the Python re-check in
+    -- resolve_food, which is why the padding can be removed without changing
+    -- any answer (only the number of rows examined).
+    -- HONEST LIMITATION: a leading wildcard means NO index applies, so this is
+    -- a full scan — measured at ~3.5 s for a common token on a 200k-row export.
+    -- It is fast enough for the SR-Legacy/Foundation subset these apps import
+    -- and too slow for a full branded export; an FTS side-table is the fix when
+    -- that day comes. Do not claim this avoids reading the table.
     tokens    TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX food_name ON food (name);
@@ -317,6 +322,10 @@ _SCORE_ANYWHERE = 50        # query somewhere in the full description
 #: to the materialiser and forgotten in one of the three queries that feed it.
 _FOOD_SELECT = "SELECT key, name, provider, source_id, data_type FROM food"
 
+#: The narrower projection `FoodRow` needs. Separate constant, same reason:
+#: adding a FoodRow field must not leave one of its two queries behind.
+_FOOD_ROW_SELECT = "SELECT key, name, provider, source_id FROM food"
+
 #: How many candidates a LOW match returns. The caller shows a human 3-5 of
 #: them; materialising every food that merely contains the query tokens would
 #: make a one-word query on a 300k-row export read the whole table.
@@ -353,7 +362,17 @@ class Dataset:
         self._populate = _populate
         self._local = threading.local()
         # Fail at construction, not at the first lookup hours later.
-        self._schema_version = int(self._meta().get("schema_version", 0))
+        raw_version = self._meta().get("schema_version", "0")
+        try:
+            self._schema_version = int(raw_version)
+        except (TypeError, ValueError):
+            # An unparseable version is a broken file, not a crash: a host app
+            # catches DatasetError, and ValueError would escape it.
+            raise DatasetError(
+                f"{self._describe()} declares a dataset schema version of "
+                f"{raw_version!r}, which is not a number. Rebuild it with "
+                "`python3 -m foodcore.cli build-usda`."
+            ) from None
         if self._schema_version != _SCHEMA_VERSION:
             raise DatasetError(
                 f"{self._describe()} was built with dataset schema "
@@ -413,12 +432,58 @@ class Dataset:
             "SELECT provider, dataset_version, retrieved_at, license, record_count, "
             "notes FROM source ORDER BY provider, dataset_version"
         )
-        return tuple(SourceRecord(**dict(row)) for row in rows)
+        try:
+            return tuple(SourceRecord(**dict(row)) for row in rows)
+        except (ValueError, TypeError) as exc:
+            # The forward-compatibility case the schema check CANNOT catch: a
+            # structurally valid schema-2 file naming a provider or licence this
+            # foodcore does not know. SourceRecord enforces the closed
+            # vocabularies with ValueError; a host app catches DatasetError.
+            raise DatasetError(
+                f"{self._describe()} names a data source this foodcore does not "
+                f"recognise ({exc}). Upgrade foodcore, or rebuild the dataset."
+            ) from None
 
     def _source_for(self, provider: str) -> SourceRecord | None:
+        """The snapshot to cite for ``provider``, with a safe licence.
+
+        Most recent wins when a provider has several, and the tie-break is
+        ``dataset_version`` so the answer never depends on row order.
+
+        The licence is handled separately, by `_license_for` — see there.
+        """
         matches = [s for s in self._sources if s.provider == provider]
-        # Most recent snapshot wins when a provider has several.
-        return max(matches, key=lambda s: s.retrieved_at) if matches else None
+        if not matches:
+            return None
+        return max(matches, key=lambda s: (s.retrieved_at, s.dataset_version))
+
+    def _license_for(self, provider: str) -> str:
+        """The licence to cite for ``provider``, conjoined when it is ambiguous.
+
+        `_source_for` picks ONE snapshot, which is right for a date and an id
+        but wrong for a licence: a file holding two same-dated `off` snapshots,
+        one CC0 and one ODbL, would cite whichever sorted first and could
+        silently drop ODbL's share-alike duty. A licence obligation must never
+        evaporate because an equally-recent sibling was more permissive, so
+        equally-recent snapshots that disagree yield the SPDX conjunction.
+        `provenance._require_license` accepts "A AND B" for exactly this reason.
+
+        Deliberately NOT done by building a `SourceRecord` with a synthetic
+        licence: a SourceRecord describes one real snapshot, and its validation
+        rightly rejects a conjunction. The combination is a property of the
+        QUESTION "what may I do with a value from this provider", not of any
+        row, so it lives here.
+        """
+        matches = [s for s in self._sources if s.provider == provider]
+        if not matches:
+            return ""
+        newest = max(s.retrieved_at for s in matches)
+        terms = sorted({
+            term
+            for s in matches if s.retrieved_at == newest
+            for term in s.license.split(" AND ")
+        })
+        return " AND ".join(terms)
 
     # -- the surface a host app and the engines use ----------------------
 
@@ -432,9 +497,7 @@ class Dataset:
         return self._schema_version
 
     def food(self, key: str) -> FoodRow | None:
-        rows = self._query(
-            "SELECT key, name, provider, source_id FROM food WHERE key = ?", (key,)
-        )
+        rows = self._query(_FOOD_ROW_SELECT + " WHERE key = ?", (key,))
         return FoodRow(**dict(rows[0])) if rows else None
 
     def search_foods(self, text: str, limit: int = 10) -> list[FoodRow]:
@@ -448,8 +511,8 @@ class Dataset:
         if not needle:
             return []
         rows = self._query(
-            "SELECT key, name, provider, source_id FROM food "
-            "WHERE lower(name) LIKE ? ESCAPE '\\' ORDER BY length(name), name LIMIT ?",
+            _FOOD_ROW_SELECT + " WHERE lower(name) LIKE ? ESCAPE '\\' "
+            "ORDER BY length(name), name LIMIT ?",
             (f"%{_like_escape(needle)}%", max(1, int(limit))),
         )
         return [FoodRow(**dict(row)) for row in rows]
@@ -528,10 +591,14 @@ class Dataset:
         while "cooked rice" is not — which is precisely spec FR-01's rule that
         raw and cooked must not merge, rather than a rule bolted on beside it.
 
-        SQL does the prefiltering and Python does the deciding: the token
-        index narrows 300k foods to a handful, then the scoring below re-checks
-        coverage exactly. Moving the policy into SQL would make it unreadable
-        and untestable for the sake of a lookup that is already fast.
+        SQL does the prefiltering and Python does the deciding: the token index
+        narrows the table to the foods containing every query token, then the
+        scoring below re-checks coverage exactly. Moving the policy into SQL
+        would make it unreadable and untestable.
+
+        The prefilter is a full scan (a leading LIKE wildcard cannot use an
+        index) — see the `tokens` column comment for the measured cost and when
+        that stops being acceptable.
         """
         q = tokenise(query)
         if not q:
@@ -696,7 +763,11 @@ class Dataset:
                     confidence: float, version: str) -> Provenance:
         snapshot = self._source_for(provider)
         if snapshot is not None:
-            return snapshot.provenance(source_id, method, version, confidence)
+            prov = snapshot.provenance(source_id, method, version, confidence)
+            licensing = self._license_for(provider)
+            return prov if licensing == prov.license else replace(
+                prov, license=licensing
+            )
         # A row whose provider has no snapshot row means the dataset was built
         # by something that skipped the registry. Rather than invent a licence,
         # refuse to claim one: 'internal' is the honest label for "this file
@@ -807,31 +878,70 @@ def build_dataset(
     optional and default to "one unqualified unit", so a caller with nothing
     to say about preparation does not have to say it.
 
-    Returns the row counts written, so a caller can report what it built rather
-    than claiming success blindly. Writes to a temporary file and renames, so an
-    interrupted build cannot leave the host with a half-written dataset that
+    Returns the row counts **as counted from the finished file**, so two input
+    rows that collapse onto one primary key are reported as one. A caller can
+    therefore compare the counts against what it passed in and notice loss,
+    which is impossible if the writer just echoes `len()` back.
+
+    Writes to a unique temporary file in the target directory and renames, so
+    an interrupted build cannot leave the host with a half-written dataset that
     opens fine and answers wrongly.
+
+    Raises ``DatasetError`` for anything wrong with the destination or the
+    write, and ``ValueError`` for a row missing a required column.
     """
     records = _Records(
         sources=list(sources), foods=list(foods), portions=list(portions),
         nutrients=list(nutrients), builder=builder,
     )
     out_path = str(out_path)
-    tmp_path = out_path + ".partial"
-    if os.path.exists(tmp_path):
-        os.unlink(tmp_path)
-    conn = sqlite3.connect(tmp_path)
+    # A UNIQUE temporary name in the TARGET directory. `out_path + ".partial"`
+    # was a fixed name, so two concurrent builds shared it and the first would
+    # delete the second's in-progress file.
+    directory = os.path.dirname(out_path) or "."
     try:
-        counts = _write(conn, records)
-        conn.commit()
+        handle, tmp_path = tempfile.mkstemp(
+            dir=directory, prefix=os.path.basename(out_path) + ".",
+            suffix=".partial",
+        )
+        os.close(handle)
+    except OSError as exc:
+        raise DatasetError(
+            f"cannot write a foodcore dataset next to {out_path!r}: "
+            f"{type(exc).__name__}. Check that the directory exists and is "
+            "writable."
+        ) from None
+    try:
+        try:
+            conn = sqlite3.connect(tmp_path)
+        except sqlite3.Error as exc:
+            raise DatasetError(
+                f"cannot create a foodcore dataset at {out_path!r}: "
+                f"{type(exc).__name__}."
+            ) from None
+        try:
+            counts = _write(conn, records)
+            conn.commit()
+        except sqlite3.Error as exc:
+            # Curated, like every other boundary in this module: the CLI prints
+            # whatever escapes here, and a raw driver message is both useless to
+            # an operator and a place for a DSN or a data row to leak.
+            raise DatasetError(
+                f"failed writing the foodcore dataset at {out_path!r}: "
+                f"{type(exc).__name__}."
+            ) from None
+        finally:
+            conn.close()
+        os.replace(tmp_path, out_path)
     except BaseException:
-        conn.close()
-        if os.path.exists(tmp_path):
+        # Clean up the partial file, but NEVER let the cleanup's own failure
+        # replace the real build failure — the caller needs to see why the
+        # build broke, not why the tidy-up did.
+        try:
             os.unlink(tmp_path)
+        except OSError:
+            pass
         raise
-    finally:
-        conn.close()
-    os.replace(tmp_path, out_path)
     return counts
 
 
@@ -885,11 +995,15 @@ def _write(conn: sqlite3.Connection, records: _Records) -> dict[str, int]:
             for n in records.nutrients
         ],
     )
+    # Counted from the FILE, not from the input lists. `INSERT OR REPLACE`
+    # collapses rows sharing a primary key, so `len(records.portions)` is a
+    # claim about what we were HANDED, not about what the host now has. A build
+    # that stores 149 of 157 portion weights while reporting 157 is exactly the
+    # silent data loss this package exists to prevent.
     return {
-        "sources": len(records.sources),
-        "foods": len(records.foods),
-        "portions": len(records.portions),
-        "nutrients": len(records.nutrients),
+        name: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+        for name, table in (("sources", "source"), ("foods", "food"),
+                            ("portions", "portion"), ("nutrients", "nutrient"))
     }
 
 
@@ -911,7 +1025,31 @@ def _portion_row(row: dict[str, Any]) -> dict[str, Any]:
     # rebuild accumulate duplicate rows.
     out["size"] = (out["size"] or "").strip().lower()
     out["qualifier"] = (out["qualifier"] or "").strip().lower()
-    out["amount"] = float(out["amount"] or 1.0)
+
+    # `source_id` is the last column of the portion primary key, so a blank one
+    # makes every otherwise-similar row of a food collide and `INSERT OR
+    # REPLACE` keeps only the last. An FDC export missing its `id` column lost
+    # 8 of 157 measured portion weights exactly this way. Refuse instead: a
+    # portion with no identity cannot be cited in a Provenance anyway.
+    if not str(out["source_id"]).strip():
+        raise ValueError(
+            f"dataset portion row needs a non-empty source_id — it is part of "
+            f"the portion key, and a blank one silently overwrites sibling "
+            f"rows of the same food: {row!r}"
+        )
+
+    # A zero or negative amount is a data error, not "one unit". Coercing it
+    # would fabricate a per-unit weight from a row that says nothing.
+    try:
+        amount = float(out["amount"])
+    except (TypeError, ValueError):
+        amount = 0.0
+    if amount <= 0:
+        raise ValueError(
+            f"dataset portion row needs amount > 0 (it is what `grams` is "
+            f"measured FOR, and grams/amount is the per-unit weight): {row!r}"
+        )
+    out["amount"] = amount
     return out
 
 

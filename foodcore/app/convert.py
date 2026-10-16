@@ -387,10 +387,25 @@ def _convert_package(amount: float, src: str, dst: str, src_kind: str | None,
 
     pid = package.source_id or package.label or "caller-declared"
     declared_by = package.source or PACKAGE_DEFAULT_SOURCE
-    retrieved = package.retrieved or (
-        dataset.retrieved_for(declared_by) if dataset else "")
-    dprov = _prov(declared_by, pid, retrieved, "declared", CONVERT_VERSION,
-                  CONF_PACKAGE_DECLARED, _license_for(declared_by))
+    # Date AND licence come from the same place, or neither does. Taking
+    # `retrieved` from the dataset's snapshot while hardcoding `license` from
+    # the table below produced a Provenance citing the file's retrieval date
+    # under a licence the file does not claim — half-delegated provenance is
+    # how an ODbL duty goes missing.
+    snapshot_prov = (
+        dataset.provenance_for(declared_by, pid, "declared",
+                               CONF_PACKAGE_DECLARED, CONVERT_VERSION)
+        if (dataset is not None and not package.retrieved
+            and dataset.retrieved_for(declared_by))
+        else None
+    )
+    if snapshot_prov is not None:
+        dprov = snapshot_prov
+        retrieved = dprov.retrieved
+    else:
+        retrieved = package.retrieved
+        dprov = _prov(declared_by, pid, retrieved, "declared", CONVERT_VERSION,
+                      CONF_PACKAGE_DECLARED, _license_for(declared_by))
 
     if src_kind == "package" and dst_kind == "package":
         if src != dst:
@@ -439,7 +454,7 @@ def _convert_package(amount: float, src: str, dst: str, src_kind: str | None,
                             _prov(declared_by, pid, retrieved, "calculated",
                                   package.label or "",
                                   min(CONF_PACKAGE_DECLARED, conf),
-                                  _license_for(declared_by)))
+                                  dprov.license))
         return Unresolved(
             "no_package_size",
             f"converting a package into '{dst}' is not defined; {PACKAGE_REFUSAL_NOTE}",

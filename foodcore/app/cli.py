@@ -60,6 +60,11 @@ def _build_usda(args) -> int:
     # and `foodcore.cli info` must work on a host that never imports a parser.
     from .sources.usda import UsdaImportError, load_fdc_csv
 
+    # BOTH halves are inside the try. The parse half was guarded and the
+    # STORAGE half was not, so `--out` pointing at a non-existent directory
+    # printed a raw `sqlite3.OperationalError` traceback — the exact thing the
+    # comment below says this does not do. A ValueError from a malformed row
+    # escaped the same way, printing the whole row.
     try:
         export = load_fdc_csv(
             args.fdc_dir,
@@ -68,24 +73,35 @@ def _build_usda(args) -> int:
             data_types=tuple(args.data_type) or None,
             limit=args.limit,
         )
-    except UsdaImportError as exc:
-        # A typed domain exception with a curated message — not a raw traceback
-        # and not the csv module's text.
+        foods, portions, nutrients = export.rows()
+        counts = build_dataset(
+            args.out,
+            sources=[export.source_record()],
+            foods=foods,
+            portions=portions,
+            nutrients=nutrients,
+            builder="foodcore.cli build-usda",
+        )
+    except (UsdaImportError, DatasetError, ValueError) as exc:
+        # Typed domain exceptions with curated messages — not a raw traceback,
+        # not the csv module's text, and not the sqlite3 driver's.
         print(f"foodcore: {exc}", file=sys.stderr)
         return 1
 
-    foods, portions, nutrients = export.rows()
-    counts = build_dataset(
-        args.out,
-        sources=[export.source_record()],
-        foods=foods,
-        portions=portions,
-        nutrients=nutrients,
-        builder="foodcore.cli build-usda",
-    )
     print(f"wrote {args.out}")
     print(export.stats.report())
     print("rows: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
+    # The parser's count and the file's count must agree. When they do not,
+    # rows collapsed on a primary key, and the operator is the only one who can
+    # decide whether that matters — so say it rather than printing two numbers
+    # and hoping somebody compares them.
+    expected = {"foods": len(foods), "portions": len(portions),
+                "nutrients": len(nutrients)}
+    collapsed = {k: (v, counts[k]) for k, v in expected.items() if counts[k] != v}
+    if collapsed:
+        print("NOTE: rows collapsed on a primary key (parsed -> stored): "
+              + ", ".join(f"{k} {a}->{b}" for k, (a, b) in sorted(collapsed.items())),
+              file=sys.stderr)
     return 0
 
 

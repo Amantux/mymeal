@@ -91,7 +91,7 @@ Everything else is private and may change without notice.
 | `Portion` | one measured portion: `measure`, `size`, `qualifier`, `amount`, `gram_weight`, `grams_per_unit`, `method`, `confidence`, `source_id`, `raw_text` |
 | `FoodMatch` | `query`, `confident`, `candidates` → `((FoodRecord, score), …)`, `food` (None unless confident), `describe(limit)` |
 | `SourceRecord` | one dataset snapshot as **plain frozen data**: provider, dataset version, retrieved date, licence, record count, notes. `to_dict()` / `from_dict()`, and `provenance(...)` to mint a `Provenance` that cannot disagree with the snapshot it came from |
-| `build_dataset(out_path, *, sources, foods, portions, nutrients)` | write a dataset file (used by the CLI and tests) |
+| `build_dataset(out_path, *, sources, foods, portions, nutrients)` | write a dataset file (used by the CLI, tests, and any host with a source foodcore has no adapter for). Returns row counts **counted from the finished file**, so rows that collapsed on a primary key are reported as one — compare them against what you passed in. Raises `DatasetError` for a bad destination, `ValueError` for a bad row |
 | `rule_version(kind)`, `RULE_EPOCH`, `__version__`, `DATASET_SCHEMA_VERSION` | versioning (see below) |
 | `foodcore.convert`, `.nutrition`, `.allergens`, `.dietary` | the engines, imported lazily so `import foodcore` works without them |
 
@@ -173,6 +173,21 @@ unmapped — nothing is dropped silently, and that report is stored on the
 snapshot's `SourceRecord.notes` so months later you can still see what the
 dataset does *not* contain.
 
+**Ambiguity is refused, one layer down.** `portion_grams` applies the same
+refuse-rather-than-fabricate rule the conversion engine does, so it has three
+failure reasons, not one — branch on all of them:
+
+| `reason` | Means |
+|---|---|
+| `qualifier_required` | the food publishes this measure only *prepared*, and the variants disagree materially (onion `cup, chopped` 160 g vs `cup, sliced` 115 g). `detail` names them; `food_record(key).qualified_portions(measure)` enumerates them so you can offer the choice |
+| `size_required` | published only by size (small/medium/large). `sized_portions(measure)` enumerates them |
+| `no_portion_data` | genuinely absent from the dataset |
+
+There is deliberately **no spread threshold**. A food either publishes an
+unqualified row for the measure or it does not; inventing "refuse only if they
+differ by more than N%" would be a magic number standing between the user and
+a fact the dataset already states plainly.
+
 **A dataset version is a file, not a row.** `build_dataset` writes to a
 temporary path and renames, so a build either replaces the dataset atomically
 or leaves it alone; keep the previous file if you want the previous snapshot.
@@ -233,6 +248,22 @@ Dataset schema history:
 |---|---|
 | 1 | Initial layout. Portions keyed `(food_key, measure)`. |
 | 2 | Portions carry `size`, `qualifier`, `amount`, `seq_num`, `raw_text` and are keyed on all of them, so two preparations of one measure no longer collide; foods carry a token index for `resolve_food`. Rebuild with `build-usda`; a schema-1 file is refused rather than mis-read. |
+
+### Upgrading an integration from before the consolidation
+
+- **Rebuild your dataset file.** A schema-1 file is refused with a message
+  naming the fix; it is not migrated, because schema 1 had already lost the
+  preparation qualifiers a migration would need.
+- **`portion_grams` has two new refusal reasons** (above). Code that treated
+  `no_portion_data` as the only failure will now see `qualifier_required` /
+  `size_required` for foods that previously returned a single confident —
+  and sometimes 39% wrong — number.
+- **`convert(..., food=…)` takes a `FoodRecord`**, from `food_record(key)` or
+  `resolve_food(text).food`. `Dataset.food(key)` still returns a `FoodRow`.
+- **`build_dataset` is stricter**: every portion row needs a non-empty
+  `source_id` (it is part of the portion key) and `amount > 0`.
+- Unchanged: `load_dataset`, `Resolved` / `Unresolved` / `Provenance`,
+  `convert_text(text, to_unit, *, dataset)`, `rule_version`, `SourceRecord`.
 
 ## Extraction
 
