@@ -626,79 +626,99 @@ async function uploadImage(e) {
 // can't send the bearer token, so images display when running behind Home
 // Assistant ingress (auth disabled). Token-authenticated blob loading lands in
 // a later milestone.
-// --- How-to videos -------------------------------------------------------
-// A video is either a link (YouTube/Vimeo embed inline, anything else opens in
-// a new tab) or a file we uploaded and can play here. The server decides which
-// is which — the UI never builds an embed URL from a raw address.
-const newVideoUrl = ref('')
-const newVideoTitle = ref('')
-const addingVideo = ref(false)
-const videoError = ref('')
-const videoFile = ref(null)
+// --- Media (photos and how-to videos) ------------------------------------
+// One slot per recipe. An item is a photo we stored, a video we stored, a
+// YouTube/Vimeo link the server is willing to embed, or any other link that
+// opens in a new tab. The server decides which — the UI never builds an embed
+// URL from a raw address, and never guesses an item's kind.
+//
+// Photos are uploads only: the app's CSP is img-src 'self', so an external
+// image address would render as a broken icon. The add panel says so rather
+// than letting the user discover it.
+const newMediaUrl = ref('')
+const newMediaTitle = ref('')
+const addingMedia = ref(false)
+const mediaError = ref('')
+const showAddMedia = ref(false)
 
-const videos = computed(() => recipe.value?.videos || [])
+// `media` is the current key; `videos` is the same list under its former name,
+// so a cached payload from a pre-media backend still renders.
+const media = computed(() => recipe.value?.media || recipe.value?.videos || [])
 
-function videoHost(url) {
+function mediaHost(url) {
   try { return new URL(url).hostname.replace(/^www\./, '') } catch { return 'the web' }
 }
 
-function videoSrc(v) {
-  return v.streamUrl ? mediaUrl(v.streamUrl) : null
+function mediaFileSrc(m) {
+  return m.fileUrl ? mediaUrl(m.fileUrl) : null
 }
 
-async function addVideoLink() {
-  if (!newVideoUrl.value.trim()) return
-  addingVideo.value = true
-  videoError.value = ''
+function toggleAddMedia() {
+  showAddMedia.value = !showAddMedia.value
+  // Clearing on close as well as open: a stale "that link is not http(s)"
+  // sitting there when the panel is reopened is a lie about the current input.
+  mediaError.value = ''
+}
+
+async function addMediaLink() {
+  if (!newMediaUrl.value.trim()) return
+  addingMedia.value = true
+  mediaError.value = ''
   try {
-    await api.post(`/recipes/${recipe.value.id}/videos`,
-      { url: newVideoUrl.value.trim(), title: newVideoTitle.value.trim() })
-    newVideoUrl.value = ''
-    newVideoTitle.value = ''
+    await api.post(`/recipes/${recipe.value.id}/media`,
+      { url: newMediaUrl.value.trim(), title: newMediaTitle.value.trim() })
+    newMediaUrl.value = ''
+    newMediaTitle.value = ''
+    showAddMedia.value = false
     await load()
-    ui.toast('Video added')
+    ui.toast('Video link added')
   } catch (e) {
     // Stays on screen next to the field rather than as a toast that vanishes:
     // the message says which part of the link is wrong.
-    videoError.value = e.message || 'Could not add that video'
+    mediaError.value = e.message || 'Could not add that link'
   } finally {
-    addingVideo.value = false
+    addingMedia.value = false
   }
 }
 
-async function uploadVideo(ev) {
+async function uploadMedia(ev) {
   const file = ev.target.files?.[0]
   if (!file) return
-  addingVideo.value = true
-  videoError.value = ''
+  addingMedia.value = true
+  mediaError.value = ''
   try {
     const fd = new FormData()
     fd.append('file', file)
-    if (newVideoTitle.value.trim()) fd.append('title', newVideoTitle.value.trim())
-    await api.upload(`/recipes/${recipe.value.id}/videos`, fd)
-    newVideoTitle.value = ''
+    if (newMediaTitle.value.trim()) fd.append('title', newMediaTitle.value.trim())
+    // No `kind`: the server reads it off the extension, which is the one case
+    // where it cannot be wrong. One picker, no "is this a photo or a video?".
+    await api.upload(`/recipes/${recipe.value.id}/media`, fd)
+    newMediaTitle.value = ''
+    showAddMedia.value = false
     await load()
-    ui.toast('Video uploaded')
+    ui.toast('Added to this recipe')
   } catch (e) {
-    // Uploads hit the size ceiling far more often than photos do, so this
-    // path must never fail silently.
-    videoError.value = e.message === 'upload too large'
-      ? 'That video is larger than this add-on allows. Link to it instead, or raise max_upload_mb in the add-on configuration.'
-      : (e.message || 'Could not upload that video')
+    // Uploads hit the size ceiling far more often than a pasted link does, so
+    // this path must never fail silently.
+    mediaError.value = e.message === 'upload too large'
+      ? 'That file is larger than this add-on allows. Link to the video instead, or raise max_upload_mb in the add-on configuration.'
+      : (e.message || 'Could not upload that file')
   } finally {
-    addingVideo.value = false
+    addingMedia.value = false
     ev.target.value = ''
   }
 }
 
-async function removeVideo(v) {
-  if (!confirm(`Remove “${v.title || 'this video'}” from this recipe? The recipe itself is not affected.`)) return
+async function removeMedia(m) {
+  const what = m.kind === 'image' ? 'photo' : 'video'
+  const name = m.title || `this ${what}`
+  if (!confirm(`Remove “${name}” from this recipe? The ${what} is deleted; the recipe itself is not affected.`)) return
   try {
-    await api.del(`/recipes/${recipe.value.id}/videos/${v.id}`)
+    await api.del(`/recipes/${recipe.value.id}/media/${m.id}`)
     await load()
-    ui.toast('Video removed')
+    ui.toast(`${what === 'photo' ? 'Photo' : 'Video'} removed`)
   } catch (e) {
-    ui.error(e.message || 'Could not remove that video')
+    ui.error(e.message || `Could not remove that ${what}`)
   }
 }
 
@@ -762,58 +782,114 @@ const imageSrc = computed(() =>
         </div>
       </div>
 
+      <!-- Media sits here, below the hero card and above Ingredients, NOT
+           beside the hero thumbnail. Two reasons: the hero `image` is the
+           recipe's single identity picture (what the card and list views
+           render) and putting a growable gallery next to it makes "which one
+           is the thumbnail?" ambiguous; and on a phone the hero card is
+           already a full screen, so a gallery inside it would push the
+           ingredients — the reason you opened the page — further down. Reading
+           order stays identity → reference material → ingredients → steps. -->
       <div class="card">
         <div class="page-head" style="margin-bottom:10px">
-          <h2>How-to videos</h2>
+          <h2>Media</h2>
+          <!-- No count badge: a "2" next to two visible tiles encodes nothing
+               the eye has not already read, and it made the header's right edge
+               move between the empty and filled states. -->
         </div>
 
-        <div v-if="videos.length" class="video-list">
-          <div v-for="v in videos" :key="v.id" class="video">
-            <!-- Uploaded: played here. preload="metadata" so opening a recipe
-                 with several videos doesn't pull them all down. -->
-            <video v-if="v.streamUrl" :src="videoSrc(v)" controls preload="metadata"></video>
+        <!-- One grid, always rendered: the add tile is the last cell whether
+             or not anything is in the slot, so "add more" is never a different
+             affordance from "add the first one". -->
+        <div class="media-grid">
+          <div v-for="m in media" :key="m.id" class="media-item">
+            <!-- A photo we stored. -->
+            <img v-if="m.kind === 'image'" :src="mediaFileSrc(m)" :alt="m.title"
+                 class="media-frame" loading="lazy" />
+            <!-- A video we stored, played here. preload="metadata" so opening
+                 a recipe with several clips doesn't pull them all down. -->
+            <video v-else-if="m.fileUrl" :src="mediaFileSrc(m)" class="media-frame"
+                   controls preload="metadata"></video>
             <!-- A provider the server is willing to embed. -->
-            <iframe v-else-if="v.embedUrl" :src="v.embedUrl" loading="lazy"
-                    allowfullscreen referrerpolicy="no-referrer"
+            <iframe v-else-if="m.embedUrl" :src="m.embedUrl" class="media-frame"
+                    loading="lazy" allowfullscreen referrerpolicy="no-referrer"
                     title="How-to video"></iframe>
             <!-- Anything else: an honest link rather than an empty player. -->
-            <a v-else :href="v.url" target="_blank" rel="noopener noreferrer"
-               class="video-link">▶ Watch on {{ videoHost(v.url) }} ↗</a>
+            <a v-else :href="m.url" target="_blank" rel="noopener noreferrer"
+               class="media-frame media-link">▶ Watch on {{ mediaHost(m.url) }} ↗</a>
 
-            <div class="video-foot">
-              <span class="grow">{{ v.title }}</span>
-              <button class="secondary sm" @click="removeVideo(v)">Remove</button>
+            <!-- min-width:0 on the caption is what makes the ellipsis work in a
+                 flex row; without it a long title pushes Remove out of the tile
+                 and desynchronises the row's heights. -->
+            <div class="media-foot">
+              <span class="media-title" :title="m.title">{{ m.title }}</span>
+              <button class="media-remove" @click="removeMedia(m)">Remove</button>
             </div>
           </div>
+
+          <!-- The empty slot. A dashed tile that says what belongs in it, not a
+               paragraph of prose: when the slot is empty it is the only thing
+               in the card and has to teach, and when it is full it still reads
+               as "there is room for another". Copy shortens once the user has
+               demonstrably learned what goes here. -->
+          <button type="button" class="media-add" :class="{ open: showAddMedia }"
+                  :disabled="addingMedia" :aria-expanded="showAddMedia"
+                  aria-controls="media-add-panel" @click="toggleAddMedia">
+            <!-- Once the panel is open the tile stops teaching: the user has
+                 already acted, the form below says the same thing in fields,
+                 and repeating the pitch above a live form is marketing. It
+                 becomes the toggle's OFF switch instead — which is also the
+                 panel's close affordance. -->
+            <template v-if="showAddMedia">
+              <span class="media-add-plus" aria-hidden="true">×</span>
+              <span class="media-add-copy"><strong>Cancel</strong></span>
+            </template>
+            <template v-else>
+              <span class="media-add-plus" aria-hidden="true">＋</span>
+              <span v-if="!media.length" class="media-add-copy">
+                <strong>Add a photo or video</strong>
+                A photo of how it should look, or a clip of the tricky step.
+              </span>
+              <span v-else class="media-add-copy">
+                <strong>Add another</strong>
+                Photo, clip, or a video link.
+              </span>
+            </template>
+          </button>
         </div>
 
-        <p v-else class="muted" style="margin:0 0 12px">
-          No videos yet. Paste a link to a technique or walkthrough — or upload a
-          clip of your own — so you can see how it's done while you cook.
-        </p>
-
-        <div class="row" style="gap:8px;align-items:flex-end;flex-wrap:wrap">
-          <label class="field" style="margin:0;flex:1;min-width:200px">
-            <span>Video link</span>
-            <input v-model="newVideoUrl" placeholder="https://youtu.be/…"
-                   @keyup.enter="addVideoLink" />
-          </label>
-          <label class="field" style="margin:0;width:180px">
+        <!-- One column at one width. Title and the file picker were briefly on
+             a shared row, which put the "Title (optional)" label visually over
+             the button too — they are not a pair, so they do not share a row. -->
+        <div v-if="showAddMedia" id="media-add-panel" class="media-panel">
+          <label class="field" style="margin:0">
             <span>Title (optional)</span>
-            <input v-model="newVideoTitle" placeholder="e.g. Folding technique" />
+            <input v-model="newMediaTitle" placeholder="e.g. Folding technique" />
           </label>
           <!-- Secondary, not accent: Cook is this page's one primary action.
                A card-level action never earns the orange fill. -->
-          <button class="secondary" :disabled="addingVideo" @click="addVideoLink">
-            {{ addingVideo ? 'Adding…' : 'Add link' }}
-          </button>
-          <label class="secondary btnlike">
-            {{ addingVideo ? 'Uploading…' : 'Upload a file' }}
-            <input type="file" accept="video/*" hidden :disabled="addingVideo"
-                   @change="uploadVideo" />
+          <label class="secondary btnlike media-file">
+            {{ addingMedia ? 'Uploading…' : '📷 Choose a photo or video' }}
+            <input type="file" accept="image/*,video/*" hidden
+                   :disabled="addingMedia" @change="uploadMedia" />
           </label>
+          <label class="field" style="margin:0">
+            <span>Or paste a video link</span>
+            <input v-model="newMediaUrl" placeholder="https://youtu.be/…"
+                   @keyup.enter="addMediaLink" />
+            <!-- Directly under the field it constrains, not floating at the end
+                 of the form where it reads as being about the file picker. -->
+            <small class="muted media-hint">
+              Video links only (YouTube, Vimeo) — photos must be uploaded.
+            </small>
+          </label>
+          <div class="row" style="gap:8px">
+            <button class="secondary" :disabled="addingMedia" @click="addMediaLink">
+              {{ addingMedia ? 'Adding…' : 'Add link' }}
+            </button>
+          </div>
+          <p v-if="mediaError" class="err" style="margin:0">{{ mediaError }}</p>
         </div>
-        <p v-if="videoError" class="err" style="margin:8px 0 0">{{ videoError }}</p>
       </div>
 
       <div class="card">
@@ -1246,17 +1322,94 @@ select.sm { padding: 2px 6px; }
 .nutri-cell { min-width: 64px; }
 .nutri-val { font-size: 1.4rem; font-weight: 700; }
 .nutri-lbl { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
-.video-list { display:grid; gap:14px; margin-bottom:14px }
-.video video, .video iframe {
+/* Media: one grid for photos, clips, embeds and the add tile. auto-fill so the
+   slot is two-up on a desktop card and one-up on a phone with no breakpoint of
+   its own, and every cell shares the 16/9 frame so a portrait photo, a video
+   player and the dashed add tile all line up on the same baseline. */
+.media-grid {
+  display:grid; gap:14px;
+  grid-template-columns:repeat(auto-fill, minmax(240px, 1fr));
+}
+.media-frame {
   width:100%; aspect-ratio:16/9; border:0; border-radius:var(--radius-sm);
-  background:#000; display:block;
+  background:var(--surface-2); display:block; object-fit:cover;
 }
-.video-link {
-  display:block; padding:14px; border:1px solid var(--border);
-  border-radius:var(--radius-sm); text-decoration:none;
+.media-link {
+  display:flex; align-items:center; justify-content:center; padding:14px;
+  border:1px solid var(--border); text-decoration:none; text-align:center;
 }
-.video-foot { display:flex; align-items:center; gap:8px; margin-top:6px; font-size:.9rem }
+.media-foot { display:flex; align-items:center; gap:8px; margin-top:6px; font-size:.9rem }
+/* min-width:0 is the load-bearing part — a flex item defaults to min-content
+   width, so without it the title refuses to shrink and pushes Remove out of
+   the tile instead of ellipsising. */
+.media-title {
+  flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+/* Quiet by default: removing a photo is destructive but it is not the card's
+   headline, and a full bordered button made it louder than the add tile.
+   Danger colour carries the meaning; the border only appears on interaction. */
+.media-remove {
+  flex-shrink:0; padding:4px 8px; font-size:.85rem;
+  background:transparent; color:var(--danger); border:1px solid transparent;
+}
+.media-remove:hover, .media-remove:focus-visible {
+  background:var(--danger-soft); border-color:var(--danger); color:var(--danger);
+}
+
+/* The empty slot. A dashed frame rather than a filled card so it reads as a
+   space waiting to be filled, next to siblings that are solid. */
+.media-add {
+  width:100%; aspect-ratio:16/9; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:8px; padding:16px;
+  background:transparent; color:var(--muted); text-align:center;
+  /* --muted, not --border, for the dashed stroke. --border (#382e26 in dark)
+     is tuned for a solid hairline between filled surfaces; as a 1px DASHED
+     line it loses half its pixels and disappears against the dark card, so
+     the only affordance in an empty slot became invisible in one theme. The
+     foreground-muted token is the same semantic (a placeholder waiting to be
+     filled) and reads in both. Not a new token — a deliberate reuse. */
+  border:1px dashed var(--muted); border-radius:var(--radius-sm);
+  cursor:pointer;
+  /* The global button rule is white-space:nowrap, which is right for a label
+     and wrong for a tile whose whole job is to carry a sentence — without
+     this the copy runs straight out of the tile and across the card. */
+  white-space:normal;
+}
+.media-add:hover:not(:disabled) {
+  border-color:var(--accent); color:var(--text); background:var(--accent-soft);
+}
+/* The OPEN state is deliberately NEUTRAL, not accent-tinted. --accent-soft is a
+   translucent red-orange: over the light surface it reads as a pink error fill,
+   and this page already spends red on Delete, so "panel is open" was saying
+   "something went wrong". A pressed surface + a solid border says open. */
+/* `.open:hover` is listed explicitly: `.media-add:hover:not(:disabled)` scores
+   higher than a plain `.media-add.open`, so without it the accent-soft hover
+   kept winning and an open panel still looked pink while the pointer rested on
+   the tile — which is most of the time, since the pointer is there from the
+   click that opened it. */
+.media-add.open, .media-add.open:hover {
+  background:var(--surface-2); border-style:solid; border-color:var(--border);
+  color:var(--text);
+}
+.media-add.open .media-add-plus { color:var(--muted) }
+.media-add-plus { font-size:1.6rem; line-height:1; color:var(--accent) }
+/* font-weight back to normal: the global button rule is 600, which makes a
+   sentence read as a shout. Only the lead line stays bold. */
+.media-add-copy { display:block; font-size:.85rem; line-height:1.35; font-weight:400 }
+.media-add-copy strong { display:block; color:var(--text); font-size:.95rem; margin-bottom:4px }
+
+/* Single column at one width, per the forms rule. max-width rather than a
+   fixed px on each field: three inputs at three different widths inside one
+   form was the most machine-made thing on the card. */
+.media-panel {
+  margin-top:16px; padding-top:16px; border-top:1px solid var(--border);
+  display:grid; gap:12px; max-width:32rem;
+}
+.media-file { justify-content:center }
+.media-hint { display:block; margin-top:6px; font-size:.8rem; line-height:1.4 }
+
 .btnlike { cursor:pointer; display:inline-flex; align-items:center; padding:8px 12px;
   border:1px solid var(--border); border-radius:var(--radius-sm); }
-@media (max-width:560px) { .video-foot { flex-wrap:wrap } }
+@media (max-width:560px) { .media-foot { flex-wrap:wrap } }
+@media (prefers-reduced-motion: reduce) { .media-add { transition:none } }
 </style>
