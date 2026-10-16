@@ -39,6 +39,7 @@ tests. The host names its own file or this module stands down.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from functools import lru_cache
 
@@ -101,14 +102,25 @@ _lock = threading.Lock()
 #: ingredient line on a recipe render. Both settings are restart-required, so a
 #: newly-built dataset is picked up on the next start (or via reset_cache()).
 _datasets: dict[str, object] = {}
+#: The path resolved with no Flask app context (the MCP server, a CLI, a test).
+#: In a request ``settings_access`` hands back the app's already-resolved
+#: object for the price of a dict lookup; outside one it calls
+#: ``load_settings()``, which stats and parses /data/options.json and runs every
+#: validator — once per ingredient line, which is not a price a render should
+#: pay for a feature that is off. Both fields are restart-required, so caching
+#: the answer for the process is exactly as correct as reading it at startup.
+_ambient_path: str | None = None
 _warned = False
 
 
 def reset_cache() -> None:
-    """Drop the cached dataset handles. For tests, and for a CLI that rebuilds
-    the file in the same process."""
+    """Drop every cached handle and decision. For tests, and for a CLI that
+    rebuilds the dataset in the same process."""
+    global _ambient_path, _warned
     with _lock:
         _datasets.clear()
+        _ambient_path = None
+        _warned = False
         _lookup_grams.cache_clear()
 
 
@@ -122,14 +134,26 @@ def _setting(cfg, name: str, default):
         return default
 
 
-def dataset_path(settings=None) -> str:
-    """The configured dataset path, or "" when foodcore is not in use."""
-    from .ai.settings_access import resolved  # local: keeps imports light
-
-    cfg = resolved(settings)
+def _path_from(cfg) -> str:
     if not _setting(cfg, "FOODCORE_ENABLED", True):
         return ""
     return str(_setting(cfg, "FOODCORE_DATASET", "") or "").strip()
+
+
+def dataset_path(settings=None) -> str:
+    """The configured dataset path, or "" when foodcore is not in use."""
+    from flask import has_app_context
+
+    from .ai.settings_access import resolved  # local: keeps imports light
+
+    if settings is not None or has_app_context():
+        return _path_from(resolved(settings))
+
+    # No app context: memoise, per the note on _ambient_path.
+    global _ambient_path
+    if _ambient_path is None:
+        _ambient_path = _path_from(resolved(None))
+    return _ambient_path
 
 
 def _dataset(settings=None):
@@ -137,29 +161,34 @@ def _dataset(settings=None):
     path = dataset_path(settings)
     if not path:
         return None
+    # Opened under the lock. Two threads racing a first lookup would otherwise
+    # both build a Dataset, and the loser's handle can already be pinned by the
+    # lru_cache below — keeping its thread-local sqlite connections open for the
+    # life of the process, and surviving reset_cache() by being written back
+    # after the clear.
     with _lock:
         if path in _datasets:
             return _datasets[path]
-    ds = None
-    try:
-        import foodcore
+        ds = None
+        try:
+            import foodcore
 
-        # allow_minimal=False: we passed an explicit path, so the bundled
-        # minimal dataset can never be what comes back — but saying so means a
-        # future foodcore cannot quietly substitute it for a file we named.
-        ds = foodcore.load_dataset(path, allow_minimal=False)
-    except Exception as exc:  # noqa: BLE001 - a bad dataset must not break the app
-        # Named, not echoed: foodcore's DatasetError messages are curated, but
-        # the path can come from operator config, so only the class and the
-        # path we already know are logged.
-        log.warning(
-            "foodcore dataset at %r could not be opened (%s); falling back to "
-            "myMeal's built-in densities",
-            path, type(exc).__name__,
-        )
-    with _lock:
+            # allow_minimal=False: we passed an explicit path, so the bundled
+            # minimal dataset can never be what comes back — but saying so
+            # means a future foodcore cannot quietly substitute it for a file
+            # we named.
+            ds = foodcore.load_dataset(path, allow_minimal=False)
+        except Exception as exc:  # noqa: BLE001 - a bad dataset must not break the app
+            # Named, not echoed: foodcore's DatasetError messages are curated,
+            # but the path comes from operator config, so only the exception
+            # class and the path we already know are logged.
+            log.warning(
+                "foodcore dataset at %r could not be opened (%s); falling back "
+                "to myMeal's built-in densities",
+                path, type(exc).__name__,
+            )
         _datasets[path] = ds
-    return ds
+        return ds
 
 
 def _forms(canonical: str) -> frozenset[str]:
@@ -192,15 +221,79 @@ def _score(forms: frozenset[str], name: str) -> int:
     return _SCORE_CONTAINS
 
 
-def _resolve(ds, canonical: str, measures: tuple[str, ...]) -> float | None:
+#: States that change what a cup of something WEIGHS, as opposed to which food
+#: it is. ``food_resolve.PREPARATION_WORDS`` deliberately strips these from an
+#: ingredient line before matching, because "dried oregano" and "oregano" are
+#: the same shopping item — correct there, and dangerous here, where a cup of
+#: dried onion is a third of the weight of a cup of raw onion. So this list has
+#: the opposite safety property to that one and therefore lives apart from it,
+#: the same way PREPARATION_WORDS lives apart from the splitting qualifiers.
+#:
+#: Membership rule: a word belongs here only if it changes the MASS of a given
+#: volume. "raw", "fresh", "chopped", "sliced", "large" do not and are absent —
+#: a chopped/sliced spread is a disagreement between measured rows, which the
+#: value gate already catches, not a different substance.
+_STATE_WORDS = frozenset({
+    "dried", "dehydrated", "freeze-dried", "powder", "powdered", "flakes",
+    "granules", "granulated", "instant", "cooked", "boiled", "steamed",
+    "braised", "roasted", "toasted", "fried", "canned", "frozen", "condensed",
+    "concentrate", "concentrated", "puffed", "popped", "juice", "paste",
+    "syrup", "extract", "freeze",
+})
+
+
+def _declares_unrequested_state(name: str, text_states: frozenset[str]) -> bool:
+    """True when the dataset row names a state the cook did not ask for.
+
+    "1 cup onions" must not be answered by "Onions, dehydrated flakes" (46 g
+    against ~160 g raw). The check is symmetric and therefore also an
+    improvement: "1 cup dried onions" now MAY use the dried row, because the
+    word is in the line. It cannot be left to the value gate — two dried forms
+    agree with each other perfectly and would endorse the wrong answer.
+    """
+    words = set(re.split(r"[^a-z0-9-]+", (name or "").lower()))
+    return bool((words & _STATE_WORDS) - text_states)
+
+
+def _candidates(ds, canonical: str, forms: frozenset[str]) -> list:
+    """The pool to score, from the dataset's deliberately-dumb substring search.
+
+    ``search_foods`` returns the SHORTEST matching names first, so on a real
+    FDC import a plain search for "rice" comes back as eight short near-misses
+    ("Rice cake", "Rice bran", "Rice milk") and the generic "Rice, white,
+    long-grain, raw" never reaches the scorer — the dataset would be loaded and
+    useless. Asking additionally for "<food>," targets USDA's description
+    grammar, where the comma is exactly the boundary after the head noun, so
+    the rows that can actually win the top tier are surfaced regardless of how
+    many short branded names exist. Results are unioned and deduped; the whole
+    lookup is memoised, so this costs a handful of queries per food per process.
+    """
+    rows, seen = [], set()
+    for needle in (canonical, *(f"{form}," for form in sorted(forms))):
+        for row in ds.search_foods(needle, _CANDIDATE_LIMIT):
+            if row.key not in seen:
+                seen.add(row.key)
+                rows.append(row)
+    return rows
+
+
+def _resolve(ds, canonical: str, measures: tuple[str, ...],
+             text_states: frozenset[str]) -> float | None:
     """Grams for one `measure` of `canonical`, or None if nothing qualifies.
 
-    Confidence-tiered, in two stages, because both kinds of ambiguity produce a
-    confidently wrong number:
+    Confidence-tiered, because every kind of ambiguity here produces a
+    confidently wrong number rather than a visible failure:
 
-    * **identity** — score the candidates by the KIND of evidence and keep only
+    * **state** — drop any row declaring a preparation the line did not ask
+      for (``_declares_unrequested_state``).
+    * **identity** — score what is left by the KIND of evidence and keep only
       the strongest tier. A tier below ``_MIN_SCORE`` never resolves.
-    * **value** — if that tier holds several foods, they must agree within
+    * **completeness** — every food in that tier must publish a weight for the
+      measure. If only some do, the answer is being decided by which rows
+      happen to be in the ``portion`` table, not by the evidence: "Milk, whole"
+      having no cup row would otherwise hand "1 cup milk" to "Milk, dry,
+      whole" (128 g against 244 g). An incomplete tier is ambiguity.
+    * **value** — the weights that tier publishes must agree within
       ``_AGREEMENT`` to be interchangeable. If they don't, refuse.
 
     Ties are broken by shortest name, which in USDA's description grammar is
@@ -209,12 +302,11 @@ def _resolve(ds, canonical: str, measures: tuple[str, ...]) -> float | None:
     """
     import foodcore
 
-    # The search stays on the singular canonical: it is a substring match, so
-    # it already reaches "Onions, raw". Only the SCORING needs the plurals.
-    candidates = ds.search_foods(canonical, _CANDIDATE_LIMIT)
+    forms = _forms(canonical)
+    candidates = [row for row in _candidates(ds, canonical, forms)
+                  if not _declares_unrequested_state(row.name, text_states)]
     if not candidates:
         return None
-    forms = _forms(canonical)
     scored = [(_score(forms, row.name), len(row.name or ""), row) for row in candidates]
     best = max(s for s, _, _ in scored)
     if best < _MIN_SCORE:
@@ -225,30 +317,35 @@ def _resolve(ds, canonical: str, measures: tuple[str, ...]) -> float | None:
     for _s, _len, row in sorted(
         (item for item in scored if item[0] == best), key=lambda i: (i[1], i[2].name)
     ):
+        grams = None
         for measure in measures:
             outcome = ds.portion_grams(row.key, measure, version=version)
             if outcome.resolved:
-                # A food in the winning tier that publishes no weight for this
-                # measure carries no number, so it cannot disagree with one.
-                # It is skipped, not treated as a conflict.
-                if outcome.value > 0:
-                    values.append(float(outcome.value))
+                grams = float(outcome.value)
                 break
+        # A zero is a broken row, not a fact about a food, and counts as no
+        # weight — which makes the tier incomplete, which refuses.
+        if not grams or grams <= 0:
+            return None
+        values.append(grams)
 
     if not values:
         return None
-    if min(values) <= 0 or max(values) / min(values) > 1 + _AGREEMENT:
+    if max(values) / min(values) > 1 + _AGREEMENT:
         return None
     return values[0]
 
 
-#: Memoised per (dataset, food, measure). A recipe render converts every line
-#: and a shopping list converts every recipe, so the same handful of foods is
-#: asked for repeatedly; the dataset handle is cached per path, so its identity
-#: is a stable cache key.
+#: Memoised per (dataset, food, measure, requested states). A recipe render
+#: converts every line and a shopping list converts every recipe, so the same
+#: handful of foods is asked for repeatedly; the dataset handle is cached per
+#: path, so its identity is a stable cache key. The state set is part of the
+#: key because it changes the answer ("dried onion" is not "onion"), and it is
+#: empty for almost every line, so the hit rate survives.
 @lru_cache(maxsize=2048)
-def _lookup_grams(ds, canonical: str, measures: tuple[str, ...]) -> float | None:
-    return _resolve(ds, canonical, measures)
+def _lookup_grams(ds, canonical: str, measures: tuple[str, ...],
+                  text_states: frozenset[str]) -> float | None:
+    return _resolve(ds, canonical, measures, text_states)
 
 
 def grams_per(unit: str, food_text: str, settings=None) -> float | None:
@@ -276,7 +373,12 @@ def grams_per(unit: str, food_text: str, settings=None) -> float | None:
         canonical = food_resolve.match_key(food_text)
         if not canonical:
             return None
-        return _lookup_grams(ds, canonical.strip().lower(), measures)
+        # The states the LINE asked for, read before canonicalisation strips
+        # them: match_key removes "dried" (right for identity, wrong for mass),
+        # so without this the dried/raw distinction would be unrecoverable.
+        words = frozenset(re.split(r"[^a-z0-9-]+", (food_text or "").lower()))
+        return _lookup_grams(ds, canonical.strip().lower(), measures,
+                             frozenset(words & _STATE_WORDS))
     except Exception as exc:  # noqa: BLE001 - a lookup must never break a render
         if not _warned:
             _warned = True
