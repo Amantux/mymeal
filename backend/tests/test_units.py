@@ -557,6 +557,12 @@ def test_food_nouns_outside_the_countable_classes_are_left_alone(line, factor, e
     # "optional" hiding behind a trailing bracket — it is anchored at the end,
     # so it was invisible until the bracket came off first.
     ("1 gram Italian Seasoning optional (1 g)", "Italian Seasoning", "", True),
+    # ...and the other way round. Both are anchored at the end, so whichever is
+    # outermost hides the other; peeling in a fixed order fixed one spelling and
+    # silently left the other alone. Found by rendering a long real-world line.
+    ("1 gram Italian Seasoning (1 g) optional", "Italian Seasoning", "", True),
+    ("1 gram Seasoning Blend, salt-free or ¹/₂ teaspoon (1 g) optional",
+     "Seasoning Blend, salt-free", "1/2 tsp", True),
     ("1 tsp chili flakes, optional", "chili flakes", "", True),
     ("(optional) 1 tbsp chili flakes", "chili flakes", "", True),
     # A restatement in a different unit of the same dimension is still a
