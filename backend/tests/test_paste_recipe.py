@@ -15,6 +15,7 @@ from app.services.recipe_parse import (
     html_to_lines,
     parse_pasted,
     parse_recipe_text,
+    segment_runon_lines,
 )
 
 BLOB = """Grandma's Lemon Drizzle Cake
@@ -505,3 +506,174 @@ def test_a_huge_paste_is_capped():
     got = parse_recipe_text("Thing\nIngredients\n" + "1 cup flour\n" * 50000)
 
     assert got is None or len(got["ingredients"]) < 2000
+
+
+# --- Run-on blobs: recovering line boundaries the source threw away ----------
+#
+# Copied verbatim from the paste that prompted this: the site wraps each amount
+# and each name in adjacent inline elements, so the clipboard holds ONE line
+# with no separator anywhere. Note "¹/₂" is a superscript-solidus-subscript
+# trio, not "½" — that is what the page renders.
+RUN_ON = (
+    "240 gramsEgg Whites(240 g)"
+    "40 gramsParmesan Cheese finely grated(40 g)"
+    "1 gramGarlic Powder or ¹/₂ teaspoon(1 g)"
+    "1 gramOnion Powder or ¹/₂ teaspoon(1 g)"
+    "¹/₂ Gram Black Pepperorns or ¹/₄ teaspoon"
+    "1 gramItalian Seasoning optional(1 g)"
+    "1 gramPaprika or red pepper flakes optional(1 g)"
+    "Oil or 1 tsps oil for the pan"
+)
+
+
+def test_a_run_on_ingredient_blob_is_split_at_every_glued_quantity():
+    """The whole point: eight ingredients out of one unseparated line."""
+    got, changed = segment_runon_lines(RUN_ON)
+
+    assert changed is True
+    assert got.splitlines() == [
+        "240 grams Egg Whites(240 g)",
+        "40 grams Parmesan Cheese finely grated(40 g)",
+        "1 gram Garlic Powder or ¹/₂ teaspoon(1 g)",
+        "1 gram Onion Powder or ¹/₂ teaspoon(1 g)",
+        "¹/₂ Gram Black Pepperorns or ¹/₄ teaspoon",
+        "1 gram Italian Seasoning optional(1 g)",
+        "1 gram Paprika or red pepper flakes optional(1 g)",
+        "Oil or 1 tsps oil for the pan",
+    ]
+
+
+def test_an_alternative_measure_inside_a_line_is_not_a_boundary():
+    """"or ¹/₂ teaspoon" belongs to the line it qualifies. A SPACE in front of
+    the quantity is what says "same line"; only a glued one starts a new one."""
+    got, _ = segment_runon_lines(RUN_ON)
+
+    assert "or ¹/₂ teaspoon" in got.splitlines()[2]
+
+
+# Every paste fixture in this suite, as the text parser actually receives it.
+# Segmentation must be a no-op on all of them, byte for byte.
+_TEXT_FIXTURES = [BLOB, KNIFE_REVIEW]
+_HTML_FIXTURES = [COPIED_HTML, MICRODATA, WPRM]
+
+
+@pytest.mark.parametrize("text", _TEXT_FIXTURES
+                         + [html_to_lines(h) for h in _HTML_FIXTURES])
+def test_existing_pastes_are_untouched_by_segmentation(text):
+    got, changed = segment_runon_lines(text)
+
+    assert changed is False
+    assert got == text
+
+
+@pytest.mark.parametrize("line", [
+    "1 1/2 cups plain flour, sifted, plus 2 tablespoons for dusting the tin",
+    "Bake in a 9x13 pan at 180°C for 45 minutes until the top is golden brown",
+    "Use 1.5 kg of Grade A2 flour, a can of 7UP and 500ml of V8 for the batter",
+    "Chop 2-3 cloves of garlic, then add 1 1/2 cups of water to the saucepan",
+    "Beat the butter and sugar for 2 minutes, then fold in 200g of the flour",
+])
+def test_a_quantity_that_is_not_glued_to_a_word_is_never_a_boundary(line):
+    """The traps. Several have a digit next to a letter; none has a bare
+    quantity-plus-unit glued onto the end of the previous word."""
+    got, changed = segment_runon_lines(line)
+
+    assert changed is False
+    assert got == line
+
+
+def test_a_run_on_blob_imports_every_ingredient_instead_of_nothing():
+    got = parse_recipe_text(RUN_ON)
+
+    assert got is not None
+    assert [i["display"] for i in got["ingredients"]] == [
+        "240 grams Egg Whites(240 g)",
+        "40 grams Parmesan Cheese finely grated(40 g)",
+        "1 gram Garlic Powder or ¹/₂ teaspoon(1 g)",
+        "1 gram Onion Powder or ¹/₂ teaspoon(1 g)",
+        "¹/₂ Gram Black Pepperorns or ¹/₄ teaspoon",
+        "1 gram Italian Seasoning optional(1 g)",
+        "1 gram Paprika or red pepper flakes optional(1 g)",
+        "Oil or 1 tsps oil for the pan",
+    ]
+
+
+def test_an_ingredient_list_pasted_on_its_own_is_not_thrown_away():
+    """The unheaded path demands a method because its evidence is weak. A blob
+    only segments on three or more glued amounts — a shape prose cannot make —
+    so a bare ingredient list is accepted rather than discarded."""
+    got = parse_recipe_text(RUN_ON)
+
+    assert got["steps"] == []
+    assert len(got["ingredients"]) == 8
+
+
+def test_pasting_a_run_on_blob_through_the_endpoint_saves_every_ingredient(
+        auth_client, monkeypatch):
+    """End to end on the real paste route, with no provider configured — the
+    situation the user was in when the whole paste was rejected."""
+    def no_provider():
+        from app.services.ai.base import ProviderError
+        raise ProviderError("none configured")
+    monkeypatch.setattr(ai_api, "get_provider", no_provider)
+
+    r = auth_client.post("/api/v1/ai/import", json={"text": RUN_ON})
+
+    assert r.status_code == 201
+    assert len(r.get_json()["ingredients"]) == 8
+
+
+# --- Refusing, which is the recoverable failure ------------------------------
+
+@pytest.mark.parametrize("line", [
+    # A segment that is only a measurement — the cuts landed between amounts,
+    # so there is no ingredient there to name.
+    "Sift the flour250 grams300 grams400 grams of golden caster sugar",
+    # More rows than any recipe has.
+    "Flour" + "100 gramsSugar" * 70,
+    # One absurdly long segment: the method ran on into the list.
+    ("2 cupsFlour1 cupSugar2 tspSalt" + "and then beat the mixture "
+     "thoroughly until it is pale and completely smooth before baking " * 4),
+])
+def test_an_implausible_segmentation_is_refused_and_the_text_left_alone(line):
+    """Refusing returns the original, so the existing "couldn't parse" path
+    answers and the user still has the AI import. Silent garbage would not be
+    recoverable; a refusal is."""
+    got, changed = segment_runon_lines(line)
+
+    assert changed is False
+    assert got == line
+
+
+# --- The same shape, applied to a numbered method ----------------------------
+
+def test_a_run_on_numbered_method_is_split_into_steps():
+    got = parse_recipe_text(
+        "Ingredients\n2 cups plain flour\n1 tsp fine salt\nMethod\n"
+        "1Mix the flour and the salt2Cover the bowl and rest for 30 minutes"
+        "3Bake at 200C until golden")
+
+    assert [s["text"] for s in got["steps"]] == [
+        "Mix the flour and the salt",
+        "Cover the bowl and rest for 30 minutes",
+        "Bake at 200C until golden",
+    ]
+
+
+@pytest.mark.parametrize("line", [
+    # The numbers must come out 1, 2, 3 … — in none of these do they, so this
+    # is text that merely has digits next to capitals, not a numbered method.
+    #
+    # The first case is the one that isolates the run rule: it starts at 1 and
+    # clears every other check, and only the gap between 1 and 3 refuses it.
+    # (Mutation-checked — dropping the run rule splits this line in two.)
+    "1Mix the flour and the salt3Bake it at 200C until it is golden brown",
+    "mix the flour2Cover the bowl and rest5Bake it now in the very hot oven",
+    "Take a Vitamin B12Supplement daily with a large glass of cold water",
+    "Add 2Cups of the flour3Times over, then 9Bake it for a while to finish",
+])
+def test_digits_next_to_capitals_are_only_steps_when_they_run_in_order(line):
+    got, changed = segment_runon_lines(line)
+
+    assert changed is False
+    assert got == line

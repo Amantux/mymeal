@@ -357,6 +357,187 @@ def _payload(*, name, description="", ingredients, steps, meta, notes="") -> dic
     }
 
 
+# --- Run-on blob segmentation ------------------------------------------------
+#
+# Some sites put each amount and each name in adjacent inline elements, so a
+# browser copy yields ONE line with no separator anywhere:
+#
+#   "240 gramsEgg Whites(240 g)40 gramsParmesan Cheese finely grated(40 g)…"
+#
+# Every rule below is about where a LINE ENDS. What a line then means is
+# units.parse_line's job, and is deliberately not second-guessed here.
+#
+# Characters that can begin a quantity. Superscripts and subscripts are included
+# because sites render a half as "¹/₂" (three characters) rather than "½", and
+# the paste that prompted this contained exactly that. This is the lexical
+# question "does a number start here", not the semantic one "what number is it".
+_QTY_CHARS = "0-9½⅓⅔¼¾⅕⅛⅜⅝⅞¹²³⁴⁵⁶⁷⁸⁹⁰₀₁₂₃₄₅₆₇₈₉"
+_QTY_RUN = rf"[{_QTY_CHARS}](?:[{_QTY_CHARS}]|[./⁄])*"
+
+# THE boundary signal: a quantity glued directly to the end of the previous
+# word or to a closing bracket, and followed by a unit word.
+#
+# The "no space before the number" part is what makes this safe. Prose always
+# puts a space in front of a quantity ("bake for 45 minutes", "add 200g flour"),
+# so the lookbehind alone excludes almost every legitimate line. The unit-word
+# requirement excludes the rest of the known traps: "9x13 pan" ("pan" is not a
+# unit), "Grade A2 flour", "7UP", "V8". Traps where the digit is not preceded by
+# a letter at all never even reach the unit check: "1 1/2 cups" (the 2 follows a
+# slash), "2-3 cloves" (a hyphen), "1.5 kg" (a dot), "180°C" (a degree sign).
+#
+# The unit candidate is "one capital-or-lowercase letter then lowercase only"
+# rather than ``[A-Za-z]+``, because in these blobs the unit is itself glued to
+# the name that follows it: the word after the quantity is "gramsParmesan", and
+# stopping at the lower→upper transition is what recovers "grams" from it.
+_RUNON_QTY = re.compile(
+    rf"(?<=[A-Za-z)])(?P<q>{_QTY_RUN})\s*(?P<w>[A-Za-z][a-z]*\.?)")
+# Secondary: a closing bracket glued to a capitalised word — "(1 g)Oil". Only
+# ever ADDS cuts to a line the quantity rule has already identified as a blob,
+# so it can never trigger segmentation on its own.
+_RUNON_PAREN = re.compile(r"(?<=\))(?=[A-Z][a-z])")
+# A unit glued to the start of the name: "240 gramsEgg Whites". Fixed only at
+# the head of an already-segmented line, and only when the lowercase run is a
+# UNIT — which is what keeps "McIntosh apples", "iPhone" and "crème fraîche"
+# (no transition at all) untouched. A general lower→upper split is far too eager
+# to use as a boundary signal; scoped to "the unit I just matched", it is safe.
+_RUNON_UNIT_GLUE = re.compile(rf"^(?P<head>{_QTY_RUN}\s*)(?P<u>[a-z]+)(?=[A-Z])")
+
+_RUNON_MIN_CHARS = 40      # a real ingredient line is short; a blob is not
+_SEG_MIN_COUNT = 3         # two cuts minimum, so one stray split can't fire
+_SEG_MAX_COUNT = 60        # more rows than any recipe has = we read it wrong
+_SEG_MAX_CHARS = 200       # one absurdly long segment = we read it wrong
+# Words that are grammar, not the name of a food. A segment made only of these
+# plus its measurement has no subject, which means the cut landed badly.
+_SEG_NOISE = frozenset((
+    "or", "and", "of", "the", "a", "an", "to", "plus", "each", "optional",
+))
+_PAREN_ASIDE = re.compile(r"\([^)]*\)")
+
+
+def _is_unit_word(word: str) -> bool:
+    """Whether ``word`` names a measure, per the one unit vocabulary.
+
+    Singular/plural tolerance is deliberate: this is a *vocabulary lookup* used
+    to qualify a boundary, so it must not depend on which spellings the
+    measurement parser happens to canonicalise today ("tsps" does not resolve,
+    "tsp" does).
+    """
+    w = (word or "").strip().rstrip(".")
+    if not w:
+        return False
+    return any(units.canonical_unit(c) for c in (w, f"{w}s", w.rstrip("s")))
+
+
+def _runon_cuts(line: str) -> list[int]:
+    """Offsets where a glued quantity starts a new ingredient."""
+    return [m.start() for m in _RUNON_QTY.finditer(line)
+            if _is_unit_word(m.group("w"))]
+
+
+def _has_food_words(seg: str) -> bool:
+    """Whether a segment names something, not just an amount.
+
+    "40 grams" on its own is a mis-cut, not an ingredient.
+    """
+    rest = _PAREN_ASIDE.sub(" ", seg)
+    return any(w.lower() not in _SEG_NOISE and not _is_unit_word(w)
+               for w in re.findall(r"[^\W\d_]{2,}", rest))
+
+
+def _segments_look_right(segs: list[str]) -> bool:
+    """The refusal guard: whether the cuts produced a plausible list.
+
+    A refusal is recoverable — the caller keeps the original text, the existing
+    "couldn't parse" path returns None, and the user still has the AI import.
+    Silent garbage is not recoverable, so anything doubtful is refused.
+    """
+    if not _SEG_MIN_COUNT <= len(segs) <= _SEG_MAX_COUNT:
+        return False
+    if any(len(s) > _SEG_MAX_CHARS for s in segs):
+        return False
+    return all(_has_food_words(s) for s in segs)
+
+
+def _split_at(line: str, cuts: list[int]) -> list[str]:
+    bounds = [0, *cuts, len(line)]
+    return [s for s in (line[a:b].strip()
+                        for a, b in zip(bounds, bounds[1:])) if s]  # noqa: B905
+
+
+def _unglue_unit(seg: str) -> str:
+    """"240 gramsEgg Whites" -> "240 grams Egg Whites"."""
+    m = _RUNON_UNIT_GLUE.match(seg)
+    if m and _is_unit_word(m.group("u")):
+        return f"{m.group('head')}{m.group('u')} {seg[m.end():]}"
+    return seg
+
+
+def _segment_ingredient_blob(line: str) -> list[str] | None:
+    """A run-on ingredient blob split into lines, or None to leave it alone."""
+    if len(line) < _RUNON_MIN_CHARS:
+        return None
+    cuts = _runon_cuts(line)
+    if len(cuts) < _SEG_MIN_COUNT - 1:
+        return None
+    all_cuts = sorted(set(cuts) | {m.start() for m in _RUNON_PAREN.finditer(line)})
+    segs = [_unglue_unit(s) for s in _split_at(line, all_cuts)]
+    return segs if _segments_look_right(segs) else None
+
+
+# The same glued shape happens to a numbered METHOD: "1Mix the flour2Cover and
+# rest". The quantity rule cannot see these — "Mix" is not a unit — and a bare
+# digit-then-capital is far too eager on its own ("Vitamin B12Supplement").
+# What makes it safe is that real step numbers are a RUN: the digits must come
+# out 1, 2, 3 … with nothing missing and nothing out of order. Accidental text
+# essentially never does that, and a page that numbers its steps always starts
+# at 1.
+_RUNON_STEP_HEAD = re.compile(r"^(?P<n>\d{1,2})(?=[A-Z])")
+_RUNON_STEP = re.compile(r"(?<=[a-z.)])(?P<n>\d{1,2})(?=[A-Z])")
+_STEP_MAX_CHARS = 600      # a step is a sentence or two, not a chapter
+
+
+def _segment_step_blob(line: str) -> list[str] | None:
+    """A run-on numbered method split into steps, or None to leave it alone."""
+    if len(line) < _RUNON_MIN_CHARS:
+        return None
+    hits = [*filter(None, [_RUNON_STEP_HEAD.match(line)]),
+            *_RUNON_STEP.finditer(line)]
+    nums = [int(m.group("n")) for m in hits]
+    if len(nums) < 2 or nums != list(range(1, len(nums) + 1)):
+        return None
+    segs = _split_at(line, [m.start() for m in hits if m.start() > 0])
+    if len(segs) != len(nums) or any(len(s) > _STEP_MAX_CHARS for s in segs):
+        return None
+    # A step is a clause, not a stray number with a capital after it.
+    if not all(len(re.findall(r"[^\W\d_]{2,}", s)) >= 2 for s in segs):
+        return None
+    # Re-punctuate the number rather than dropping it, so the existing
+    # strip_step_number rule removes it and the "this line starts a step"
+    # signal survives into _step_rows.
+    return [re.sub(r"^(\d{1,2})(?=[A-Z])", r"\1. ", s) for s in segs]
+
+
+def segment_runon_lines(text: str) -> tuple[str, bool]:
+    """``text`` with any run-on blob line split, and whether anything was split.
+
+    Applied per line, and only to a line that has no usable structure of its own
+    — a normal paste comes back byte-identical, which
+    ``test_existing_pastes_are_untouched_by_segmentation`` asserts over every
+    fixture in this suite.
+    """
+    out: list[str] = []
+    changed = False
+    for ln in text.splitlines():
+        stripped = ln.strip()
+        segs = _segment_ingredient_blob(stripped) or _segment_step_blob(stripped)
+        if segs is None:
+            out.append(ln)
+            continue
+        out.extend(segs)
+        changed = True
+    return ("\n".join(out), True) if changed else (text, False)
+
+
 def parse_recipe_text(text: str) -> dict | None:
     """Parse a pasted recipe blob, or None when it isn't confidently a recipe.
 
@@ -370,8 +551,11 @@ def parse_recipe_text(text: str) -> dict | None:
     """
     # Same cap as the HTML path. A recipe is not 3 MB, and without this a huge
     # paste built 100,000 ingredient dicts before the endpoint truncated them.
-    raw = [ln.strip()
-           for ln in (text or "")[:12000].replace("\r\n", "\n").splitlines()]
+    capped = (text or "")[:12000].replace("\r\n", "\n")
+    # Recover the line boundaries the source threw away, or a paste that glued
+    # every amount onto the name after it is one line and is rejected outright.
+    capped, segmented = segment_runon_lines(capped)
+    raw = [ln.strip() for ln in capped.splitlines()]
     lines = [ln for ln in raw if ln]
     if len(lines) < 3:
         return None
@@ -386,7 +570,13 @@ def parse_recipe_text(text: str) -> dict | None:
     if got is None:
         return None
     name, ingredients, steps, head_lines = got
-    if not _enough(ingredients, steps, require_step=not headed):
+    # ``require_step`` guards the UNHEADED path, where the only evidence is that
+    # some lines carry numbers — an article with a few prices in it cleared the
+    # old bar. A segmented blob is not that weak a signal: segmentation only
+    # fires on three or more amounts glued to the words after them, which is a
+    # shape prose cannot produce, so an ingredient list pasted on its own is
+    # accepted without a method rather than thrown away.
+    if not _enough(ingredients, steps, require_step=not headed and not segmented):
         return None
     if not headed:
         # Guessing, so demand that the list is mostly measurements rather than a
