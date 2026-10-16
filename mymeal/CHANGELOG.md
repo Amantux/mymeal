@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.2.54
+
+- Refuse a reference weight for a preparation nobody asked for.
+
 ## 1.2.53
 
 - A definition-style row keeps its food name.
