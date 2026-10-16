@@ -24,8 +24,10 @@ Anything this module can't confidently read returns ``None`` so the caller falls
 through to the AI path unchanged.
 """
 import re
+import unicodedata
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
+from bs4.element import CData
 
 from . import units
 
@@ -72,12 +74,290 @@ _DURATION_LABEL = {
 }
 
 
+# Elements that render INSIDE a line of text rather than starting one. Their
+# text belongs to the line of the block that contains them, so they must be
+# joined into it before anything splits on newlines. ``soup.get_text("\n")``
+# cannot do this: it puts the separator at EVERY string boundary, so
+# ``<li><span>240 grams</span><span>Egg Whites</span><span>(240 g)</span></li>``
+# came out as three lines and the amount was orphaned from its food — on the
+# DEFAULT paste path, because copying from a browser puts HTML on the clipboard.
+#
+# Written out rather than guessed at, grouped by why each is here. This is the
+# HTML phrasing-content set minus the controls/junk already decomposed above:
+#   text styling        b i u s em strong small big tt font strike
+#   semantic spans      a span abbr acronym cite code data dfn kbd mark q samp
+#                       time var bdi bdo label output nobr
+#   edits (transparent) ins del
+#   scripts/annotation  sub sup ruby rt rp
+#   replaced/void       img picture source track map area meter progress
+#                       canvas object embed iframe video audio math
+# ``sub``/``sup`` matter specifically: a page renders the fraction ½ as
+# ``<sup>1</sup>⁄<sub>2</sub>``, and splitting that put "1", "⁄" and "2" on
+# three lines of their own.
+# The replaced/void group matters because ``img`` is inline: WordPress rewrites
+# emoji in post content to ``<img class="wp-smiley">`` and unit/diet icons sit
+# inside ingredient rows, so ``<li>2 cups <img> flour</li>`` split into "2 cups"
+# and "flour" — the headline bug, by another route. ``svg`` behaves only because
+# it is decomposed as junk below; ``img`` was not, which is the asymmetry.
+#
+# Anything NOT in this set stays a line boundary — which is exactly today's
+# behaviour for every element — so an unrecognised custom tag can never start
+# silently swallowing the following line. ``br`` and ``wbr`` are inline but are
+# handled separately below, because they are about breaking, not about text.
+_INLINE_TAGS = frozenset({
+    "a", "abbr", "acronym", "b", "bdi", "bdo", "big", "cite", "code", "data",
+    "del", "dfn", "em", "font", "i", "ins", "kbd", "label", "mark", "nobr",
+    "output", "q", "rp", "rt", "ruby", "s", "samp", "small", "span", "strike",
+    "strong", "sub", "sup", "time", "tt", "u", "var",
+})
+
+# Replaced inline elements: inline-level, but their subtree is FALLBACK that a
+# working browser never renders ("Your browser cannot play video"). So they are
+# a pure glue point — no line break, and no text either. Treating them as
+# ordinary inline would join that fallback copy into the ingredient row, which
+# is worse than the junk line it used to produce. This is how ``svg`` already
+# behaves by being decomposed as junk; these were simply never listed.
+#
+# ``math`` is here for a different reason: MathML content IS rendered, but its
+# ~30 token elements (mn, mi, mo, mrow, …) are none of them in _INLINE_TAGS, so
+# a walked formula split onto one line per token. Treating the formula as
+# opaque is the cheap correct-enough answer — a recipe states quantities as
+# text, not as MathML — and it drops a junk line the old code also produced.
+_REPLACED_TAGS = frozenset({
+    "area", "audio", "canvas", "embed", "iframe", "img", "map", "math",
+    "meter", "object", "picture", "progress", "source", "track", "video",
+})
+
+# Inline elements a page uses as a LEAD-IN HEADING: "<p><strong>Notes</strong>
+# Keep refrigerated…</p>" is mainstream recipe-blog markup. Joining the bold
+# into its paragraph is typographically right but destroys the heading as a
+# LINE, and the heading-as-a-line is what _TAIL_HEAD/_SUB_HEAD match on — so
+# "Notes" stopped terminating the method and came back as a third step, and
+# "For the sauce:" stopped becoming a section and corrupted an ingredient's
+# display text instead. A recognised heading therefore keeps its own line.
+_LEAD_IN_TAGS = frozenset({"b", "strong", "em", "i", "u", "span", "mark"})
+
+_WS_RUN = re.compile(r"\s+")
+# An element that preserves its own newlines: <pre>, or anything the author
+# styled with white-space:pre*. The styled case is not exotic — it is how the
+# clipboard's text/html flavour represents a copied PLAIN-TEXT recipe, and
+# since the UI posts that flavour in preference to the plain one, collapsing
+# those newlines turned a perfectly parseable paste into one unreadable line
+# and sent the user to the "no AI provider" dead end this module exists to
+# avoid. The style attribute survives even though <style> blocks are stripped.
+_PRE_WS = re.compile(
+    r"white-space\s*:\s*(?:pre|pre-wrap|pre-line|break-spaces)\b", re.I)
+# Characters that can only END a token, so a word character after one is a new
+# token and needs a space ("(240 g)" + "Egg Whites" on metric-first layouts).
+_TOKEN_END = frozenset(")]}%;:!?")
+# The two that are ALSO decimal separators — "." in en, "," across most of
+# Europe — so they end a token only when a LETTER precedes them. That spaces
+# "2 tsp." + "Vanilla extract" while leaving "1" + "." + "5" as "1.5" and
+# "1," + "5 kg" as "1,5 kg".
+_TOKEN_END_AFTER_LETTER = frozenset(".,")
+# Pushed onto the walk stack to mark "this block's content has all been
+# consumed, end its line here", and to leave a newline-preserving region.
+_FLUSH = object()
+_POP_PRE = object()
+
+
+def _preserves_newlines(tag) -> bool:
+    """Whether this element's own newlines are significant (``<pre>``-like)."""
+    return tag.name == "pre" or bool(_PRE_WS.search(tag.get("style") or ""))
+
+
+def _is_lead_in_heading(text: str) -> bool:
+    """Whether a bolded lead-in is one of the headings the text parser matches.
+
+    Kept to the SAME four patterns the parser already uses, so there is one
+    heading vocabulary rather than a second one that can drift. Length-capped
+    by ``_HEADING_MAX`` for the same reason ``_is_sub_heading`` is: ``_SUB_HEAD``
+    matches anything ending in a colon, and a long bolded sentence that happens
+    to end in one is prose, not a heading.
+    """
+    return bool(text) and len(text) <= _HEADING_MAX and bool(
+        _ING_HEAD.match(text) or _STEP_HEAD.match(text)
+        or _TAIL_HEAD.match(text) or _SUB_HEAD.match(text))
+
+
+def _needs_join_space(left: str, right: str) -> bool:
+    """Whether a space goes between two inline chunks glued with no whitespace.
+
+    The rule is: only when BOTH characters at the boundary are alphanumeric.
+    Derived from what the three real shapes need, not from taste —
+
+    * ``<span>240 grams</span><span>Egg Whites</span>`` → ``s`` | ``E``, both
+      word characters, so a space. Without it you get "240 gramsEgg Whites",
+      which is the exact corruption the plain-text sibling fix had to repair
+      downstream; better not to create it here in the first place.
+    * ``<span>Egg Whites</span><span>(240 g)</span>`` → ``s`` | ``(``: a
+      bracket already reads as a boundary, so no space. This also keeps the
+      output byte-identical to what the run-on text segmenter produces.
+    * ``<sup>1</sup><span>⁄</span><sub>2</sub>`` → ``1`` | ``⁄`` and ``⁄`` |
+      ``2``. U+2044 FRACTION SLASH is punctuation, not alphanumeric, so "1⁄2"
+      stays one token instead of becoming "1 ⁄ 2" (verified: ``'⁄'.isalnum()``
+      is False while ``'¹'`` and ``'₂'`` are True, so the superscript/subscript
+      spelling of the same fraction behaves identically).
+    * ``Jell<span>-</span>O`` → ``l`` | ``-`` and ``-`` | ``O``: no space at
+      either side, so the hyphenated name survives.
+
+    Trailing COMBINING MARKS are skipped to find the real character, because a
+    macOS clipboard hands over decomposed text: "café" arrives as ``e`` plus
+    U+0301, whose category is Mn and which is therefore not alnum. Testing the
+    last code unit naively made ``<span>café</span><span>Beans</span>`` come
+    out as "caféBeans" while the precomposed spelling of the same word got its
+    space — accented food names are far too common for that to be acceptable.
+
+    A CLOSING punctuation mark on the left also ends a token, so it counts as a
+    word character for this purpose (``_TOKEN_END``). Without that, the two
+    commonest US and metric-first ingredient layouts stayed glued:
+    ``<span>2 tsp.</span><span>Vanilla extract</span>`` → "2 tsp.Vanilla
+    extract" and ``<span>(240 g)</span><span>Egg Whites</span>`` →
+    "(240 g)Egg Whites". ``.`` and ``,`` are the awkward pair — they end
+    "tsp." and "flour," but also sit inside "1.5" and the European "1,5" — so
+    they only count when a LETTER precedes them.
+
+    Known trade-off: a word deliberately split mid-way across two tags for
+    styling ("Choco"+"late") gains a space. That is rare, cosmetic and still
+    human-readable; the opposite error destroys the amount on every row of an
+    ingredient list, so the rule errs towards inserting. A ``right`` that opens
+    with a combining mark is the reverse case — it continues the previous
+    letter — and correctly gets no space, since a mark is not alnum.
+
+    Deliberately NOT handled: a trailing format character (ZWSP U+200B, soft
+    hyphen U+00AD). They are break OPPORTUNITIES whose two meanings pull
+    opposite ways — ZWSP usually separates tokens and would want a space, a
+    soft hyphen is explicitly intra-word and must not get one — so guessing
+    would be worse than the status quo of leaving both glued.
+    """
+    if not left or not right or not right[0].isalnum():
+        return False
+    i = len(left) - 1
+    while i > 0 and unicodedata.category(left[i]).startswith("M"):
+        i -= 1
+    last = left[i]
+    if last.isalnum() or last in _TOKEN_END:
+        return True
+    # "." ends an abbreviated unit ("tsp.") but also joins a decimal; "," ends
+    # a qualifier ("flour,") but is the decimal separator across Europe.
+    return (last in _TOKEN_END_AFTER_LETTER
+            and i > 0 and left[i - 1].isalpha())
+
+
+def _flatten_blocks(root) -> list[str]:
+    """Visible text as one line per BLOCK element, inline descendants joined in.
+
+    Whitespace inside a block is collapsed, because HTML says it is
+    insignificant: a pretty-printed ``<li>\\n  <span>240 grams</span>\\n
+    <span>Egg Whites</span>\\n</li>`` has to yield the same single line as the
+    minified spelling, and splitting on the source's own newlines is what made
+    those two disagree.
+    """
+    lines: list[str] = []
+    buf: list[str] = []
+    # The tail of what has been emitted into buf, for the join rule. A few
+    # characters rather than one: the last code unit may be a combining mark
+    # and _needs_join_space has to look back past it for the base letter.
+    tail = [""]
+    glue = [False]         # a <wbr> just said "break here" — never add a space
+    pre = [0]              # depth of enclosing newline-preserving elements
+
+    def flush() -> None:
+        line = _WS_RUN.sub(" ", "".join(buf)).strip()
+        buf.clear()
+        tail[0] = ""
+        glue[0] = False
+        if line:
+            lines.append(line)
+
+    def emit(text: str) -> None:
+        if not text:
+            return
+        if _needs_join_space(tail[0], text) and not glue[0]:
+            buf.append(" ")
+        glue[0] = False
+        buf.append(text)
+        tail[0] = text[-8:]
+
+    def add(text: str) -> None:
+        if not pre[0] or "\n" not in text:
+            emit(text)
+            return
+        # Inside a <pre> or a white-space:pre* region the author's own newlines
+        # ARE the line structure, so each one ends a line instead of being
+        # collapsed to a space.
+        parts = text.split("\n")
+        for part in parts[:-1]:
+            emit(part)
+            flush()
+        emit(parts[-1])
+
+    # An explicit stack, NOT recursion. bs4 walks the tree iteratively, so
+    # ``get_text`` coped with any nesting; a recursive version of this blew up
+    # with a RecursionError at ~1000 levels deep (measured), and the URL-import
+    # path feeds this function pages nobody vetted. Children are pushed in
+    # reverse so they pop in document order, and a block pushes its closing
+    # _FLUSH before them so the flush happens after its content.
+    stack: list = list(reversed(root.contents))
+    while stack:
+        child = stack.pop()
+        if child is _FLUSH:
+            flush()
+            continue
+        if child is _POP_PRE:
+            pre[0] -= 1
+            continue
+        # Mirrors bs4's own ``interesting_string_types``, so comments, doctypes
+        # and processing instructions stay excluded exactly as ``get_text``
+        # excluded them.
+        if isinstance(child, NavigableString):
+            if type(child) in (NavigableString, CData):
+                add(str(child))
+            continue
+        name = child.name
+        if name == "br":
+            flush()            # inline, but it IS a line break
+            continue
+        if name == "wbr":
+            glue[0] = True     # a break OPPORTUNITY, never a space
+            continue
+        if name in _REPLACED_TAGS:
+            continue           # inline, and its subtree is unrendered fallback
+        inline = name in _INLINE_TAGS
+        # A newline-preserving region is walked like anything else — only the
+        # newline handling in add() changes. Walking it (rather than taking its
+        # get_text()) is what keeps <br>, nested blocks, the inline-join rule
+        # and the synthetic section markers working inside a <pre>.
+        if _preserves_newlines(child):
+            pre[0] += 1
+            stack.append(_POP_PRE)
+        if not inline:
+            flush()
+            stack.append(_FLUSH)
+        elif (name in _LEAD_IN_TAGS and not "".join(buf).strip()
+                and _is_lead_in_heading(child.get_text(" ").strip())):
+            # A bolded heading at the START of a block keeps its own line, so
+            # "<p><strong>Notes</strong> Keep refrigerated…</p>" still
+            # terminates the method instead of becoming a step. "Start" means
+            # no VISIBLE text yet, not an empty buffer: pretty-printed markup
+            # puts "\n  " in the buffer first, and testing for empty missed
+            # every indented page — which is most of them.
+            stack.append(_FLUSH)
+        stack.extend(reversed(child.contents))
+
+    flush()
+    return lines
+
+
 def html_to_lines(html: str, limit: int = 12000, *, mark_sections: bool = True) -> str:
-    """Visible text, one line per element, with the junk removed.
+    """Visible text, one line per block element, with the junk removed.
 
     Block structure is what makes the text parseable — every ``<li>`` on its own
     line is the difference between an ingredient list and one run-on sentence —
     so this deliberately keeps newlines rather than collapsing to a paragraph.
+    The corollary, and the thing that took a second fix: an INLINE element is
+    not a block, so the spans a site wraps around an amount and its food name
+    must be joined back into their ``<li>`` instead of becoming three lines.
     ``<style>`` goes with the other junk, which is what makes pasted CSS a no-op
     instead of garbage ingredients.
 
@@ -94,8 +374,7 @@ def html_to_lines(html: str, limit: int = 12000, *, mark_sections: bool = True) 
         junk.decompose()
     if mark_sections:
         _mark_sections(soup)
-    lines = [ln.strip() for ln in soup.get_text("\n").splitlines() if ln.strip()]
-    return "\n".join(lines)[:limit]
+    return "\n".join(_flatten_blocks(soup))[:limit]
 
 
 # class/id/itemprop values that name a recipe part. Copying a rendered page
@@ -147,7 +426,15 @@ def _mark_sections(soup) -> None:
                for h in el.find_all(_HEADING_TAGS)):
             marked.append(el)
             continue          # the page prints its own heading; don't double it
-        el.insert_before(f"\n{word}\n")
+        # A real element, not a "\n<word>\n" string. The newlines in a bare
+        # string only worked while every string boundary became a line break;
+        # now that inline content is joined into its block, a loose string
+        # lands in the SIBLING's line — "12 muffins" directly before a marked
+        # <li> became "12 muffins Ingredients". A <div> is a block, so it gets
+        # a line of its own by the same rule as everything else.
+        marker = soup.new_tag("div")
+        marker.string = word
+        el.insert_before(marker)
         marked.append(el)
 
 

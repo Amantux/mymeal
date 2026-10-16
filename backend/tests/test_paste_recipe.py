@@ -677,3 +677,416 @@ def test_digits_next_to_capitals_are_only_steps_when_they_run_in_order(line):
 
     assert changed is False
     assert got == line
+
+
+# --- Inline elements are not line breaks -------------------------------------
+#
+# The HTML twin of the run-on blob above, and the commoner of the two: copying
+# from a browser puts HTML on the clipboard, so this is the DEFAULT path for
+# "paste a recipe from a site". The site wraps the amount, the name and the
+# metric note in three adjacent <span>s; soup.get_text("\n") put a separator at
+# every string boundary, so one <li> became three lines and every amount was
+# orphaned from its food.
+
+INLINE_SPANS = (
+    '<div class="wprm-recipe-ingredients-container"><h3>Ingredients</h3>'
+    '<ul class="wprm-recipe-ingredients">'
+    '<li><span>240 grams</span><span>Egg Whites</span><span>(240 g)</span></li>'
+    '<li><span>40 grams</span><span>Parmesan Cheese finely grated</span>'
+    '<span>(40 g)</span></li>'
+    '<li><span>1 gram</span><span>Garlic Powder or ¹⁄₂ teaspoon</span>'
+    '<span>(1 g)</span></li>'
+    '<li><span>1 gram</span><span>Onion Powder or ¹⁄₂ teaspoon</span>'
+    '<span>(1 g)</span></li>'
+    '<li><span>¹⁄₂ Gram</span>'
+    '<span>Black Pepperorns or ¹⁄₄ teaspoon</span></li>'
+    '<li><span>1 gram</span><span>Italian Seasoning optional</span>'
+    '<span>(1 g)</span></li>'
+    '<li><span>1 gram</span><span>Paprika or red pepper flakes optional</span>'
+    '<span>(1 g)</span></li>'
+    '<li><span>Oil or 1 tsps oil for the pan</span></li>'
+    '</ul></div>'
+    '<div class="wprm-recipe-instructions-container"><h3>Instructions</h3>'
+    '<ol class="wprm-recipe-instructions">'
+    '<li>Whisk the <b>egg whites</b> until frothy.</li>'
+    '<li>Fold in the <span>Parmesan</span> and the seasonings.</li>'
+    '<li>Cook in an oiled pan over medium heat.</li></ol></div>')
+
+_INLINE_SPAN_ROWS = [
+    "240 grams Egg Whites(240 g)",
+    "40 grams Parmesan Cheese finely grated(40 g)",
+    "1 gram Garlic Powder or ¹⁄₂ teaspoon(1 g)",
+    "1 gram Onion Powder or ¹⁄₂ teaspoon(1 g)",
+    "¹⁄₂ Gram Black Pepperorns or ¹⁄₄ teaspoon",
+    "1 gram Italian Seasoning optional(1 g)",
+    "1 gram Paprika or red pepper flakes optional(1 g)",
+    "Oil or 1 tsps oil for the pan",
+]
+
+
+def test_spans_inside_one_list_item_stay_on_one_line():
+    """Three <span>s in an <li> are ONE ingredient, not three lines. Note the
+    expected rows are byte-identical to what the plain-text segmenter produces
+    for the same recipe — the two paths must not disagree."""
+    lines = html_to_lines(INLINE_SPANS).splitlines()
+
+    assert lines == ["Ingredients"] + _INLINE_SPAN_ROWS + [
+        "Instructions",
+        "Whisk the egg whites until frothy.",
+        "Fold in the Parmesan and the seasonings.",
+        "Cook in an oiled pan over medium heat.",
+    ]
+
+
+def test_the_inline_span_paste_imports_all_eight_ingredients():
+    got = parse_pasted(INLINE_SPANS)
+
+    assert got is not None
+    assert [i["display"] for i in got["ingredients"]] == _INLINE_SPAN_ROWS
+
+
+def test_the_inline_span_paste_through_the_endpoint_saves_eight_rows(auth_client,
+                                                                    monkeypatch):
+    """End to end on the real endpoint, with no provider: the whole point is
+    that this markup no longer needs a model and no longer loses the amounts."""
+    def no_provider():
+        from app.services.ai.base import ProviderError
+        raise ProviderError("none configured")
+    monkeypatch.setattr(ai_api, "get_provider", no_provider)
+
+    r = auth_client.post("/api/v1/ai/import", json={"text": INLINE_SPANS})
+
+    assert r.status_code == 201
+    rid = r.get_json()["id"]
+    got = auth_client.get(f"/api/v1/recipes/{rid}").get_json()["ingredients"]
+    assert [i["display"] for i in got] == _INLINE_SPAN_ROWS
+
+
+def test_pretty_printed_markup_reads_the_same_as_minified():
+    """Whitespace between tags is insignificant in HTML, so the indented
+    spelling of the same list must not split where the minified one does not."""
+    lines = html_to_lines(
+        "<ul>\n  <li>\n    <span>240 grams</span>\n"
+        "    <span>Egg Whites</span>\n  </li>\n</ul>").splitlines()
+
+    assert lines == ["240 grams Egg Whites"]
+
+
+@pytest.mark.parametrize("html,want", [
+    # A space IS needed: two word characters meet, and without it you get
+    # "240 gramsEgg Whites" — the corruption the text path had to repair.
+    ("<li><span>240 grams</span><span>Egg Whites</span></li>",
+     "240 grams Egg Whites"),
+    # A space is NOT needed: a bracket already reads as a boundary, and this
+    # keeps the output identical to the text segmenter's.
+    ("<li><span>Egg Whites</span><span>(240 g)</span></li>", "Egg Whites(240 g)"),
+    # A fraction split across three elements must stay one token.
+    ("<li><sup>1</sup><span>⁄</span><sub>2</sub> cup milk</li>", "1⁄2 cup milk"),
+    ("<li><sup>¹</sup>⁄<sub>₂</sub> cup milk</li>", "¹⁄₂ cup milk"),
+    # A hyphen inside a brand name must not gain spaces around it.
+    ("<li>1 packet Jell<span>-</span>O</li>", "1 packet Jell-O"),
+    # <wbr> is a break OPPORTUNITY, not a space.
+    ("<li>Worcester<wbr>shire sauce</li>", "Worcestershire sauce"),
+    # <br> is inline but it really is a line break.
+    ("<div>2 cups flour<br>1 cup milk</div>", "2 cups flour\n1 cup milk"),
+    # Whitespace already present in the source is never doubled.
+    ("<li><b>2 cups</b> <span>flour</span></li>", "2 cups flour"),
+    # Non-Latin scripts are alphanumeric too, so they space like any other word.
+    ("<li><span>Мука</span><span>200 г</span></li>", "Мука 200 г"),
+    ("<li><span>小麦粉</span><span>200グラム</span></li>", "小麦粉 200グラム"),
+    # DECOMPOSED accents: a macOS clipboard sends "café" as e + U+0301, and a
+    # combining mark is not alnum, so testing the last code unit naively gave
+    # "caféBeans" here while the precomposed spelling got its space.
+    ("<li><span>café</span><span>Beans</span></li>",
+     "café Beans"),
+    ("<li><span>café</span><span>Beans</span></li>", "café Beans"),
+    # A decimal point splits across elements on some sites and must not gain
+    # spaces — "1 . 5 kg" would lose the quantity entirely.
+    ("<li><span>1</span><span>.</span><span>5</span> kg beef</li>",
+     "1.5 kg beef"),
+    # An ABBREVIATED unit ends in a period — the US recipe-site norm — and a
+    # period is not alnum, so this stayed glued as "2 tsp.Vanilla extract".
+    ("<li><span>2 tsp.</span><span>Vanilla extract</span></li>",
+     "2 tsp. Vanilla extract"),
+    ("<li><span>1 lb.</span><span>Ground beef</span></li>", "1 lb. Ground beef"),
+    # Metric-FIRST layouts put the bracketed amount before the name, so a
+    # closing bracket has to end a token too.
+    ("<li><span>(240 g)</span><span>Egg Whites</span></li>",
+     "(240 g) Egg Whites"),
+    ("<li><span>70%</span><span>Dark Chocolate</span></li>", "70% Dark Chocolate"),
+    ("<li><span>flour,</span><span>sifted</span></li>", "flour, sifted"),
+    # A comma is the decimal separator across most of Europe, so like "." it
+    # ends a token only after a LETTER — "1, 5 kg" would lose the quantity.
+    ("<li><span>1,</span><span>5 kg</span> beef</li>", "1,5 kg beef"),
+])
+def test_the_inline_join_whitespace_rule(html, want):
+    assert html_to_lines(html) == want
+
+
+def test_a_block_element_still_breaks_the_line():
+    """The fix joins INLINE elements only. If a block stopped breaking, an
+    ingredient list would collapse into one run-on line again."""
+    assert html_to_lines(
+        "<div><p>2 cups flour</p><p>1 cup milk</p>"
+        "<table><tr><td>2 eggs</td></tr><tr><td>1 tsp salt</td></tr></table>"
+        "<dl><dt>Butter</dt><dd>225g</dd></dl></div>").splitlines() == [
+        "2 cups flour", "1 cup milk", "2 eggs", "1 tsp salt", "Butter", "225g"]
+
+
+def test_an_unknown_custom_tag_still_breaks_the_line():
+    """Unrecognised elements default to BLOCK, which is the pre-fix behaviour
+    for everything — so a custom tag can never silently swallow the next line."""
+    assert html_to_lines(
+        "<wprm-row>2 cups flour</wprm-row><wprm-row>1 cup milk</wprm-row>"
+    ).splitlines() == ["2 cups flour", "1 cup milk"]
+
+
+def test_a_preformatted_block_keeps_its_own_line_breaks():
+    """<pre> is the one place the source's newlines are significant; collapsing
+    them would weld a whole method into a single line."""
+    assert html_to_lines(
+        "<pre>2 cups flour\n1 cup milk\n2 eggs</pre>").splitlines() == [
+        "2 cups flour", "1 cup milk", "2 eggs"]
+
+
+@pytest.mark.parametrize("html,want", [
+    # A <pre> is WALKED like any other element, not flattened with get_text():
+    # taking its text wholesale skipped <br>, the inline-join rule, nested
+    # blocks and the synthetic markers, welding "240 gramsEgg Whites" — worse
+    # than the bug being fixed.
+    ("<pre>2 cups flour<br>1 cup milk</pre>", ["2 cups flour", "1 cup milk"]),
+    ("<pre><span>240 grams</span><span>Egg Whites</span></pre>",
+     ["240 grams Egg Whites"]),
+    ("<pre><div>2 cups flour</div><div>1 cup milk</div></pre>",
+     ["2 cups flour", "1 cup milk"]),
+    ('<pre><div class="recipe-ingredients">2 cups flour</div></pre>',
+     ["Ingredients", "2 cups flour"]),
+])
+def test_a_preformatted_block_is_walked_not_flattened(html, want):
+    assert html_to_lines(html).splitlines() == want
+
+
+def test_newline_preservation_ends_with_the_preformatted_block():
+    """The pre region has to be EXITED. Leaking it makes every later block
+    preserve newlines too, so ordinary source wrapping starts splitting lines
+    that a browser renders as one."""
+    lines = html_to_lines(
+        "<div><pre>2 cups flour\n1 cup milk</pre>"
+        "<p>Mix the dry ingredients\n   together well.</p></div>").splitlines()
+
+    assert lines == ["2 cups flour", "1 cup milk",
+                     "Mix the dry ingredients together well."]
+
+
+# The clipboard's text/html flavour of a copied PLAIN-TEXT recipe is one
+# element carrying white-space:pre-wrap, and RecipeImport.vue posts that
+# flavour in preference to the plain one. Collapsing those newlines made the
+# whole paste a single line, so nothing parsed and the user hit the "no AI
+# provider" dead end this module exists to avoid.
+PRE_WRAP_PASTE = (
+    "<meta charset='utf-8'><span style='white-space:pre-wrap'>Chocolate Cake\n"
+    "Ingredients\n2 cups flour\n1 cup sugar\n3 eggs\nInstructions\n"
+    "Mix the dry ingredients together well.\nBake for 25 minutes and cool.</span>")
+
+
+def test_a_white_space_pre_wrap_paste_keeps_its_newlines():
+    assert html_to_lines(PRE_WRAP_PASTE).splitlines() == [
+        "Chocolate Cake", "Ingredients", "2 cups flour", "1 cup sugar",
+        "3 eggs", "Instructions",
+        "Mix the dry ingredients together well.", "Bake for 25 minutes and cool."]
+
+
+def test_a_white_space_pre_wrap_paste_still_parses_without_a_provider():
+    got = parse_pasted(PRE_WRAP_PASTE)
+
+    assert got is not None
+    assert [i["display"] for i in got["ingredients"]] == [
+        "2 cups flour", "1 cup sugar", "3 eggs"]
+    assert [s["text"] for s in got["steps"]] == [
+        "Mix the dry ingredients together well.", "Bake for 25 minutes and cool."]
+
+
+def test_a_bolded_lead_in_heading_still_ends_the_method():
+    """"<p><strong>Notes</strong> Keep refrigerated…</p>" is mainstream
+    recipe-blog markup. Joining the bold into its paragraph is typographically
+    right but destroys the heading as a LINE — which is what _TAIL_HEAD matches
+    on — so "Notes" stopped terminating the method and came back as a step."""
+    got = parse_pasted(
+        '<p><strong>Ingredients</strong></p>'
+        '<ul><li>2 cups flour</li><li>1 cup milk</li></ul>'
+        '<p><strong>Instructions</strong></p>'
+        '<ol><li>Mix well.</li><li>Bake 25 min.</li></ol>'
+        '<p><strong>Notes</strong> Keep refrigerated for up to three days.</p>')
+
+    assert [s["text"] for s in got["steps"]] == ["Mix well.", "Bake 25 min."]
+
+
+def test_a_bolded_sub_heading_still_becomes_a_section():
+    """Same mechanism, the other casualty: "For the sauce:" bolded inline
+    stopped being a section and corrupted an ingredient's display text."""
+    lines = html_to_lines(
+        '<ul class="ingredients"><li>2 cups flour</li></ul>'
+        '<p><strong>For the sauce:</strong> 2 tbsp soy sauce</p>'
+        '<ol class="instructions"><li>Mix it all together well.</li></ol>'
+    ).splitlines()
+
+    assert "For the sauce:" in lines
+    assert "2 tbsp soy sauce" in lines
+
+
+@pytest.mark.parametrize("html", [
+    "<p><strong>Notes</strong> Keep it cold.</p>",
+    "<p>\n  <strong>Notes</strong> Keep it cold.</p>",     # pretty-printed
+    "<p> <strong>Notes</strong> Keep it cold.</p>",
+    "<p>&nbsp;<strong>Notes</strong> Keep it cold.</p>",
+])
+def test_a_lead_in_heading_isolates_however_the_source_is_indented(html):
+    """"At the start of the block" means no VISIBLE text yet, not an empty
+    buffer — pretty-printed markup puts "\\n  " in the buffer first, so testing
+    for empty missed every indented page, which is most of them."""
+    assert html_to_lines(html).splitlines() == ["Notes", "Keep it cold."]
+
+
+def test_a_heading_word_mid_sentence_is_not_a_lead_in():
+    """Only a heading that STARTS the block gets its own line; "See Notes
+    below." is one sentence and splitting it would invent a section."""
+    assert html_to_lines("<p>See <strong>Notes</strong> below.</p>") == (
+        "See Notes below.")
+
+
+def test_a_bolded_amount_is_not_mistaken_for_a_heading():
+    """The lead-in rule must not re-split an ordinary ingredient row: only the
+    parser's own four heading patterns count, and an amount matches none."""
+    assert html_to_lines(
+        "<li><b>240 grams</b><span>Egg Whites</span></li>") == "240 grams Egg Whites"
+
+
+def test_a_long_bolded_sentence_ending_in_a_colon_is_not_a_heading():
+    """_SUB_HEAD matches anything ending in a colon, so the lead-in rule is
+    length-capped the same way _is_sub_heading is — prose stays prose."""
+    long_lead = ("Before you start, read this whole method through twice and "
+                 "get everything out of the fridge first:")
+    assert html_to_lines(f"<p><strong>{long_lead}</strong> Then begin.</p>") == (
+        f"{long_lead} Then begin.")
+
+
+@pytest.mark.parametrize("html,want", [
+    # <img> is INLINE. WordPress rewrites emoji in post content to
+    # <img class="wp-smiley">, and unit/diet icons sit inside ingredient rows,
+    # so this split "2 cups" from "flour" — the headline bug by another route.
+    ("<ul><li>2 cups <img src=i.png> flour</li><li>1 cup milk</li></ul>",
+     ["2 cups flour", "1 cup milk"]),
+    ("<li><span>240 grams</span><img src=i.png><span>Egg Whites</span></li>",
+     ["240 grams Egg Whites"]),
+    ("<li>2 cups <picture><source srcset=i.webp><img src=i.png></picture> flour</li>",
+     ["2 cups flour"]),
+])
+def test_a_replaced_inline_element_does_not_break_the_line(html, want):
+    assert html_to_lines(html).splitlines() == want
+
+
+@pytest.mark.parametrize("html", [
+    # A working browser renders NONE of this fallback copy, so joining it into
+    # the row ("2 cups Your browser cannot play video. flour") is worse than
+    # the junk line it replaced. Inline, but the subtree is skipped.
+    "<li>2 cups <video><source src=x>Your browser cannot play video.</video> flour</li>",
+    "<li>2 cups <object>no plugin available</object> flour</li>",
+    "<li>2 cups <iframe>frames are not supported</iframe> flour</li>",
+    "<li>2 cups <meter value=1>1 of 1</meter> flour</li>",
+    # MathML's ~30 token elements are not inline either, so a walked formula
+    # split one line per token. Treated as opaque instead.
+    "<li>2 cups <math><mn>1</mn><mo>+</mo><mn>2</mn></math> flour</li>",
+])
+def test_replaced_element_fallback_text_never_enters_the_line(html):
+    assert html_to_lines(html) == "2 cups flour"
+
+
+def test_an_ingredient_row_with_an_icon_still_resolves_its_amount():
+    """Through the parser, not just the flattener: the icon used to split the
+    row so the amount arrived as an ingredient of its own."""
+    got = parse_pasted(
+        '<h1>Thing</h1><ul class="ingredients">'
+        '<li><img src=i.png><span>240 grams</span><span>Egg Whites</span></li>'
+        '<li><img src=i.png><span>40 grams</span><span>Parmesan</span></li></ul>'
+        '<ol class="instructions"><li>Mix it all together well.</li></ol>')
+
+    assert [i["display"] for i in got["ingredients"]] == [
+        "240 grams Egg Whites", "40 grams Parmesan"]
+
+
+# --- Parity with the pre-fix flattener on bolded-heading shapes --------------
+#
+# These three were raised in review as new defects. They are NOT: the pre-fix
+# `soup.get_text("\n")` produced byte-identical lines and byte-identical parses
+# for all three, because it split at EVERY string boundary and so also gave a
+# bolded lead-in its own line. They are locked down here as parity tests so the
+# distinction is recorded and a future change has to be deliberate.
+#
+# The "Tip:" case does lose method steps, but via _until_tail treating a
+# mid-method "Tip:" as a terminator — a pre-existing parser defect reachable
+# from plain text with no HTML involved ("Method\n1. Mix.\nTip:\n..."), and
+# out of scope for a flattener fix. See the Noticed list in the commit.
+
+def test_a_bolded_lead_in_keeps_its_own_line_as_it_always_did():
+    """The flattener's contract is the LINE shape, and this is unchanged from
+    the pre-fix behaviour for every bolded-lead-in shape."""
+    assert html_to_lines(
+        '<h2>Instructions</h2><ol><li>Mash the bananas well.</li></ol>'
+        '<p><strong>Tip:</strong> Use very ripe bananas for a sweeter loaf.</p>'
+    ).splitlines() == [
+        "Instructions", "Mash the bananas well.",
+        "Tip:", "Use very ripe bananas for a sweeter loaf."]
+
+
+def test_a_definition_style_row_keeps_its_pre_fix_reading():
+    """"Flour:" has always become a section rather than part of the display —
+    `_SUB_HEAD` matches any line ending in a colon and the pre-fix flattener
+    put it on its own line too."""
+    got = parse_pasted(
+        '<h1>Thing</h1><ul class="ingredients">'
+        '<li><span>Flour:</span><span>240 g</span></li>'
+        '<li><span>Butter:</span><span>100 g</span></li></ul>'
+        '<ol class="instructions"><li>Mix it all together well.</li></ol>')
+
+    assert [(i["display"], i["section"]) for i in got["ingredients"]] == [
+        ("240 g", "Flour"), ("100 g", "Butter")]
+
+
+def test_text_after_a_block_does_not_weld_onto_it():
+    """A block ends its line when its content ENDS, not merely when the next
+    one starts. Flushing only on entry let loose text following a <p> join it:
+    "2 cups flour" + "and a pinch of salt" became one ingredient."""
+    assert html_to_lines(
+        "<div><p>2 cups flour</p>and a pinch of salt</div>").splitlines() == [
+        "2 cups flour", "and a pinch of salt"]
+
+
+def test_nested_inline_elements_keep_their_word_order():
+    """An inline element with several children must be read left to right. Get
+    the traversal order wrong and "2 cups sifted flour" comes out reversed as
+    "flour sifted 2 cups" — still one line, so line-count assertions miss it."""
+    assert html_to_lines(
+        "<li><b>2 cups <i>sifted</i> flour</b></li>") == "2 cups sifted flour"
+
+
+def test_deeply_nested_markup_does_not_blow_the_stack():
+    """bs4 walks the tree iteratively, so get_text coped with any nesting. A
+    RECURSIVE flattener raised RecursionError at ~1000 levels (measured) —
+    which this function must not do, because the URL-import path feeds it whole
+    pages nobody vetted and a 500 there is worse than the bug being fixed."""
+    deep = "<div>" * 3000 + "2 cups flour" + "</div>" * 3000
+
+    assert html_to_lines(deep).splitlines() == ["2 cups flour"]
+
+
+def test_a_synthetic_heading_does_not_land_in_a_neighbours_line():
+    """The marker used to be the string "\\nIngredients\\n", which only worked
+    while every string boundary broke a line. Next to an inline sibling it
+    merged: "12 muffins" immediately before a labelled list became
+    "12 muffins Ingredients"."""
+    lines = html_to_lines(
+        '<div><span>12 muffins</span>'
+        '<ul class="recipe-ingredients"><li>2 cups flour</li></ul></div>'
+    ).splitlines()
+
+    assert lines == ["12 muffins", "Ingredients", "2 cups flour"]
