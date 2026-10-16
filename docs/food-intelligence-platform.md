@@ -154,8 +154,10 @@ ambiguous. *Exit: one unit system across two apps.*
 **Stage 1 — foodcore package + USDA portions.** Installable module, pure
 Python, dataset file owned by the host app. myMeal's `to_grams()` calls
 `foodcore.convert`, falling back to the 41-density table when the dataset is
-absent. *Exit: "2 cups flour" → 240 g with provenance, and "1 can tomatoes"
-honestly returns unresolved.*
+absent. *Exit: "2 cups flour" → **250 g** with provenance, and "1 can tomatoes"
+honestly returns unresolved.* (This doc originally said 240 g from memory. USDA
+168894 publishes 125 g per cup; the measured value wins — importing a reference
+dataset and then overriding it with folklore would defeat the point.)
 
 **Stage 2 — deterministic nutrition.** USDA per-100 g × edible grams, per serving,
 with completeness/uncertainty. The LLM path becomes the *matcher*, not the
