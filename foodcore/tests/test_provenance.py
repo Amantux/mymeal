@@ -168,3 +168,40 @@ def test_status_discriminates_without_inspecting_keys():
     assert resolved.resolved is True
     assert unresolved.to_dict()["status"] == "unresolved"
     assert unresolved.resolved is False
+
+
+# --- licences compose; the vocabulary stays closed -------------------------
+
+def test_licences_compose_because_obligations_do():
+    """A value derived from CC0 and ODbL inputs is subject to BOTH. Collapsing
+    to one licence is how an ODbL share-alike duty silently goes missing, so an
+    SPDX-style conjunction is a legitimate value."""
+    p = Provenance(source="internal", source_id="usda:1+off:2",
+                   retrieved="2026-01-01", method="calculated",
+                   version="nutrition/1", confidence=0.9,
+                   license="CC0-1.0 AND ODbL-1.0")
+
+    assert p.license == "CC0-1.0 AND ODbL-1.0"
+
+
+def test_a_conjunction_is_normalised_so_equal_combinations_compare_equal():
+    a = Provenance(source="internal", source_id="", retrieved="2026-01-01",
+                   method="calculated", version="v/1", confidence=1.0,
+                   license="ODbL-1.0 AND CC0-1.0")
+
+    assert a.license == "CC0-1.0 AND ODbL-1.0"   # sorted, deduped
+
+
+def test_every_term_in_a_conjunction_must_still_be_known():
+    """MUTATION GUARD. Accepting conjunctions must not become 'accept any
+    string containing a known licence' — that would let an unvetted dataset in
+    under cover of a CC0 term."""
+    with pytest.raises(VocabularyError):
+        Provenance(source="usda", source_id="", retrieved="2026-01-01",
+                   method="measured", version="v/1", confidence=1.0,
+                   license="CC0-1.0 AND Proprietary-EULA")
+
+    with pytest.raises(VocabularyError):
+        Provenance(source="usda", source_id="", retrieved="2026-01-01",
+                   method="measured", version="v/1", confidence=1.0,
+                   license="CC0-1.0,ODbL-1.0")      # comma is not the separator

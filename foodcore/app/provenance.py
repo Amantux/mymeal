@@ -63,6 +63,31 @@ def _require(value: Any, allowed: frozenset[str], field: str) -> str:
     return value
 
 
+def _require_license(value: Any) -> str:
+    """Licences combine; sources and methods do not.
+
+    A value derived from a CC0 ingredient weight and an ODbL product label is
+    subject to BOTH — ODbL's share-alike duty does not evaporate because the
+    other input was public domain. Collapsing to one licence is how that
+    obligation silently goes missing, so an SPDX-style conjunction
+    ("CC0-1.0 AND ODbL-1.0") is a legitimate value here.
+
+    The vocabulary stays closed: every TERM must be a known licence, so a typo
+    or an unvetted dataset is still rejected. Terms are normalised to sorted
+    order so the same combination always compares equal.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise VocabularyError(f"provenance license={value!r} is required")
+    terms = [t.strip() for t in value.split(" AND ")]
+    unknown = [t for t in terms if t not in LICENSES]
+    if unknown:
+        raise VocabularyError(
+            f"provenance license={value!r} contains unknown term(s) "
+            f"{unknown}; each term must be one of: {', '.join(sorted(LICENSES))}"
+        )
+    return " AND ".join(sorted(set(terms)))
+
+
 # --------------------------------------------------------------------------
 # The records
 # --------------------------------------------------------------------------
@@ -80,7 +105,7 @@ class Provenance:
     def __post_init__(self) -> None:
         _require(self.source, SOURCES, "source")
         _require(self.method, METHODS, "method")
-        _require(self.license, LICENSES, "license")
+        object.__setattr__(self, "license", _require_license(self.license))
         if not isinstance(self.confidence, (int, float)) or isinstance(
             self.confidence, bool
         ):
