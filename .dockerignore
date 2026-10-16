@@ -3,6 +3,12 @@
 **/.pytest_cache
 **/.ruff_cache
 frontend/node_modules
+# Local Python build artifacts. `pip install ./foodcore` builds in place, so a
+# stale foodcore/build/lib from a dev machine could otherwise be installed into
+# the image instead of the current source.
+**/build
+**/dist
+**/*.egg-info
 frontend/dist
 backend/.venv
 data

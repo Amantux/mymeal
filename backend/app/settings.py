@@ -736,7 +736,17 @@ def _validate_semantics(values, sources, in_ha, errors, warnings, strict_secret)
             f"MYMEAL_FOODCORE_DATASET points at {foodcore_dataset!r}, which is not "
             "a file. myMeal will use its built-in density table. Build one with: "
             "python3 -m foodcore.cli build-usda --fdc-dir <FoodData_Central_csv> "
-            f"--out {foodcore_dataset} --dataset-version '<release>' --retrieved <YYYY-MM-DD>"
+            f"--out {foodcore_dataset!r} --dataset-version '<release>' "
+            "--retrieved <YYYY-MM-DD>"
+        )
+    elif foodcore_dataset and not os.access(foodcore_dataset, os.R_OK):
+        # Existence is not enough: a dataset copied in as root through /share is
+        # unreadable to the app user, and the only place an operator will see
+        # that said so is here. Later it is one lazy log line in a render path.
+        warnings.append(
+            f"MYMEAL_FOODCORE_DATASET at {foodcore_dataset!r} exists but is not "
+            "readable by the app user. myMeal will use its built-in density "
+            "table. Check the file's ownership and mode."
         )
     if foodcore_dataset and not values["FOODCORE_ENABLED"]:
         warnings.append(

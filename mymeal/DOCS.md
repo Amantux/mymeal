@@ -311,6 +311,9 @@ What to expect:
 - Where neither knows, the line is left as written rather than converted to a
   made-up number. "1 cup onions" is the honest example: USDA publishes 160 g for
   a cup chopped and 115 g sliced, and myMeal will not pick one for you.
+- A preparation is only used if you asked for it. "1 cup dried onions" may use
+  the dried weight; "1 cup onions" will never be answered with it, because a cup
+  of dried onion weighs about a third of a cup of raw.
 - A path that does not exist is logged as a warning and ignored; the add-on
   starts normally. `enable_foodcore: false` ignores an imported dataset without
   deleting it.

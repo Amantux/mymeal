@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.services import food_reference, units
+# A hard import, NOT importorskip. foodcore is a shipped runtime dependency
+# installed by one line in the Dockerfile and one in CI; if either breaks, this
+# whole file skipping would turn a missing dependency into a green run with no
+# coverage of the conversion path at all.
+import foodcore
 
-foodcore = pytest.importorskip(
-    "foodcore", reason="foodcore is a path dependency: pip install ./foodcore"
-)
+from app.services import food_reference, units
 
 
 class Cfg:
@@ -218,11 +220,23 @@ def test_a_measured_portion_weight_beats_the_hand_written_density(tmp_path, monk
 def test_mass_units_never_route_through_the_dataset(tmp_path, monkeypatch):
     """g/oz/lb are definitional. A dataset row for them must not be able to
     move a number units.py already gets exactly right."""
+    # The invariant, asserted directly rather than only through to_grams, which
+    # returns early for weight units and would pass with no guard here at all.
+    assert not set(food_reference._MEASURES) & set(units._WEIGHT_G)
     _dataset(tmp_path, monkeypatch,
              foods=[_food("usda:1", "cheese")],
-             portions=[_portion("usda:1", "ounce", 999.0)])
+             portions=[_portion("usda:1", "oz", 999.0),
+                       _portion("usda:1", "ounce", 999.0)])
+    assert food_reference.grams_per("oz", "cheese") is None
     assert units.to_grams("2 ounces cheese") == pytest.approx(56.699)
     assert units.to_grams("1 kg cheese") == pytest.approx(1000.0)
+
+
+def test_every_volume_unit_units_py_knows_can_reach_the_dataset(tmp_path, monkeypatch):
+    """_MEASURES has to mirror units._VOLUME_ML. Adding a volume unit there and
+    forgetting it here would silently make the reference path never fire for
+    it — a gap nobody would notice, because the fallback still answers."""
+    assert set(food_reference._MEASURES) == set(units._VOLUME_ML)
 
 
 def test_unit_spellings_the_importer_may_have_used(tmp_path, monkeypatch):
@@ -355,3 +369,72 @@ def test_a_zero_weight_row_is_not_an_answer(tmp_path, monkeypatch):
              portions=[_portion("usda:1", "cup", 0.0)])
     assert food_reference.grams_per("cup", "flour") is None
     assert units.to_grams("1 cup flour") == pytest.approx(236.588 * 0.53)
+
+
+def test_a_zero_row_beside_a_real_one_does_not_sneak_through(tmp_path, monkeypatch):
+    """The distinguishing case: a tier where one row is broken and one is real.
+    Averaging, or skipping the zero and trusting the rest, would both serve a
+    number chosen by a data defect."""
+    _dataset(tmp_path, monkeypatch,
+             foods=[_food("usda:1", "Onions, raw"),
+                    _food("usda:2", "Onions, young")],
+             portions=[_portion("usda:1", "cup", 0.0),
+                       _portion("usda:2", "cup", 160.0)])
+    assert food_reference.grams_per("cup", "onion") is None
+
+
+# --------------------------------------------- the wrong-preparation attacks
+
+def test_a_qualified_sibling_cannot_answer_for_the_generic_food(tmp_path, monkeypatch):
+    """Found in adversarial review. "Milk, whole" publishes no cup row, so the
+    only row left in the winning tier was "Milk, dry, whole" at 128 g — against
+    the 243.7 g myMeal has always printed. A tier where only SOME foods publish
+    a weight is being decided by the portion table's gaps, not by evidence."""
+    _dataset(tmp_path, monkeypatch,
+             foods=[_food("usda:1", "Milk, dry, whole"),
+                    _food("usda:2", "Milk, whole, 3.25% milkfat")],
+             portions=[_portion("usda:1", "cup", 128.0),
+                       _portion("usda:2", "fluid ounce", 30.5)])
+    assert food_reference.grams_per("cup", "milk") is None
+    assert units.to_grams("1 cup milk") == pytest.approx(236.588 * 1.03)
+
+
+def test_wrong_preparations_cannot_endorse_each_other(tmp_path, monkeypatch):
+    """Also found in adversarial review, and the nastier half: two DRIED onion
+    rows agree with each other to within 5%, so a value-agreement check alone
+    ratifies 46 g for "1 cup onions" — three and a half times wrong. A row may
+    only answer for a preparation the line actually asked for."""
+    _dataset(tmp_path, monkeypatch,
+             foods=[_food("usda:1", "Onions, dried"),
+                    _food("usda:2", "Onions, dehydrated flakes")],
+             portions=[_portion("usda:1", "cup", 46.0),
+                       _portion("usda:2", "cup", 48.0)])
+    assert food_reference.grams_per("cup", "onion") is None
+    assert units.to_grams("1 cup onions") is None
+
+
+def test_asking_for_the_preparation_does_use_it(tmp_path, monkeypatch):
+    """The guard is symmetric, which makes it a feature rather than only a
+    refusal: a line that says "dried" may have the dried row. myMeal's own
+    canonicalisation drops that word, so this is strictly new capability."""
+    _dataset(tmp_path, monkeypatch,
+             foods=[_food("usda:1", "Onions, dried")],
+             portions=[_portion("usda:1", "cup", 46.0)])
+    assert units.to_grams("1 cup dried onions") == pytest.approx(46.0)
+    assert units.to_grams("1 cup onions") is None
+
+
+def test_the_generic_row_is_found_past_a_crowd_of_short_names(tmp_path, monkeypatch):
+    """search_foods returns the SHORTEST names first, so on a real FDC import
+    eight short near-misses ("Rice cake", "Rice bran") crowded out the generic
+    row and the dataset was loaded and useless. Asking for "<food>," as well
+    targets USDA's comma-after-the-head-noun grammar."""
+    distractors = ["Rice cake", "Rice bran", "Rice milk", "Rice wine",
+                   "Rice chips", "Rice drink", "Rice flour", "Rice syrup",
+                   "Rice pudding", "Rice crackers"]
+    foods = [_food(f"usda:{i}", name) for i, name in enumerate(distractors, start=10)]
+    foods.append(_food("usda:1", "Rice, white, long-grain, raw, enriched"))
+    assert len(distractors) > food_reference._CANDIDATE_LIMIT
+    _dataset(tmp_path, monkeypatch, foods=foods,
+             portions=[_portion("usda:1", "cup", 185.0)])
+    assert units.to_grams("1 cup rice") == pytest.approx(185.0)

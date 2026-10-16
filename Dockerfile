@@ -37,8 +37,13 @@ RUN pip install --no-cache-dir -r backend/requirements.txt
 # Zero runtime dependencies, so this adds nothing but the package itself.
 # No reference DATA is baked in: the USDA export is gigabytes and the dataset
 # file belongs in the operator's /data (see MYMEAL_FOODCORE_DATASET).
+# The checkout is removed after the install: what ships is the installed
+# package, so there is no second copy (nor foodcore's own `app/` directory and
+# tests) sitting next to the backend for an import to find by accident.
 COPY foodcore/ ./foodcore/
-RUN pip install --no-cache-dir ./foodcore
+RUN pip install --no-cache-dir ./foodcore \
+    && rm -rf /app/foodcore \
+    && python3 -c "import foodcore; print('foodcore', foodcore.__version__)"
 
 COPY backend/ ./backend/
 COPY --from=frontend /build/dist ./frontend/dist
