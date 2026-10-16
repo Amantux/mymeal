@@ -424,3 +424,37 @@ def test_a_weight_still_converts_through_every_spelling():
     assert units.to_grams("2 oz cheese") == pytest.approx(56.699)
     assert units.dimension(units.canonical_unit("gram")) == "weight"
     assert units.dimension(units.canonical_unit("fluid ounce")) == "volume"
+
+
+# --- Fractions typed as separate glyphs -------------------------------------
+# The precomposed forms (½ ¼) already parsed, which is why nobody noticed that
+# the sub/superscript form — what a word processor's autoformat produces, and
+# what survives a copy-paste out of a PDF — parsed to qty=None and silently LOST
+# the amount.
+
+@pytest.mark.parametrize("line,qty,unit,rest", [
+    ("¹/₂ tsp salt", 0.5, "tsp", "salt"),          # ¹ / ₂  (ASCII /)
+    ("¹⁄₂ tsp salt", 0.5, "tsp", "salt"),     # ¹ ⁄ ₂  (U+2044)
+    ("¹∕₂ tsp salt", 0.5, "tsp", "salt"),     # ¹ ∕ ₂  (U+2215)
+    ("³/₄ cup flour", 0.75, "cup", "flour"),
+    ("²/₃ cup sugar", 2 / 3, "cup", "sugar"),
+    ("1 ¹/₂ cups flour", 1.5, "cup", "flour"),     # mixed number
+    ("½ tsp salt", 0.5, "tsp", "salt"),                      # still works
+])
+def test_parse_line_reads_a_glyph_built_fraction(line, qty, unit, rest):
+    p = units.parse_line(line)
+    assert (p["qty"], p["unit"], p["rest"]) == (pytest.approx(qty), unit, rest)
+
+
+def test_a_superscript_inside_the_food_name_is_left_alone():
+    """Normalisation is for reading the QUANTITY. The food text is sliced out of
+    the original line, so a superscript that is part of a product name survives
+    — and the offsets stay aligned, so no letter is eaten either side of it."""
+    assert units.parse_line("2 cups B¹² flour")["rest"] == "2 cups B¹² flour"[7:]
+    assert units.parse_line("vitamin B¹² powder")["rest"] == "vitamin B¹² powder"
+
+
+def test_a_glyph_fraction_scales_like_any_other_quantity():
+    """The point of reading it: the user's real paste uses this form, so until
+    now those lines did not scale at all."""
+    assert units.scale_line("¹/₂ tsp salt", 3) == "1 1/2 tsp salt"
