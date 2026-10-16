@@ -582,6 +582,47 @@ def test_a_quantity_that_is_not_glued_to_a_word_is_never_a_boundary(line):
     assert got == line
 
 
+def test_a_run_on_blob_imports_every_ingredient_instead_of_nothing():
+    got = parse_recipe_text(RUN_ON)
+
+    assert got is not None
+    assert [i["display"] for i in got["ingredients"]] == [
+        "240 grams Egg Whites(240 g)",
+        "40 grams Parmesan Cheese finely grated(40 g)",
+        "1 gram Garlic Powder or ¹/₂ teaspoon(1 g)",
+        "1 gram Onion Powder or ¹/₂ teaspoon(1 g)",
+        "¹/₂ Gram Black Pepperorns or ¹/₄ teaspoon",
+        "1 gram Italian Seasoning optional(1 g)",
+        "1 gram Paprika or red pepper flakes optional(1 g)",
+        "Oil or 1 tsps oil for the pan",
+    ]
+
+
+def test_an_ingredient_list_pasted_on_its_own_is_not_thrown_away():
+    """The unheaded path demands a method because its evidence is weak. A blob
+    only segments on three or more glued amounts — a shape prose cannot make —
+    so a bare ingredient list is accepted rather than discarded."""
+    got = parse_recipe_text(RUN_ON)
+
+    assert got["steps"] == []
+    assert len(got["ingredients"]) == 8
+
+
+def test_pasting_a_run_on_blob_through_the_endpoint_saves_every_ingredient(
+        auth_client, monkeypatch):
+    """End to end on the real paste route, with no provider configured — the
+    situation the user was in when the whole paste was rejected."""
+    def no_provider():
+        from app.services.ai.base import ProviderError
+        raise ProviderError("none configured")
+    monkeypatch.setattr(ai_api, "get_provider", no_provider)
+
+    r = auth_client.post("/api/v1/ai/import", json={"text": RUN_ON})
+
+    assert r.status_code == 201
+    assert len(r.get_json()["ingredients"]) == 8
+
+
 # --- Refusing, which is the recoverable failure ------------------------------
 
 @pytest.mark.parametrize("line", [

@@ -517,8 +517,11 @@ def parse_recipe_text(text: str) -> dict | None:
     """
     # Same cap as the HTML path. A recipe is not 3 MB, and without this a huge
     # paste built 100,000 ingredient dicts before the endpoint truncated them.
-    raw = [ln.strip()
-           for ln in (text or "")[:12000].replace("\r\n", "\n").splitlines()]
+    capped = (text or "")[:12000].replace("\r\n", "\n")
+    # Recover the line boundaries the source threw away, or a paste that glued
+    # every amount onto the name after it is one line and is rejected outright.
+    capped, segmented = segment_runon_lines(capped)
+    raw = [ln.strip() for ln in capped.splitlines()]
     lines = [ln for ln in raw if ln]
     if len(lines) < 3:
         return None
@@ -533,7 +536,13 @@ def parse_recipe_text(text: str) -> dict | None:
     if got is None:
         return None
     name, ingredients, steps, head_lines = got
-    if not _enough(ingredients, steps, require_step=not headed):
+    # ``require_step`` guards the UNHEADED path, where the only evidence is that
+    # some lines carry numbers — an article with a few prices in it cleared the
+    # old bar. A segmented blob is not that weak a signal: segmentation only
+    # fires on three or more amounts glued to the words after them, which is a
+    # shape prose cannot produce, so an ingredient list pasted on its own is
+    # accepted without a method rather than thrown away.
+    if not _enough(ingredients, steps, require_step=not headed and not segmented):
         return None
     if not headed:
         # Guessing, so demand that the list is mostly measurements rather than a
