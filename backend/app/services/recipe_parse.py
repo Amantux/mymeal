@@ -29,7 +29,7 @@ import unicodedata
 from bs4 import BeautifulSoup, NavigableString
 from bs4.element import CData
 
-from . import units
+from . import food_resolve, units
 # The app's one cooking-action vocabulary (Mix/Fold/Chill/Bake/Preheat/Cool),
 # used by _until_tail to tell a mid-method advisory from the trailing Notes
 # block. Imported, never re-listed. ``step_structure`` is pure and imports only
@@ -183,6 +183,91 @@ def _is_lead_in_heading(text: str) -> bool:
     return bool(text) and len(text) <= _HEADING_MAX and bool(
         _ING_HEAD.match(text) or _STEP_HEAD.match(text)
         or _TAIL_HEAD.match(text) or _SUB_HEAD.match(text))
+
+
+def _is_bare_amount(text: str) -> bool:
+    """Whether ``text`` is a quantity and NOTHING else — "240 g", "1/2 tsp".
+
+    ``rest`` is what the measurement parser could not account for as a number or
+    a unit, so an empty ``rest`` means the text names no food. That is the whole
+    signal: "2 cups cream" leaves "cream" behind and is an ingredient line,
+    "240 g" leaves nothing and can only be the VALUE half of a labelled row.
+    """
+    s = (text or "").strip()
+    if not s:
+        return False
+    p = units.parse_line(s)
+    return p["qty"] is not None and not (p["rest"] or "").strip()
+
+
+def _is_definition_label(label: str, value: str) -> bool:
+    """Whether ``label:`` labels the row ``value`` rather than heading a section.
+
+    The problem this exists for: ``_SUB_HEAD`` matches ANYTHING ending in a
+    colon, so a two-cell row — ``<span>Flour:</span><span>240 g</span>``, the
+    name-then-amount layout real sites use — had "Flour:" promoted to a section
+    and kept only "240 g" as the display. An ingredient with no ingredient in
+    it. Meanwhile "For the sauce:" IS a section heading, and both are short and
+    end in a colon, so the colon cannot be the discriminator.
+
+    Two INDEPENDENT routes, either of which makes it a label:
+
+    * **The label is itself a food.** ``food_resolve`` already owns the catalog
+      and the material-boundary rule, so this asks the existing lexicon rather
+      than inventing a second one — the house rule being that a bypassed policy
+      and a missing policy look identical and have opposite fixes. "flour",
+      "milk", "butter" resolve; "for the sauce", "topping", "glaze", "filling"
+      do not, because they name a PART of a recipe and no part is a food.
+      ``match_key`` first because ``fold`` does not lowercase, so ``is_known``
+      on raw title-case text answers False for every food (see Noticed).
+    * **The value is a bare amount.** Lexicon recall is only as wide as the seed
+      list, so "Cocoa powder:" misses route one. But no section heading is
+      followed by a bare quantity: the lines under "For the sauce:" are
+      ingredients and name their food ("2 tbsp soy sauce" → rest="soy sauce"),
+      whereas the cell beside "Flour:" is a pure amount. This route needs no
+      catalog and so covers the unknown-food label.
+
+    **Fails SAFE in the parser's established direction.** A true says "keep this
+    text in the ingredient line", which is the recoverable error: a junk section
+    heading is visible in the editor and one click to delete, while an
+    ingredient that lost its food name shows the user "240 g" and gives them no
+    way to tell what it was. So an ambiguous case should land here as a label,
+    and neither route fires on text that merely *might* be a heading — both
+    demand positive evidence of a row.
+    """
+    text = (label or "").strip().rstrip(":").strip()
+    if not text or len(text) > _HEADING_MAX:
+        return False
+    # "1 cup sugar:" states its own amount, so it is a whole ingredient rather
+    # than the label half of a split one — and must not swallow the next line as
+    # its value. Same test ``_is_sub_heading`` ends on, so the two agree about
+    # what "carries an amount" means instead of keeping two copies of the idea.
+    if units.parse_line(text)["qty"] is not None:
+        return False
+    if _is_bare_amount(value):
+        return True
+    # A heading names a part of the recipe; a label names a food. Ask the one
+    # module that knows the difference.
+    return food_resolve.is_known(food_resolve.match_key(text))
+
+
+def _rest_of_block(child) -> str:
+    """The visible text after ``child`` in its own block — the VALUE half.
+
+    Only the siblings, so this cannot wander into the next ``<li>``: the cell
+    beside "Flour:" is the evidence, and the following row is not. Replaced
+    elements are skipped for the same reason ``_REPLACED_TAGS`` exists in the
+    walk — an ingredient row's diet icon would otherwise contribute its
+    never-rendered fallback copy and hide a bare amount behind it.
+    """
+    parts: list[str] = []
+    for sib in child.next_siblings:
+        if isinstance(sib, NavigableString):
+            if type(sib) in (NavigableString, CData):
+                parts.append(str(sib))
+        elif sib.name not in _REPLACED_TAGS:
+            parts.append(sib.get_text(" "))
+    return _WS_RUN.sub(" ", "".join(parts)).strip()
 
 
 def _needs_join_space(left: str, right: str) -> bool:
@@ -340,13 +425,23 @@ def _flatten_blocks(root) -> list[str]:
             flush()
             stack.append(_FLUSH)
         elif (name in _LEAD_IN_TAGS and not "".join(buf).strip()
-                and _is_lead_in_heading(child.get_text(" ").strip())):
+                and _is_lead_in_heading(child.get_text(" ").strip())
+                and not _is_definition_label(
+                    child.get_text(" ").strip(), _rest_of_block(child))):
             # A bolded heading at the START of a block keeps its own line, so
             # "<p><strong>Notes</strong> Keep refrigerated…</p>" still
             # terminates the method instead of becoming a step. "Start" means
             # no VISIBLE text yet, not an empty buffer: pretty-printed markup
             # puts "\n  " in the buffer first, and testing for empty missed
             # every indented page — which is most of them.
+            #
+            # ...UNLESS the lead-in is a row LABEL and not a heading at all.
+            # ``<li><span>Flour:</span><span>240 g</span></li>`` has exactly the
+            # shape this branch was built for, and splitting it is what fed the
+            # text parser a lone "Flour:" to promote to a section. Declining the
+            # split keeps the row as one line, "Flour: 240 g", which
+            # ``_is_sub_heading`` already rejects because it no longer ends in a
+            # colon — so the fix needs no second rule downstream.
             stack.append(_FLUSH)
         stack.extend(reversed(child.contents))
 
@@ -531,16 +626,25 @@ def _looks_like_ingredient(line: str) -> bool:
     return len(s.split()) <= 5 and not s.rstrip().endswith(".")
 
 
-def _is_sub_heading(line: str) -> bool:
+def _is_sub_heading(line: str, nxt: str = "") -> bool:
     """A "For the sauce:" style label inside the ingredient list.
 
     A main heading is NOT one: "Ingredients:" also ends in a colon, and treating
     it as a sub-heading would name every following row after it.
+
+    ``nxt`` is the following line, and it is what separates a section heading
+    from a definition-style row label in flat text: "Flour:" / "240 g" is one
+    row split across two lines, while "For the sauce:" / "2 tbsp soy sauce" is a
+    heading and its first ingredient. See ``_is_definition_label``. It defaults
+    to "" so a caller with no lookahead keeps the old reading, and the lexicon
+    route still catches the obvious labels.
     """
     s = line.strip()
     if len(s) > _HEADING_MAX or _ING_HEAD.match(s) or _STEP_HEAD.match(s):
         return False
     if not _SUB_HEAD.match(s):
+        return False
+    if _is_definition_label(s, nxt):
         return False
     # "1 cup sugar:" is not a heading. Anything with an amount in it is an
     # ingredient that happens to be punctuated oddly.
@@ -1045,19 +1149,41 @@ def _ingredient_rows(body: list[str]) -> list[dict]:
     """Ingredient lines -> rows, carrying any sub-heading as ``section``."""
     rows: list[dict] = []
     section = ""
-    for ln in _until_tail(body):
+    kept = _until_tail(body)
+    pending = ""        # a definition label waiting for its amount on the next line
+    for i, ln in enumerate(kept):
         # Belt and braces: a main heading must never become a row, whichever way
         # it got into the body (a second "Ingredients" further down the page, or
         # a marker injected next to one the page already printed).
         if _is_main_heading(ln):
             continue
-        if _is_sub_heading(ln):
+        nxt = kept[i + 1] if i + 1 < len(kept) else ""
+        if _is_sub_heading(ln, nxt):
             section = ln.rstrip(":").strip()
             continue
+        # "Flour:" / "240 g" on two lines is ONE row. The HTML path never gets
+        # here (the flattener keeps the cells on one line), but plain text and
+        # <br>-separated markup do, and emitting "Flour:" and "240 g" as two
+        # ingredients is barely better than the bug — the food is at least
+        # preserved, but the user has to repair both rows by hand.
+        if not pending and _SUB_HEAD.match(ln) and _is_definition_label(ln, nxt):
+            pending = units.strip_list_marker(ln).strip()
+            continue
+        if pending:
+            ln, pending = f"{pending} {ln.strip()}", ""
         display = units.strip_list_marker(ln).strip()
         if not display:
             continue
         row = {"display": display}
+        if section:
+            row["section"] = section[:255]
+        rows.append(row)
+    if pending:
+        # The list ended on the label with its value never arriving. Emit it
+        # anyway: the point of the whole rule is that the food name must not
+        # vanish, and dropping it here would reintroduce the bug at the one
+        # position where nothing follows to make it obvious.
+        row = {"display": pending}
         if section:
             row["section"] = section[:255]
         rows.append(row)
