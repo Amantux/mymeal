@@ -1,0 +1,17 @@
+# Build artefacts of `pip install .`
+build/
+dist/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
+# app/data/ is PACKAGE data (the bundled minimal dataset), not a runtime data
+# directory — the repo root ignores `data/`, so re-include it explicitly or the
+# package ships without its fallback and `import foodcore` breaks on install.
+!app/data/
+
+# Reference datasets are built on the host, never committed: a USDA export is
+# tens of megabytes of third-party data, and the host app owns the file.
+*.sqlite
+*.sqlite.partial

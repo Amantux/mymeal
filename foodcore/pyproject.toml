@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "foodcore"
+version = "0.1.0"
+description = "Shared food reference logic — unit conversion, nutrition, allergens — where every answer carries its provenance."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+# ZERO runtime dependencies, and that is a hard rule rather than a current
+# accident. foodcore is installed into two host apps (myMeal and Edibl); a
+# dependency here is a dependency in both, and anything that pulls in Flask,
+# SQLAlchemy or a host app's code would make "standalone" aspirational. The
+# dataset layer uses `sqlite3` and the importer uses `csv` — both stdlib.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.16"]
+
+[project.scripts]
+foodcore = "foodcore.cli:main"
+
+[tool.setuptools]
+# The source directory is named `app/` for historical reasons but the package is
+# installed — and must always be imported — as `foodcore`. The host apps both
+# have their own top-level `app` package, so installing under that name would
+# collide with them immediately.
+package-dir = { foodcore = "app" }
+# Listed explicitly rather than auto-discovered: with a remapped package dir,
+# discovery would also offer `tests` as a top-level package.
+packages = ["foodcore", "foodcore.sources", "foodcore.data"]
+
+[tool.setuptools.package-data]
+"foodcore.data" = ["*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
