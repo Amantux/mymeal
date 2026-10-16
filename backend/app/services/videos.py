@@ -1,9 +1,15 @@
-"""How-to videos: link validation, the attachment invariant, and safe serving.
+"""Recipe media: link validation, the attachment invariants, and safe serving.
 
 myMeal has no attachment system to extend — a recipe has a single ``image``
-column and nothing else — so videos get their own small table.
+column (its hero thumbnail) and nothing else — so recipe media gets its own
+small table. Photos and videos share it; ``kind`` says which a row is.
 
-Three rules live here, in one place, because every write path needs all of them:
+The module keeps its ``videos`` name: every internal reference, the table and
+the on-disk directory are already called that, and renaming them would be a
+wide diff for no behaviour change. The name users and API clients see is
+"media".
+
+Four rules live here, in one place, because every write path needs all of them:
 
 1. A stored link is **http(s) only**. The server never fetches this URL; the
    browser renders it, so the risk is a ``javascript:`` or ``data:`` address
@@ -12,8 +18,14 @@ Three rules live here, in one place, because every write path needs all of them:
    intentionally permits loopback and private LAN so a local Ollama works, which
    is the opposite of what is wanted here.
 2. An attachment is either a file or a link, and belongs to exactly one parent.
-3. Only a known video type is ever served **inline**; everything else keeps
+3. Only a known media type is ever served **inline**; everything else keeps
    downloading, so a user-uploaded file can never be rendered as active content.
+4. An **image must be an upload**. The app's CSP is
+   ``img-src 'self' data: blob:``, so an external image address cannot render
+   in the page at all — storing one would ship a guaranteed broken image.
+   Refusing it with a sentence is the honest answer, and the alternative
+   (widening ``img-src`` to any origin) would spend the only CSP myMeal has on
+   a feature nobody asked for.
 """
 from __future__ import annotations
 
@@ -32,12 +44,50 @@ VIDEO_MIME_BY_EXT = {
     ".mkv": "video/x-matroska",
 }
 
+# Images follow the same rule as videos: the Content-Type the browser is given
+# comes from THIS map keyed on OUR generated extension, never from the
+# uploaded file's client-supplied mimetype. SVG is deliberately absent — an
+# SVG is a document that can carry script, and served inline from the app's
+# own origin it would execute there.
+IMAGE_MIME_BY_EXT = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".avif": "image/avif",
+}
+
+KIND_VIDEO = "video"
+KIND_IMAGE = "image"
+KINDS = (KIND_VIDEO, KIND_IMAGE)
+
 MAX_URL_LENGTH = 2048
 MAX_TITLE_LENGTH = 255
 
 
 class VideoError(ValueError):
-    """Invalid video input. Carries a message safe to return to the caller."""
+    """Invalid media input. Carries a message safe to return to the caller."""
+
+
+# The public name. `VideoError` stays as an alias because it is raised and
+# caught by name in several modules and in the test suite.
+MediaError = VideoError
+
+
+def normalize_kind(raw) -> str:
+    """The stored `kind` for a caller-supplied value.
+
+    Falsy means video: that is what every row written before the column
+    existed is, and what an unspecified `kind` has always meant on this
+    endpoint. Anything else unrecognised is a 422 rather than a silent
+    coercion — a typo'd kind would otherwise be stored as a video and render
+    a photo in a `<video>` element.
+    """
+    value = (raw or KIND_VIDEO).strip().lower()
+    if value not in KINDS:
+        raise VideoError(f"kind must be one of {', '.join(KINDS)}")
+    return value
 
 
 def normalize_url(raw: str) -> str:
@@ -70,19 +120,68 @@ def video_mime(filename: str) -> str | None:
     return VIDEO_MIME_BY_EXT.get(os.path.splitext(filename or "")[1].lower())
 
 
-def validate(video) -> None:
-    """The one-file-or-one-link invariant.
+def image_mime(filename: str) -> str | None:
+    """The inline Content-Type for this filename, or None if it is not an image."""
+    return IMAGE_MIME_BY_EXT.get(os.path.splitext(filename or "")[1].lower())
+
+
+def media_mime(kind: str, filename: str) -> str | None:
+    """The inline Content-Type for a stored media file, or None.
+
+    Keyed on the row's `kind` rather than searching both maps, so a row stored
+    as an image can never be served with a video Content-Type (or the reverse)
+    even if someone hand-edits a filename in the database.
+    """
+    if normalize_kind(kind) == KIND_IMAGE:
+        return image_mime(filename)
+    return video_mime(filename)
+
+
+def upload_ext(kind: str, filename: str) -> str | None:
+    """The extension we will store this upload under, or None if the kind does
+    not accept that file type.
+
+    The decision is made on the extension of the name the client sent, and the
+    answer is an extension from OUR map — so the stored name is always one we
+    minted and `media_mime` is guaranteed to recognise it later.
+    """
+    ext = os.path.splitext(filename or "")[1].lower()
+    table = (IMAGE_MIME_BY_EXT if normalize_kind(kind) == KIND_IMAGE
+             else VIDEO_MIME_BY_EXT)
+    return ext if ext in table else None
+
+
+def accepted_extensions(kind: str) -> str:
+    """The extensions this kind accepts, for an error message."""
+    table = (IMAGE_MIME_BY_EXT if normalize_kind(kind) == KIND_IMAGE
+             else VIDEO_MIME_BY_EXT)
+    return ", ".join(sorted(table))
+
+
+def validate(media) -> None:
+    """The one-file-or-one-link invariant, plus uploads-only for images.
 
     Raises :class:`VideoError`. Enforced here rather than by a database
     constraint so a bad request is a 422 with a sentence, not an
     IntegrityError surfacing as a 500.
     """
-    has_url = bool((video.url or "").strip())
-    has_file = bool((video.filename or "").strip())
+    kind = normalize_kind(getattr(media, "kind", None))
+    has_url = bool((media.url or "").strip())
+    has_file = bool((media.filename or "").strip())
     if has_url == has_file:
-        raise VideoError("a video must be either an uploaded file or a link, not both")
-    if not video.recipe_id:
-        raise VideoError("a video must belong to a recipe")
+        raise VideoError(
+            f"a {kind} must be either an uploaded file or a link, not both"
+            if kind == KIND_VIDEO else
+            "an image must be an uploaded file")
+    if kind == KIND_IMAGE and has_url:
+        # See rule 4 in the module docstring: the CSP means an external image
+        # address cannot render, so accepting one would store a broken photo.
+        raise VideoError(
+            "photos have to be uploaded, not linked — this app only displays "
+            "images it stores itself. Upload the file, or add it as a video link "
+            "if it is a clip.")
+    if not media.recipe_id:
+        raise VideoError(f"a {kind} must belong to a recipe")
 
 
 def embed_url(url: str) -> str | None:
