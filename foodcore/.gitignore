@@ -1,0 +1,8 @@
+# The real USDA FoodData Central exports are 3 MB - 500 MB per file and the
+# full bulk download is gigabytes. Production points `load_fdc_csv()` at an
+# unpacked export under the data dir; tests use the ~45 KB carved fixture in
+# tests/fixtures/. Nothing full-size is ever committed.
+FoodData_Central_*/
+FoodData_Central_*.zip
+data/usda/
+*.zip
