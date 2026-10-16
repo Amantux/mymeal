@@ -486,10 +486,45 @@ def test_a_glyph_fraction_scales_like_any_other_quantity():
     # WHOLE_DOWN — expensive protein by the piece: the tie goes to thrift.
     ("3 chicken breasts", 1.5, "4 chicken breasts"),
     ("2 salmon fillets", 1.5, "3 salmon fillets"),
-    # An unrecognised bare count still has to come out whole.
-    ("3 tortillas", 1.5, "5 tortillas"),
+    # An adjective qualifier still describes the food, so this is a count of
+    # onions and rounds like one.
+    ("3 red onions", 1.3, "4 red onions"),
 ])
 def test_a_scaled_count_is_an_amount_a_cook_can_act_on(line, factor, expected):
+    assert units.scale_line(line, factor) == expected
+
+
+@pytest.mark.parametrize("line,factor,expected", [
+    # THE dangerous case. An unrecognised UNIT leaves parse_line with unit=None
+    # and the word still in the food text, so a rounder that assumed "no unit
+    # means a count" turned a real measure into a 20% error. Every unit the
+    # lexicon lacks took this path: dl, cl, inch, sheet, rasher, and every
+    # non-English spelling.
+    ("2 dl cream", 1.25, "2 1/2 dl cream"),
+    ("1 dl milk", 1.5, "1 1/2 dl milk"),
+    # The food IS known here, but the number counts rashers, not bacon —
+    # rounding it as meat took 1.5 rashers down to 1.
+    ("3 rashers bacon", 0.5, "1 1/2 rashers bacon"),
+    ("2 sheets puff pastry", 1.25, "2 1/2 sheets puff pastry"),
+    # An unrecognised food: not rounding "4 1/2 tortillas" is a cosmetic miss,
+    # and we cannot tell it from "2 dl cream" without knowing the food. The
+    # cosmetic miss is the one worth taking.
+    ("3 tortillas", 1.5, "4 1/2 tortillas"),
+])
+def test_an_amount_we_cannot_prove_is_a_count_is_left_alone(line, factor, expected):
+    assert units.scale_line(line, factor) == expected
+
+
+@pytest.mark.parametrize("line,factor,expected", [
+    # Classified "vegetable" by the catalog — correctly, they are — but mass
+    # nouns in recipe English. The classification cannot carry grammatical
+    # number, so these produced "3 inch gingers" and "2 garlics".
+    ("1 inch ginger", 3, "3 inch ginger"),
+    ("1 bulb garlic", 2, "2 bulb garlic"),
+    ("1 garlic", 2, "2 garlic"),
+    ("1 celery", 2, "2 celery"),
+])
+def test_a_mass_noun_is_never_pluralized_by_its_count(line, factor, expected):
     assert units.scale_line(line, factor) == expected
 
 
@@ -552,8 +587,12 @@ def test_food_nouns_outside_the_countable_classes_are_left_alone(line, factor, e
 @pytest.mark.parametrize("line,food,alt,optional", [
     # The user's real line: the name contains a duplicate of its own amount AND
     # an alternative way to measure it.
-    ("1 gram Garlic Powder or ¹/₂ teaspoon (1 g)", "Garlic Powder", "1/2 tsp", False),
-    ("½ g peppercorns or ¼ tsp", "peppercorns", "1/4 tsp", False),
+    # The alternative keeps the AUTHOR'S words. Nothing has moved on an unscaled
+    # recipe, so re-rendering "½ teaspoon" as "1/2 tsp" would rewrite their text
+    # for no reason; scale_line re-renders only when it scales the number.
+    ("1 gram Garlic Powder or ¹/₂ teaspoon (1 g)", "Garlic Powder",
+     "¹/₂ teaspoon", False),
+    ("½ g peppercorns or ¼ tsp", "peppercorns", "¼ tsp", False),
     # "optional" hiding behind a trailing bracket — it is anchored at the end,
     # so it was invisible until the bracket came off first.
     ("1 gram Italian Seasoning optional (1 g)", "Italian Seasoning", "", True),
@@ -562,12 +601,15 @@ def test_food_nouns_outside_the_countable_classes_are_left_alone(line, factor, e
     # silently left the other alone. Found by rendering a long real-world line.
     ("1 gram Italian Seasoning (1 g) optional", "Italian Seasoning", "", True),
     ("1 gram Seasoning Blend, salt-free or ¹/₂ teaspoon (1 g) optional",
-     "Seasoning Blend, salt-free", "1/2 tsp", True),
+     "Seasoning Blend, salt-free", "¹/₂ teaspoon", True),
     ("1 tsp chili flakes, optional", "chili flakes", "", True),
     ("(optional) 1 tbsp chili flakes", "chili flakes", "", True),
-    # A restatement in a different unit of the same dimension is still a
-    # restatement: 8.8 oz IS 250 g.
-    ("250 g flour (8.8 oz)", "flour", "", False),
+    # A bracket in a DIFFERENT unit of the same dimension is a conversion, not a
+    # duplicate — it is the one thing a reader of the other measurement system
+    # needs — so it comes out of the NAME but is kept as an alternative. Only a
+    # same-unit restatement is deleted outright.
+    ("250 g flour (8.8 oz)", "flour", "8.8 oz", False),
+    ("1 lb ground beef (450 g)", "ground beef", "450 g", False),
     # Nothing to lift out.
     ("240 g egg whites", "egg whites", "", False),
 ])
@@ -622,6 +664,38 @@ def test_optional_is_not_said_twice_when_it_was_written_in_front():
     """`prefix` already carries a leading "(optional)" back to the front."""
     assert units.scale_line("(optional) 1 tbsp chili flakes", 2) \
         == "(optional) 2 tbsp chili flakes"
+
+
+@pytest.mark.parametrize("line", [
+    "Salt, optional",                      # no amount: the line renders whole
+    "(optional) 2 tbsp chili flakes",      # the word comes back in the prefix
+])
+def test_optional_is_not_flagged_when_the_word_is_still_on_the_page(line):
+    """The flag means "lifted OUT of the text you are rendering". parse_line
+    also reports it for a line handed back whole, and a view that renders both
+    produced "Salt, optional · optional" — a duplicate created by the very flag
+    added to end one."""
+    got = units.annotations(line)
+
+    assert got["optional"] is False
+    assert "optional" in units.split_amount(line, None)[2].lower()
+
+
+def test_optional_is_flagged_when_it_was_lifted_out():
+    assert units.annotations("1 gram Italian Seasoning optional (1 g)")["optional"] \
+        is True
+
+
+def test_the_weight_toggle_does_not_change_whether_an_alternative_is_separated():
+    """annotate_weight appends "(125 g)" INSIDE a trailing "or" clause, so
+    deriving the alternative from the annotated line stopped recognising it —
+    the same recipe read two ways depending on a display toggle."""
+    line = "1 cup flour or 2 tbsp"
+
+    assert units.annotations(line)["alt"] == "2 tbsp"
+    assert units.annotations(units.annotate_weight(line))["alt"] == ""
+    # ...which is why the view derives from the line BEFORE annotating. Asserted
+    # through the API in test_recipe_features.
 
 
 # --- The acid test ----------------------------------------------------------

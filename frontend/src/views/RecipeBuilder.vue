@@ -77,7 +77,11 @@ async function draft() {
     if (drafted.length) {
       const res = await api.post('/recipes/parse', { lines: drafted })
       ingredients.value = res.ingredients.map((r) => ({
-        quantity: r.quantity || '', unit: r.unit || '', food: r.food || '', note: '',
+        // `note` carries what the parser lifted out of the food name (an
+        // alternative measure, "optional"). Hardcoding '' here dropped it, and
+        // the draft is saved straight from these rows.
+        quantity: r.quantity || '', unit: r.unit || '', food: r.food || '',
+        note: r.note || '',
       }))
     }
     ui.toast('Draft ready — review and save')

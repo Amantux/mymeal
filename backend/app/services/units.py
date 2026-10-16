@@ -383,15 +383,20 @@ def _split_measure_parts(rest: str, qty: float | None, unit: str | None):
         if _OPTIONAL_TAIL_RE.search(food):
             optional, peeled = True, True
             food = _OPTIONAL_TAIL_RE.sub("", food)
-        # A trailing bracket holding NOTHING BUT the line's own amount again. It
-        # is the one piece deleted rather than reported: it duplicates the
-        # amount the first column already shows, and after scaling it would
-        # contradict it.
+        # A trailing bracket holding NOTHING BUT the line's own amount again.
+        # In the SAME unit it is a pure duplicate of the first column and is the
+        # one piece deleted rather than reported — after scaling it would not
+        # merely be stale, it would contradict the number beside it. In a
+        # different unit of the same dimension it is a conversion ("1 lb ground
+        # beef (450 g)"), which is the one thing a reader of the other
+        # measurement system needs, so it is kept as an alternative instead.
         m = _TRAILING_PAREN_RE.search(food)
         if m:
             inner = parse_line(m.group(1))
             if inner["qty"] is not None and inner["unit"] and not inner["rest"] \
                     and _restates(inner, qty, unit):
+                if inner["unit"] != unit:
+                    alt = m.group(1).strip()
                 food = food[:m.start()].rstrip()
                 peeled = True
         if not peeled:
@@ -408,7 +413,11 @@ def _split_measure_parts(rest: str, qty: float | None, unit: str | None):
     if last:
         after = parse_line(food[last.end():])
         if after["qty"] is not None and after["unit"] and not after["rest"]:
-            alt = _render_measure(after["qty"], after["unit"])
+            # The author's OWN words, not a re-rendering of them. On an unscaled
+            # recipe nothing has moved, so showing "or 1/2 tsp" where they typed
+            # "or ½ teaspoon" rewrites text for no reason. scale_line re-renders
+            # it only when it actually scales the number.
+            alt = food[last.end():].strip()
             food = food[:last.start()].rstrip()
 
     return food.strip(" ,;"), alt, optional
@@ -641,24 +650,47 @@ _TIE = 1e-9
 def _count_tier(unit: str | None, food_text: str) -> str | None:
     """Which rounding tier a count amount falls in, or None when the amount
     isn't a count at all (grams, millilitres, cups — those keep their decimals
-    and fractions, which are meaningful)."""
+    and fractions, which are meaningful).
+
+    ⚠️ "no unit" is NOT the same as "a count", and conflating them rounded real
+    measures into nonsense. An unrecognised unit leaves ``unit`` None with the
+    word still sitting at the front of ``food_text`` — so "2 dl cream" x1.25
+    came out as "3 dl cream", a 20% error silently introduced by a rounder that
+    thought it was counting creams. Every unit this module does not know (dl,
+    cl, inch, sheet, rasher, and every non-English spelling) took that path.
+
+    So a bare count only rounds when the CATALOG recognises the food and says
+    what kind of thing it is. An unrecognised food is left exactly alone: not
+    rounding "3 tortillas" x1.5 to a whole number is a cosmetic miss, while
+    rounding "2 dl cream" is a wrong recipe, and we cannot tell those apart
+    without knowing the food.
+
+    And the number must be counting the FOOD. "3 rashers bacon" resolves to
+    bacon, but the count is of rashers — rounding it as meat took 1.5 rashers
+    down to 1. food_resolve.counted_portion_word spots that case (the giveaway
+    is a PLURAL qualifier, which an adjective like "red" never is), and a count
+    of something the lexicon has no unit for is left alone.
+    """
     if unit:
-        if unit not in _COUNT_UNITS:
-            return None
-        tier = _COUNT_UNIT_TIERS.get(unit)
-        if tier:
-            return tier
+        # Explicit default: a count unit added to _COUNT_UNITS without a tier
+        # must fall back to the safe discrete one, not silently start
+        # classifying by its food instead.
+        return _COUNT_UNIT_TIERS.get(unit, _WHOLE_UP) if unit in _COUNT_UNITS else None
     from . import food_resolve  # local: keeps this module import-light
 
-    return _FOOD_CLASS_TIERS.get(food_resolve.classification(food_text), _WHOLE_UP)
+    if food_resolve.counted_portion_word(food_text):
+        return None
+    return _FOOD_CLASS_TIERS.get(food_resolve.classification(food_text))
 
 
 def round_count(value: float, unit: str | None, food_text: str = "") -> float:
     """Round a COUNT to something a cook can act on — see the policy above.
 
     Returns ``value`` unchanged for any real measure (g, ml, cup, tsp), where a
-    fraction is information rather than noise. Pure and idempotent; never
-    raises, and never returns 0 for a positive input.
+    fraction is information rather than noise, and for any food the catalog does
+    not recognise (see _count_tier). Pure and idempotent, and never returns 0
+    for a positive input. A non-finite value is the caller's bug and is left to
+    raise, exactly as format_qty already does.
     """
     if value is None or value <= 0:
         return value
@@ -681,6 +713,20 @@ def round_count(value: float, unit: str | None, food_text: str = "") -> float:
 # rule would produce "2 chickens" and "2 salmons". Vegetables, fruit and eggs
 # are exactly the foods a bare count is ever written against.
 _COUNTABLE_CLASSES = frozenset({"vegetable", "fruit", "egg"})
+
+# ...and the classification alone is NOT enough, because grammatical number is
+# not something the catalog records. These are classified vegetable/fruit (the
+# catalog is right — they are) but are MASS nouns in recipe English: you write
+# "1 inch ginger", never "3 inch gingers", and "a bulb of garlic", never
+# "2 garlics". Both of those were produced before this list existed.
+#
+# This is a denylist rather than a classification because it is a fact about
+# English, not about food, and it belongs with the code that conjugates rather
+# than with the lexicon that identifies. Unknown words are already left alone,
+# so the cost of a missing entry here is bounded to foods the catalog knows.
+_MASS_NOUNS = frozenset({
+    "garlic", "ginger", "celery", "lettuce", "spinach", "sweet corn", "corn",
+})
 
 
 def _pluralize_noun(word: str) -> str:
@@ -705,9 +751,11 @@ def agree_food_noun(food_text: str, qty: float | None) -> str:
     garlics", so callers must not use this there.
 
     Conservative by construction: the word is only touched when the food
-    catalog recognises it AND classifies it as countable, so an unrecognised
-    name ("bone-in chicken thighs") and every mass noun are returned untouched.
-    Rewriting food text we do not understand is how names get mangled.
+    catalog recognises it, classifies it as countable, and it is not one of the
+    mass nouns the classification cannot distinguish (see _MASS_NOUNS). So an
+    unrecognised name ("bone-in chicken thighs"), "1 inch ginger" and "1 bulb
+    garlic" all come back untouched. Rewriting food text we do not understand is
+    how names get mangled.
     """
     if not food_text or qty is None:
         return food_text
@@ -720,10 +768,39 @@ def agree_food_noun(food_text: str, qty: float | None) -> str:
     if not words:
         return food_text
     singular = food_resolve.singularize(words[-1])
+    if singular.lower() in _MASS_NOUNS:
+        return food_text
     if food_resolve.classification(singular) not in _COUNTABLE_CLASSES:
         return food_text
     words[-1] = _pluralize_noun(singular) if qty > 1 else singular
     return " ".join(words) + sep + tail
+
+
+def annotations(display: str) -> dict:
+    """The row-level facts a two-column view renders BESIDE the food text:
+    ``{"alt", "optional", "unmeasured"}``.
+
+    One function so the serializer and the scaled view cannot disagree — they
+    derived this separately once, which is how two reads of one line start
+    saying different things.
+
+    ``optional`` is reported only when the word was actually LIFTED OUT of the
+    text the view renders. parse_line also reports it for a line it hands back
+    whole ("Salt, optional", "(optional) 2 tbsp chili flakes"), and rendering a
+    flag beside text that still contains the word produced "Salt, optional ·
+    optional" — a duplicate created by the very flag meant to end a duplicate.
+
+    ``unmeasured`` is "no actionable amount anywhere", NOT "the amount column is
+    empty". A line whose amount sits behind leading text ("About 2 cups milk")
+    also has an empty amount cell, and must not be labelled as having no amount.
+    """
+    p = parse_line(display or "")
+    _, _, rest = split_amount(display, None)
+    return {
+        "alt": p["alt"],
+        "optional": p["optional"] and "optional" not in rest.lower(),
+        "unmeasured": p["qty"] is None,
+    }
 
 
 def split_amount(display: str, quantity: float | None = None) -> tuple[str, str, str]:

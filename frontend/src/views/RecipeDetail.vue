@@ -301,6 +301,16 @@ async function startEdit() {
         row.quantity = p.quantity || ''
         row.unit = p.unit || ''
         row.food = p.food || row.food
+        // The parser now lifts an alternative measure ("or 1/2 tsp") and
+        // "optional" OUT of the food name and returns them here, so a row that
+        // takes `food` and drops `note` loses them for good: rowToDisplay
+        // rebuilds `display` from these fields, and this re-parse runs on every
+        // startEdit. Opening Edit to fix a typo in the title would have deleted
+        // the alternative measure from the database. Appended rather than
+        // assigned, so a row that already carries preparation keeps it, and
+        // guarded on `includes` so a second trip cannot say it twice.
+        const lifted = p.note && !(row.note || '').includes(p.note) ? p.note : ''
+        row.note = [row.note, lifted].filter(Boolean).join(', ')
       })
     } catch { /* keep the display-in-food fallback */ }
   }

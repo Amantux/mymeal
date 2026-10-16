@@ -225,7 +225,7 @@ def test_parse_lines_keeps_the_alternative_measure_in_the_note(auth_client):
                   "1 gram Italian Seasoning optional (1 g)"]})
     rows = res.get_json()["ingredients"]
 
-    assert rows[0]["note"] == "or 1/2 tsp"
+    assert rows[0]["note"] == "or ¹/₂ teaspoon"      # the author's own words
     assert rows[1]["note"] == "optional"
 
 
@@ -244,3 +244,20 @@ def test_a_composed_row_still_scales_its_alternative(auth_client):
     assert ing["display"] == "3 g Garlic Powder or 1 1/2 tsp"
     assert ing["restText"] == "Garlic Powder"
     assert ing["altText"] == "1 1/2 tsp"
+
+
+def test_the_weight_view_still_separates_the_alternative(auth_client):
+    """annotate_weight appends its bracket INSIDE a trailing "or" clause, so a
+    view deriving the alternative from the annotated line stopped separating it
+    — one recipe reading two ways depending on a display toggle."""
+    rid = auth_client.post("/api/v1/recipes", json={
+        "name": "Toggle", "servings": 1,
+        "ingredients": [{"display": "1 cup flour or 2 tbsp"}],
+    }).get_json()["id"]
+
+    plain = auth_client.get(f"/api/v1/recipes/{rid}").get_json()["ingredients"][0]
+    weight = auth_client.get(
+        f"/api/v1/recipes/{rid}?units=weight").get_json()["ingredients"][0]
+
+    assert plain["altText"] == "2 tbsp"
+    assert weight["altText"] == "2 tbsp"

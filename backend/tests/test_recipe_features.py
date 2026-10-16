@@ -170,6 +170,9 @@ def test_a_line_with_no_amount_says_so_rather_than_leaving_a_blank_column(auth_c
     got = auth_client.get(f"/api/v1/recipes/{rid}?servings=4").get_json()["ingredients"]
 
     assert [i["unmeasured"] for i in got] == [True, False, False]
+    # The word is still inside the rendered text on the first row, so the flag
+    # that would render it a second time must stay off.
+    assert got[0]["optional"] is False
     assert [i["amountText"] for i in got] == ["", "", "480"]
     # ...and the unmeasured one is not scaled, while the hedged one is.
     assert got[0]["display"] == "Salt, to taste"
