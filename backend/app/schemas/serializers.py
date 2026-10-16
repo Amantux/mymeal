@@ -291,21 +291,30 @@ def recipe_media_out(v):
     present and always one of the known values (the model's server default
     makes pre-media rows videos).
 
-    `streamUrl` repeats `fileUrl` under its former name. The field is part of
-    the shipped API, and a one-line alias is cheaper than finding out whose
-    script read it.
+    `streamUrl` is the former name of `fileUrl`, and keeps its former VALUE
+    too — the `/videos/<id>/stream` path, which is still routed. Pointing the
+    old key at the new path would have broken a client that string-matched the
+    URL it was given rather than simply following it, which is the whole class
+    of breakage the alias exists to prevent.
+
+    `display_kind`, not `normalize_kind`: this runs for every media row of
+    every recipe in the library listing, so a validator that raises here turns
+    one odd database value into a 500 on the whole page instead of one
+    mis-rendered tile.
     """
-    from ..services.videos import embed_url, normalize_kind
+    from ..services.videos import display_kind, embed_url
     file_url = (f"/api/v1/recipes/{v.recipe_id}/media/{v.id}/file"
                 if v.filename else None)
+    stream_url = (f"/api/v1/recipes/{v.recipe_id}/videos/{v.id}/stream"
+                  if v.filename else None)
     return {
         "id": v.id,
-        "kind": normalize_kind(v.kind),
+        "kind": display_kind(v.kind),
         "title": v.title,
         "url": v.url or None,
         "embedUrl": embed_url(v.url) if v.url else None,
         "fileUrl": file_url,
-        "streamUrl": file_url,
+        "streamUrl": stream_url,
         "position": v.position,
         "createdAt": iso(v.created_at),
     }

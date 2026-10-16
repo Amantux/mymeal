@@ -293,3 +293,121 @@ def test_every_kind_has_an_accepted_extension_list():
 
     for kind in KINDS:
         assert videos.accepted_extensions(kind)
+
+
+# --- regressions found in adversarial review ---------------------------------
+
+def test_a_malformed_kind_does_not_break_the_library_listing(auth_client, app):
+    """The serializer runs for every media row of every recipe, so a value it
+    refuses takes out the whole list page rather than one tile. Read paths use
+    display_kind (never raises); only input uses normalize_kind."""
+    from app.extensions import db
+    from app.models import RecipeVideo
+    rid = _recipe(auth_client)
+    auth_client.post(f"/api/v1/recipes/{rid}/media", data=_png(),
+                     content_type="multipart/form-data")
+    with app.app_context():
+        RecipeVideo.query.one().kind = "audio"   # only by hand-editing the DB
+        db.session.commit()
+
+    assert auth_client.get("/api/v1/recipes").status_code == 200
+    assert auth_client.get(f"/api/v1/recipes/{rid}").status_code == 200
+
+    shown = auth_client.get(f"/api/v1/recipes/{rid}/media").get_json()
+    assert shown[0]["kind"] == "video", "an unknown kind should render as a video"
+
+
+def test_an_unknown_kind_is_not_served_as_a_guess(auth_client, app):
+    """The serving path degrades to 404, not to a mime found by searching both
+    maps."""
+    from app.extensions import db
+    from app.models import RecipeVideo
+    rid = _recipe(auth_client)
+    created = auth_client.post(f"/api/v1/recipes/{rid}/media", data=_png(),
+                               content_type="multipart/form-data").get_json()
+    with app.app_context():
+        RecipeVideo.query.one().kind = "audio"
+        db.session.commit()
+
+    assert auth_client.get(created["fileUrl"]).status_code == 404
+
+
+def test_deleting_a_recipe_removes_its_uploaded_media_files(auth_client, app):
+    """The rows cascade away with the recipe, so this is the last moment
+    anything knows the filename — a miss here is unreclaimable disk inside the
+    user's Home Assistant backups."""
+    import os
+
+    from app.models import RecipeVideo
+    rid = _recipe(auth_client)
+    auth_client.post(f"/api/v1/recipes/{rid}/media", data=_png(),
+                     content_type="multipart/form-data")
+    with app.app_context():
+        stored = RecipeVideo.query.one().filename
+        media_dir = app.config["videos_dir"]()
+    assert os.path.isfile(os.path.join(media_dir, stored))  # arranged
+
+    assert auth_client.delete(f"/api/v1/recipes/{rid}").status_code == 204
+
+    assert not os.path.isfile(os.path.join(media_dir, stored))
+
+
+@pytest.mark.parametrize("filename", ["我的照片.png", "café.png", "My Photo.png"])
+def test_the_title_falls_back_to_the_readable_filename(auth_client, filename):
+    """secure_filename strips non-ASCII, which titled a photo off a phone
+    "png". The title is a display string and never touches the filesystem —
+    the stored name is a uuid."""
+    rid = _recipe(auth_client)
+
+    created = auth_client.post(f"/api/v1/recipes/{rid}/media",
+                               data=_png(name=filename),
+                               content_type="multipart/form-data").get_json()
+
+    assert created["title"] == filename
+
+
+def test_a_declared_image_with_no_file_says_what_to_do(auth_client):
+    """"a video link is required" told the user to supply the one thing an
+    image may not have."""
+    rid = _recipe(auth_client)
+
+    r = auth_client.post(f"/api/v1/recipes/{rid}/media", json={"kind": "image"})
+
+    assert r.status_code == 422
+    assert "upload" in r.get_json()["error"].lower()
+
+
+def test_the_legacy_stream_url_keeps_its_old_path(auth_client):
+    """`streamUrl` is an alias for compatibility, so its VALUE has to stay the
+    path it always was — a client that string-matched it would otherwise break
+    even though the key survived."""
+    rid = _recipe(auth_client)
+
+    created = auth_client.post(f"/api/v1/recipes/{rid}/media", data=_png(),
+                               content_type="multipart/form-data").get_json()
+
+    assert created["streamUrl"].endswith("/stream")
+    assert "/videos/" in created["streamUrl"]
+    assert auth_client.get(created["streamUrl"]).status_code == 200
+
+
+def test_media_from_another_household_is_not_reachable(auth_client, app):
+    """The cross-RECIPE case was already covered; this is the cross-TENANT one
+    the docstring claims. _get filters on group_id before _get_media runs."""
+    mine = _recipe(auth_client, "mine")
+    created = auth_client.post(f"/api/v1/recipes/{mine}/media", data=_png(),
+                               content_type="multipart/form-data").get_json()
+
+    other = app.test_client()
+    other.post("/api/v1/users/register",
+               json={"email": "b@b.com", "password": "password2", "name": "B"})
+    token = other.post("/api/v1/users/login",
+                       json={"username": "b@b.com", "password": "password2"}
+                       ).get_json()["token"]
+    other.environ_base["HTTP_AUTHORIZATION"] = token
+
+    assert other.get(f"/api/v1/recipes/{mine}/media").status_code == 404
+    assert other.get(
+        f"/api/v1/recipes/{mine}/media/{created['id']}/file").status_code == 404
+    assert other.delete(
+        f"/api/v1/recipes/{mine}/media/{created['id']}").status_code == 404
