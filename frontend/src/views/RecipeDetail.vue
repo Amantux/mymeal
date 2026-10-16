@@ -134,6 +134,49 @@ const shownGroups = computed(() => {
   return groups
 })
 
+// ---- Step structure -------------------------------------------------------
+// The backend derives phase headings and reads every stated duration and
+// temperature out of the step text (services/step_structure.py). All of it is
+// optional: a recipe with no stated times and no inferable phases falls through
+// to exactly the flat numbered list this view rendered before.
+const stepStructure = computed(() => recipe.value?.stepStructure || null)
+
+// Index-addressed so a group can render `<ol :start>` over the real positions
+// and the numbering stays continuous across headings.
+const stepRows = computed(() => stepStructure.value?.steps || [])
+const stepGroups = computed(() => {
+  const groups = stepStructure.value?.groups
+  if (groups?.length) return groups
+  // No structure (an older cached payload, or a recipe loaded before this
+  // shipped): one unheaded group, which renders as the plain list.
+  return [{ title: '', indexes: (recipe.value?.steps || []).map((_, i) => i), derived: false }]
+})
+
+// Three kinds of time, because "3 days in the fridge" and "20 minutes in the
+// oven" are different planning facts even though neither is hands-on. Only the
+// kinds the method actually states are shown — a zero would read as a claim.
+const stepClock = computed(() => {
+  const s = stepStructure.value?.summary
+  if (!s) return []
+  return [
+    { key: 'wait', icon: '💤', label: 'Waiting', text: s.waitText },
+    { key: 'cook', icon: '🔥', label: 'Cooking', text: s.cookText },
+    { key: 'active', icon: '⏱', label: 'Hands-on', text: s.activeText },
+  ].filter((x) => x.text)
+})
+const stepClockNote = computed(() => {
+  const s = stepStructure.value?.summary
+  if (!s) return ''
+  const parts = []
+  // Honesty about the arithmetic: a method can repeat a rest without restating
+  // it ("3 more times with 5-minute rests"), and we refuse to multiply on its
+  // behalf, so these totals are a floor.
+  if (s.atLeast) parts.push('Times are the ones this method states; a repeated rest may add more.')
+  if (s.derivedHeadings) parts.push('Headings are suggested from the method text.')
+  return parts.join(' ')
+})
+const DURATION_ICON = { wait: '💤', cook: '🔥', active: '⏱' }
+
 async function refreshView() {
   const r = recipe.value
   if (!r) return
@@ -216,7 +259,7 @@ async function tidyIngredients() {
     structuring.value = false
   }
 }
-const editSteps = ref([]) // [{text}]
+const editSteps = ref([]) // [{title, text}]
 
 async function load() {
   loading.value = true
@@ -291,7 +334,11 @@ async function startEdit() {
     } catch { /* keep the display-in-food fallback */ }
   }
   editIngredients.value = rows
-  editSteps.value = r.steps.map((s) => ({ text: s.text }))
+  // `title` must be carried, not just `text`. The schema.org and AI import
+  // paths both populate step titles, and dropping them here silently wiped a
+  // cook's own phase headings the first time they opened the editor — which is
+  // why the column looked unused despite three writers.
+  editSteps.value = r.steps.map((s) => ({ title: s.title || '', text: s.text }))
   editing.value = true
 }
 
@@ -301,10 +348,12 @@ async function save() {
     categoryIds: selectedCategoryIds.value,
     nutrition: nutritionForm.value,
     ingredients: filledRows().map((r, position) => rowToPayload(r, position)),
+    // A heading with no step under it is not a step, so the filter stays on
+    // text; the title rides along with whatever survives it.
     steps: editSteps.value
-      .map((s) => (s.text || '').trim())
-      .filter(Boolean)
-      .map((text, position) => ({ text, position })),
+      .map((s) => ({ title: (s.title || '').trim(), text: (s.text || '').trim() }))
+      .filter((s) => s.text)
+      .map((s, position) => ({ ...s, position })),
   }
   try {
     if (editingVersionId.value) {
@@ -364,7 +413,7 @@ function loadBuffersFrom(snap) {
     return { quantity: i.quantity || '', unit: i.unit || '',
              food: i.food || i.display || '', freeText: false, ...carried }
   })
-  editSteps.value = (snap.steps || []).map((s) => ({ text: s.text }))
+  editSteps.value = (snap.steps || []).map((s) => ({ title: s.title || '', text: s.text }))
 }
 
 async function startExperiment() {
@@ -812,9 +861,41 @@ const imageSrc = computed(() =>
 
       <div class="card">
         <h2>Steps</h2>
-        <ol v-if="recipe.steps.length" style="margin:0;padding-left:20px" class="stack">
-          <li v-for="s in recipe.steps" :key="s.id">{{ s.text }}</li>
-        </ol>
+        <!-- The clock first, because it is the thing a cook needs BEFORE step 1.
+             This method hides 12-72 hours of fridge inside step 4; reading the
+             list top to bottom is how you find that out too late. -->
+        <div v-if="stepClock.length" class="step-clock">
+          <div v-for="c in stepClock" :key="c.key" class="clock-item">
+            <span class="clock-k">{{ c.icon }} {{ c.label }}</span>
+            <span class="clock-v tnum">{{ c.text }}</span>
+          </div>
+        </div>
+        <template v-if="recipe.steps.length">
+          <!-- One <ol> per phase, each continuing the count with :start, so the
+               headings are real headings rather than numbered list items and
+               the step numbers still run 1..n across the whole method. -->
+          <div class="step-list">
+            <template v-for="(g, gi) in stepGroups" :key="`sg${gi}`">
+              <h3 v-if="g.title" class="step-sec">{{ g.title }}</h3>
+              <ol class="step-ol" :start="g.indexes[0] + 1">
+                <li v-for="i in g.indexes" :key="recipe.steps[i]?.id || i">
+                  <span class="step-text">{{ recipe.steps[i]?.text }}</span>
+                  <span v-if="stepRows[i]?.durations?.length || stepRows[i]?.temperature"
+                        class="step-chips">
+                    <span v-for="(d, di) in (stepRows[i].durations || [])" :key="`d${di}`"
+                          class="chip" :class="{ wait: d.kind === 'wait' }">
+                      {{ DURATION_ICON[d.kind] }} {{ d.label }}
+                    </span>
+                    <span v-if="stepRows[i].temperature" class="chip">
+                      🌡 {{ stepRows[i].temperature }}
+                    </span>
+                  </span>
+                </li>
+              </ol>
+            </template>
+          </div>
+          <p v-if="stepClockNote" class="muted step-note">{{ stepClockNote }}</p>
+        </template>
         <p v-else class="muted">No steps listed.</p>
       </div>
 
@@ -1032,6 +1113,45 @@ const imageSrc = computed(() =>
   letter-spacing: 0.05em; color: var(--muted);
 }
 .ing-list li.ing-sec:first-child { padding-top: 2px; }
+/* ---------- Steps ---------- */
+/* The recipe-level clock. Three labelled values, not three stat cards: this is
+   a work surface and the numbers are reference, not a dashboard. Sits above the
+   method because its whole job is to be read before step 1. */
+.step-clock {
+  display: flex; flex-wrap: wrap; gap: 8px 24px;
+  margin: 0 0 16px; padding: 10px 14px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.clock-item { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.clock-k { font-size: 0.72rem; font-weight: 650; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.clock-v { font-size: 0.95rem; font-weight: 650; }
+/* A phase heading. Deliberately the same quiet uppercase as an ingredient
+   section (.ing-sec) — the two halves of a recipe are grouped by the same idea
+   and must not look like two different features. */
+.step-sec {
+  margin: 20px 0 2px; font-size: 0.72rem; font-weight: 650;
+  text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted);
+}
+.step-sec:first-child { margin-top: 0; }
+.step-list { max-width: 68ch; }
+.step-ol { margin: 0; padding-left: 26px; }
+.step-ol li { padding: 7px 0; }
+/* The number is wayfinding, not content: tabular so the column stays straight
+   past step 9, and muted so it never competes with the instruction. */
+.step-ol li::marker { color: var(--muted); font-weight: 650; font-variant-numeric: tabular-nums; }
+.step-text { display: block; }
+/* Chips sit UNDER their step, not inline: inline, a "12–72 hr" badge reflows
+   mid-sentence on a phone and the sentence stops being readable. */
+.step-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+/* Chips are deliberately uncoloured. Tinting the waiting ones amber was tried
+   and rejected twice over: `warning` is a status token and waiting is not a
+   warning, and six amber pills down a method compete with the one orange the
+   page spends on its primary action. The 💤/🔥/⏱ emoji already distinguishes
+   them, and the emphasis belongs in the summary bar above — that is the thing
+   a cook needs to notice, and it only has to shout once. */
+.step-chips .chip { color: var(--muted); font-weight: 600; }
+.step-note { margin: 16px 0 0; font-size: 0.78rem; max-width: 68ch; }
 .ing-amt, .ing-food { padding: 8px 0; border-bottom: 1px solid var(--border); }
 .ing-list li:last-child .ing-amt,
 .ing-list li:last-child .ing-food { border-bottom: 0; }
