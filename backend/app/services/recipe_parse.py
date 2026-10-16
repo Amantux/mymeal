@@ -484,6 +484,39 @@ def _segment_ingredient_blob(line: str) -> list[str] | None:
     return segs if _segments_look_right(segs) else None
 
 
+# The same glued shape happens to a numbered METHOD: "1Mix the flour2Cover and
+# rest". The quantity rule cannot see these — "Mix" is not a unit — and a bare
+# digit-then-capital is far too eager on its own ("Vitamin B12Supplement").
+# What makes it safe is that real step numbers are a RUN: the digits must come
+# out 1, 2, 3 … with nothing missing and nothing out of order. Accidental text
+# essentially never does that, and a page that numbers its steps always starts
+# at 1.
+_RUNON_STEP_HEAD = re.compile(r"^(?P<n>\d{1,2})(?=[A-Z])")
+_RUNON_STEP = re.compile(r"(?<=[a-z.)])(?P<n>\d{1,2})(?=[A-Z])")
+_STEP_MAX_CHARS = 600      # a step is a sentence or two, not a chapter
+
+
+def _segment_step_blob(line: str) -> list[str] | None:
+    """A run-on numbered method split into steps, or None to leave it alone."""
+    if len(line) < _RUNON_MIN_CHARS:
+        return None
+    hits = [*filter(None, [_RUNON_STEP_HEAD.match(line)]),
+            *_RUNON_STEP.finditer(line)]
+    nums = [int(m.group("n")) for m in hits]
+    if len(nums) < 2 or nums != list(range(1, len(nums) + 1)):
+        return None
+    segs = _split_at(line, [m.start() for m in hits if m.start() > 0])
+    if len(segs) != len(nums) or any(len(s) > _STEP_MAX_CHARS for s in segs):
+        return None
+    # A step is a clause, not a stray number with a capital after it.
+    if not all(len(re.findall(r"[^\W\d_]{2,}", s)) >= 2 for s in segs):
+        return None
+    # Re-punctuate the number rather than dropping it, so the existing
+    # strip_step_number rule removes it and the "this line starts a step"
+    # signal survives into _step_rows.
+    return [re.sub(r"^(\d{1,2})(?=[A-Z])", r"\1. ", s) for s in segs]
+
+
 def segment_runon_lines(text: str) -> tuple[str, bool]:
     """``text`` with any run-on blob line split, and whether anything was split.
 
@@ -495,7 +528,8 @@ def segment_runon_lines(text: str) -> tuple[str, bool]:
     out: list[str] = []
     changed = False
     for ln in text.splitlines():
-        segs = _segment_ingredient_blob(ln.strip())
+        stripped = ln.strip()
+        segs = _segment_ingredient_blob(stripped) or _segment_step_blob(stripped)
         if segs is None:
             out.append(ln)
             continue

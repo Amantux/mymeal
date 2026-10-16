@@ -643,3 +643,37 @@ def test_an_implausible_segmentation_is_refused_and_the_text_left_alone(line):
 
     assert changed is False
     assert got == line
+
+
+# --- The same shape, applied to a numbered method ----------------------------
+
+def test_a_run_on_numbered_method_is_split_into_steps():
+    got = parse_recipe_text(
+        "Ingredients\n2 cups plain flour\n1 tsp fine salt\nMethod\n"
+        "1Mix the flour and the salt2Cover the bowl and rest for 30 minutes"
+        "3Bake at 200C until golden")
+
+    assert [s["text"] for s in got["steps"]] == [
+        "Mix the flour and the salt",
+        "Cover the bowl and rest for 30 minutes",
+        "Bake at 200C until golden",
+    ]
+
+
+@pytest.mark.parametrize("line", [
+    # The numbers must come out 1, 2, 3 … — in none of these do they, so this
+    # is text that merely has digits next to capitals, not a numbered method.
+    #
+    # The first case is the one that isolates the run rule: it starts at 1 and
+    # clears every other check, and only the gap between 1 and 3 refuses it.
+    # (Mutation-checked — dropping the run rule splits this line in two.)
+    "1Mix the flour and the salt3Bake it at 200C until it is golden brown",
+    "mix the flour2Cover the bowl and rest5Bake it now in the very hot oven",
+    "Take a Vitamin B12Supplement daily with a large glass of cold water",
+    "Add 2Cups of the flour3Times over, then 9Bake it for a while to finish",
+])
+def test_digits_next_to_capitals_are_only_steps_when_they_run_in_order(line):
+    got, changed = segment_runon_lines(line)
+
+    assert changed is False
+    assert got == line
