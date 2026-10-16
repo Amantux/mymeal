@@ -360,3 +360,67 @@ def test_scale_line_keeps_the_approximator():
 
 def test_scale_line_drops_a_list_marker_rather_than_stranding_it():
     assert units.scale_line("- 2 cups flour", 2) == "4 cups flour"
+
+
+# --- One canonical key per unit ---------------------------------------------
+# The table used to hold BOTH 'g' and 'gram' as canonical keys, so the singular
+# spelling passed the membership test and came back unchanged while the plural
+# resolved through the alias map. Everything below is a consequence of that, and
+# the parametrization is deliberately spelling-exhaustive: the fix is the
+# invariant "one key, every other spelling an alias", not two extra aliases.
+
+@pytest.mark.parametrize("spelling,canonical", [
+    # weight — the reported pair
+    ("gram", "g"), ("grams", "g"), ("gramme", "g"), ("grammes", "g"),
+    ("gr", "g"), ("gm", "g"), ("g", "g"),
+    ("ounce", "oz"), ("ounces", "oz"), ("oz", "oz"),
+    ("kilogram", "kg"), ("kilograms", "kg"), ("kilo", "kg"), ("kgs", "kg"),
+    ("pound", "lb"), ("pounds", "lb"), ("lbs", "lb"), ("#", "lb"),
+    # volume — the same doubled-key bug, never reported because nobody tried
+    ("milliliter", "ml"), ("millilitres", "ml"), ("cc", "ml"),
+    ("liter", "l"), ("litre", "l"),
+    ("fluid ounce", "fl oz"), ("fluid ounces", "fl oz"), ("fl. oz.", "fl oz"),
+    # derived plurals of an abbreviation: 'teaspoons' was listed by hand and
+    # worked, 'tsps' was not and returned None
+    ("tsps", "tsp"), ("tsp", "tsp"), ("teaspoon", "tsp"), ("teaspoons", "tsp"),
+    ("tbsps", "tbsp"), ("tablespoons", "tbsp"),
+    # counts
+    ("cloves", "clove"), ("pinches", "pinch"), ("bunches", "bunch"),
+    ("pkgs", "package"),
+])
+def test_every_spelling_of_a_unit_canonicalises_to_one_key(spelling, canonical):
+    assert units.canonical_unit(spelling) == canonical
+
+
+def test_no_unit_spelling_is_its_own_second_canonical_key():
+    """The structural invariant, asserted directly: a canonical key is the ONLY
+    spelling of its unit that canonicalises to itself. Without this, a future
+    'teaspoon': 4.92892 row re-introduces the whole defect class silently."""
+    for table in (units._VOLUME_ML, units._WEIGHT_G):
+        for key, value in table.items():
+            twins = [k for k, v in table.items() if v == value and k != key]
+            assert not twins, f"{key!r} shares its base amount with {twins!r}"
+
+
+def test_one_recipe_renders_its_weights_one_way():
+    """The user-visible symptom: two lines of the SAME recipe, written with
+    different spellings of the gram, scaled to two different notations."""
+    assert units.scale_line("1 gram garlic powder", 3) == "3 g garlic powder"
+    assert units.scale_line("40 grams parmesan", 3) == "120 g parmesan"
+
+
+def test_the_singular_spelling_cannot_smuggle_in_a_half_gram():
+    """_DECIMAL_UNITS is keyed on 'g', so 'gram' used to slip past it and print
+    "337 1/2" — the half-gram fraction that was supposedly already fixed."""
+    assert units.format_qty_for_unit(337.5, "gram") == "338"
+    assert units.format_qty_for_unit(337.5, "grams") == "338"
+    assert units.format_qty_for_unit(0.5, "gram") == "0.5"
+
+
+def test_a_weight_still_converts_through_every_spelling():
+    """Collapsing the table must not cost the conversion: 'ounce' is no longer a
+    key in _WEIGHT_G, so to_grams has to reach it through the canonical."""
+    assert units.to_grams("2 ounces cheese") == pytest.approx(56.699)
+    assert units.to_grams("2 oz cheese") == pytest.approx(56.699)
+    assert units.dimension(units.canonical_unit("gram")) == "weight"
+    assert units.dimension(units.canonical_unit("fluid ounce")) == "volume"
