@@ -507,6 +507,13 @@ def _apply_view(out: dict, recipe: Recipe, args):
     for ing in out.get("ingredients", []):
         original = ing.get("display", "")
         line = units.scale_line(original, factor)
+        # Derived from the SCALED line but BEFORE the weight annotation. Scaling
+        # rewrites the alternative measure, so the serializer's unscaled copy
+        # would say "or 1/2 tsp" beside a tripled amount; but annotate_weight
+        # appends "(125 g)" INSIDE the trailing "or" clause, which stops the
+        # alternative being recognised at all — so the same recipe separated its
+        # alternative or not depending on a display toggle.
+        shown = units.annotations(line)
         # Whether this line's amount actually MOVED — which is exactly "did
         # scale_line rewrite the text", not "does the row have a number".
         # Asking the latter marked "Juice of 1 lemon" as scaled: scale_line
@@ -538,14 +545,9 @@ def _apply_view(out: dict, recipe: Recipe, args):
         # with the food text.
         ing["amountText"], ing["unitText"], ing["restText"] = units.split_amount(
             line, ing.get("quantity"))
-        # Re-derived from the REWRITTEN line for the same reason: scale_line
-        # scales the alternative measure too, so the serializer's copy (taken
-        # from the stored, unscaled display) would say "or 1/2 tsp" beside a
-        # tripled amount.
-        shown = units.parse_line(line)
         ing["altText"] = shown["alt"]
         ing["optional"] = shown["optional"]
-        ing["unmeasured"] = shown["qty"] is None
+        ing["unmeasured"] = shown["unmeasured"]
 
 
 @bp.put("/recipes/<recipe_id>")

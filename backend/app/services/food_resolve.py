@@ -448,6 +448,31 @@ def classification(raw: str) -> str:
     return entry[0] if entry else ""
 
 
+def counted_portion_word(raw: str) -> str:
+    """The word a bare count in front of ``raw`` is really counting, when that
+    word is NOT the food — otherwise "".
+
+    "3 rashers bacon" resolves to bacon, but the number counts rashers. The two
+    are told apart by NUMBER: a qualifier that describes the food is an
+    adjective and never pluralizes ("red onions", "sweet potatoes"), while a
+    qualifier naming a portion agrees with the count and does ("rashers bacon",
+    "sheets pastry"). A plural leading qualifier is therefore a unit this
+    lexicon is missing, and a caller that would otherwise treat the number as a
+    count of the food should decline.
+
+    Lives here rather than in ``units`` because answering it needs the split
+    that ``normalize`` already performs; re-deriving it elsewhere is how two
+    answers to one question start disagreeing.
+    """
+    text = normalize_text(raw)
+    words = [w for w in text.split() if w not in PREPARATION_WORDS]
+    if not words:
+        return ""
+    _, qualifier, _ = normalize(" ".join(words))
+    last = qualifier.split()[-1] if qualifier else ""
+    return last if last and singularize(last) != last else ""
+
+
 def food_key(raw: str) -> str:
     """The canonical name alone — the cache/consolidation key.
 

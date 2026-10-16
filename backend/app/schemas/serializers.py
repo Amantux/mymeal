@@ -79,7 +79,7 @@ def tag_out(t):
 
 
 def ingredient_out(ing):
-    parsed = units.parse_line(ing.display or "")
+    parsed = units.annotations(ing.display or "")
     return {
         "id": ing.id,
         "display": ing.display,
@@ -103,14 +103,11 @@ def ingredient_out(ing):
         # `quantity`, so a column would be a second truth for scaling to keep in
         # step. `optional` is lifted out the same way, so the word stops riding
         # along in the food name and into the Food catalog.
+        # See units.annotations for what each one means and why the view cannot
+        # derive them itself.
         "altText": parsed["alt"],
         "optional": parsed["optional"],
-        # No actionable amount anywhere on this line ("Salt, to taste"). NOT the
-        # same as an empty amountText, which also covers a line whose amount is
-        # real but sits behind leading text ("About 2 cups milk") and is being
-        # rendered inside restText — the amount column must not claim those have
-        # no amount.
-        "unmeasured": parsed["qty"] is None,
+        "unmeasured": parsed["unmeasured"],
         "note": ing.note,
         # The variety, split off the food. Separate from `note`, which is
         # preparation.
