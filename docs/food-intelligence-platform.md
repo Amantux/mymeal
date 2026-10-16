@@ -91,6 +91,20 @@ FR-06 exists to prevent. Build the four-state model (`contains` / `may contain` 
 `unknown` / `no known ingredient identified`) **before** the first filter ships,
 not after.
 
+**A concrete instance, found while building the engine.** `food_resolve.py:89`
+seeds `"coconut": ("fruit", ())` — and likewise coconut milk, coconut oil and
+desiccated coconut — all with an EMPTY allergen tuple. The FDA classifies
+coconut as a tree nut for labelling purposes. Both positions are defensible in
+their own frame (botanically a drupe; a declarable tree nut on a US label), but
+they cannot both be the input to a "hide tree nuts" filter. Today nothing
+consumes this for safety, so nothing is broken. The day something does, someone
+avoiding tree nuts is shown a coconut curry as allergen-free.
+
+Decide deliberately, in one place, before the filter exists: regulatory
+labelling is the right frame for an allergen filter, botany is the right frame
+for substitution and the material-boundary rule, and the two lexicons must
+therefore stay SEPARATE rather than being reconciled into one list.
+
 ## 4. What to take, right-sized
 
 The spec targets 1M recipes, OR-Tools, pgvector, several million products. These
