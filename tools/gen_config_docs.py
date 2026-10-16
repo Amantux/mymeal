@@ -32,6 +32,7 @@ GROUPS = [
                       "OLLAMA_HOST", "OLLAMA_MODEL", "OLLAMA_API_KEY",
                       "OLLAMA_SEARCH_KEY", "MEALDB_KEY", "AI_TIMEOUT_SECONDS",
                       "AI_CONFIDENCE_THRESHOLD"]),
+    ("Food reference data (foodcore)", ["FOODCORE_DATASET", "FOODCORE_ENABLED"]),
     ("MCP (Home Assistant Assist)", ["MCP_ENABLED", "MCP_HOST", "MCP_PORT",
                                      "MCP_API", "MCP_API_TOKEN", "MCP_SERVER_TOKEN",
                                      "MCP_EXPOSE_EXTERNAL", "MCP_DEBUG_TOOLS", "MCP_REQUIRED"]),
