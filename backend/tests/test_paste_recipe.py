@@ -1038,18 +1038,22 @@ def test_a_bolded_lead_in_keeps_its_own_line_as_it_always_did():
         "Tip:", "Use very ripe bananas for a sweeter loaf."]
 
 
-def test_a_definition_style_row_keeps_its_pre_fix_reading():
-    """"Flour:" has always become a section rather than part of the display —
-    `_SUB_HEAD` matches any line ending in a colon and the pre-fix flattener
-    put it on its own line too."""
+def test_a_definition_style_row_is_one_row_not_a_section_plus_a_row():
+    """WAS the parity test pinning the defect: "Flour:" became a SECTION and the
+    display kept only "240 g". It was pinned, not asserted as correct, so that
+    changing it had to be deliberate — this is that deliberate change, and the
+    xfail twin below is the same fix seen from the other side.
+
+    `_is_definition_label` now recognises the name-then-amount layout, so the
+    flattener leaves the two cells on one line and no section is invented."""
     got = parse_pasted(
         '<h1>Thing</h1><ul class="ingredients">'
         '<li><span>Flour:</span><span>240 g</span></li>'
         '<li><span>Butter:</span><span>100 g</span></li></ul>'
         '<ol class="instructions"><li>Mix it all together well.</li></ol>')
 
-    assert [(i["display"], i["section"]) for i in got["ingredients"]] == [
-        ("240 g", "Flour"), ("100 g", "Butter")]
+    assert [(i["display"], i.get("section", "")) for i in got["ingredients"]] == [
+        ("Flour: 240 g", ""), ("Butter: 100 g", "")]
 
 
 def test_text_after_a_block_does_not_weld_onto_it():
@@ -1132,19 +1136,6 @@ def test_other_bolded_terminators_are_equally_harmless():
         assert "Bake for 25 minutes." in steps, f"{lead!r} truncated: {steps}"
 
 
-@pytest.mark.xfail(reason="STILL OPEN, and a DIFFERENT mechanism from the "
-                          "_until_tail truncation it was filed alongside: "
-                          "_SUB_HEAD matches anything ending in a colon, so a "
-                          "definition-style row's food name is promoted to a "
-                          "section and the display keeps only the amount. "
-                          "_until_tail now distinguishes a run-in label from a "
-                          "section heading, but this row is not a tail heading "
-                          "at all — it never reaches that code. Fixing it means "
-                          "teaching _is_sub_heading that a colon-terminated "
-                          "line followed by a bare amount is a row, which is a "
-                          "separate rule and gets its own change rather than "
-                          "being forced into this one.",
-                   strict=True)
 def test_a_definition_style_row_keeps_its_food_in_the_display():
     """`<span>Flour:</span><span>240 g</span>` is a row, not a heading plus a
     row. Treating the colon-terminated span as a sub-heading left the display
@@ -1160,6 +1151,149 @@ def test_a_definition_style_row_keeps_its_food_in_the_display():
     displays = [i["display"] if isinstance(i, dict) else i
                 for i in got["ingredients"]]
     assert any("Flour" in d for d in displays), displays
+
+
+# --- a definition label vs a section heading ---------------------------------
+#
+# "Flour:" and "For the sauce:" are both short and both end in a colon, so the
+# colon cannot be the discriminator. Two independent signals say "row label":
+# the text is itself a FOOD (food_resolve's catalog, not a second list here), or
+# the VALUE beside it is a bare amount with no food word. These tests come in
+# pairs — the shape that must stay in the ingredient line, and the shape that
+# must still become a section — because a fix that only satisfied one half would
+# either resurrect the lost-food bug or delete sections as a feature.
+
+
+def test_a_definition_row_stays_one_line_in_the_flattener():
+    """Pins the fix at the layer that owns it. `html_to_lines` already promises
+    that an inline element is joined back into its block; the lead-in exception
+    wrongly claimed this row, and the two-cell shape IS one `<li>`.
+
+    Asserted separately from the parse because `_ingredient_rows` rejoins a
+    split label downstream, so the parsed display looks right either way — a
+    mutation run showed reverting this hunk broke nothing, which means the line
+    contract was untested, not that it does not matter. `mark_sections=False` is
+    the AI prompt's view of the page and gets the same one-line row."""
+    assert html_to_lines(
+        "<ul class='recipe-ingredients'><li><span>Flour:</span>"
+        "<span>240 g</span></li></ul>", mark_sections=False
+    ).splitlines() == ["Flour: 240 g"]
+
+
+def test_a_lead_in_section_heading_still_takes_its_own_line():
+    """The pair, at the same layer: declining the split must be narrow enough
+    that a real lead-in heading keeps the isolation `_until_tail` and the
+    section logic both depend on seeing as its own LINE."""
+    assert html_to_lines(
+        "<p><strong>For the sauce:</strong> 2 tbsp soy sauce</p>",
+        mark_sections=False
+    ).splitlines() == ["For the sauce:", "2 tbsp soy sauce"]
+
+
+def test_a_definition_label_that_is_an_unknown_food_still_keeps_its_text():
+    """The lexicon has ~135 seeds, so recall is the weak half of the rule:
+    "Cocoa powder" is not in it (verified — `is_known(match_key(...))` is False).
+    The bare-amount signal is what carries this case, and it needs no catalog at
+    all, which is the point of having two routes rather than one."""
+    html = ("<ul class='recipe-ingredients'>"
+            "<li><span>Cocoa powder:</span><span>30 g</span></li>"
+            "<li><span>Semolina:</span><span>150 g</span></li></ul>"
+            "<h2>Instructions</h2><ol><li>Mix them together well.</li></ol>")
+
+    got = parse_pasted(html)
+
+    assert [(i["display"], i.get("section", "")) for i in got["ingredients"]] == [
+        ("Cocoa powder: 30 g", ""), ("Semolina: 150 g", "")]
+
+
+def test_a_section_heading_is_still_a_section_beside_the_new_rule():
+    """The other half of the pair, and the regression that matters most: "For
+    the sauce:" names a PART of a recipe, so it is not a food, and the line
+    under it is an ingredient naming its own food ("2 tbsp soy sauce" leaves
+    "soy sauce" behind) rather than a bare amount. Neither route fires."""
+    html = ("<h2>Ingredients</h2><ul><li>2 cups flour</li></ul>"
+            "<p><strong>For the sauce:</strong></p>"
+            "<ul><li>2 tbsp soy sauce</li><li>1 tsp sesame oil</li></ul>"
+            "<h2>Instructions</h2><ol><li>Mix them together well.</li></ol>")
+
+    got = parse_pasted(html)
+
+    assert [(i["display"], i.get("section", "")) for i in got["ingredients"]] == [
+        ("2 cups flour", ""),
+        ("2 tbsp soy sauce", "For the sauce"),
+        ("1 tsp sesame oil", "For the sauce")]
+
+
+def test_a_section_heading_can_contain_definition_rows():
+    """Both features at once, which is where a rule that only half-understood
+    the shapes would show it: the heading must survive AND be applied as the
+    section of rows that each keep their own food name."""
+    html = ("<h2>Ingredients</h2>"
+            "<p><strong>For the sauce:</strong></p>"
+            "<ul><li><span>Soy sauce:</span><span>2 tbsp</span></li>"
+            "<li><span>Honey:</span><span>1 tbsp</span></li></ul>"
+            "<h2>Instructions</h2><ol><li>Mix them together well.</li></ol>")
+
+    got = parse_pasted(html)
+
+    assert [(i["display"], i.get("section", "")) for i in got["ingredients"]] == [
+        ("Soy sauce: 2 tbsp", "For the sauce"),
+        ("Honey: 1 tbsp", "For the sauce")]
+
+
+def test_a_colon_label_whose_value_is_not_an_amount_keeps_its_food():
+    """"to dust" is not a quantity, so the bare-amount route declines and the
+    FOOD route has to carry this one. It matters because the failure mode is the
+    silent one: promoting "Flour:" here would leave a row reading "to dust",
+    which tells the user nothing about what to dust with."""
+    html = ("<ul class='recipe-ingredients'>"
+            "<li><span>Flour:</span><span>to dust</span></li>"
+            "<li><span>Butter:</span><span>for greasing</span></li></ul>"
+            "<h2>Instructions</h2><ol><li>Mix them together well.</li></ol>")
+
+    got = parse_pasted(html)
+
+    assert [(i["display"], i.get("section", "")) for i in got["ingredients"]] == [
+        ("Flour: to dust", ""), ("Butter: for greasing", "")]
+
+
+def test_a_definition_row_split_across_two_lines_is_rejoined_in_plain_text():
+    """The plain-text twin. With no markup the label and its amount really are
+    two lines, so the flattener cannot help and `_ingredient_rows` does the
+    join. Emitting them as two rows would technically preserve the food while
+    still handing the user two broken rows to repair."""
+    text = "Ingredients\nFlour:\n240 g\nMilk:\n500 ml\n\nMethod\nMix them well."
+
+    got = parse_recipe_text(text)
+
+    assert [(i["display"], i.get("section", "")) for i in got["ingredients"]] == [
+        ("Flour: 240 g", ""), ("Milk: 500 ml", "")]
+
+
+def test_a_plain_text_section_heading_survives_the_rejoin():
+    """The pair for the one above: the same two-line shape, but the label is a
+    recipe part and the line under it is a whole ingredient. Must still section,
+    and must NOT be swallowed into the following row."""
+    text = ("Ingredients\nFor the sauce:\n2 tbsp soy sauce\n1 tsp sesame oil"
+            "\n\nMethod\nMix them well.")
+
+    got = parse_recipe_text(text)
+
+    assert [(i["display"], i.get("section", "")) for i in got["ingredients"]] == [
+        ("2 tbsp soy sauce", "For the sauce"),
+        ("1 tsp sesame oil", "For the sauce")]
+
+
+def test_a_label_stating_its_own_amount_does_not_swallow_the_next_line():
+    """"1 cup sugar:" is already a complete ingredient, so it is neither a
+    heading nor a label waiting for a value. Without the amount guard in
+    `_is_definition_label` it would have eaten the row below it."""
+    text = "Ingredients\n1 cup sugar:\n2 cups flour\n\nMethod\nMix them well."
+
+    got = parse_recipe_text(text)
+
+    assert [i["display"] for i in got["ingredients"]] == [
+        "1 cup sugar:", "2 cups flour"]
 
 
 # --- a run-in label vs a section heading -------------------------------------
