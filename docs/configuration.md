@@ -84,6 +84,13 @@ docker compose run --rm app python3 -m app.config_check
 | `MYMEAL_AI_TIMEOUT_SECONDS` | enum/int | `60` | no | yes | Per-request timeout for AI provider calls. HA option: `ai_timeout_seconds`. |
 | `MYMEAL_AI_CONFIDENCE_THRESHOLD` | number | `0.8` | no | yes | Auto-tagging: a proposed tag at/above this model-reported confidence (and matching an existing tag) is applied automatically; below it, or a new tag, goes to the review queue. |
 
+### Food reference data (foodcore)
+
+| Variable | Type | Default | Secret | Restart | Notes |
+|---|---|---|---|---|---|
+| `MYMEAL_FOODCORE_DATASET` | string | `_(empty)_` | no | yes | Path to a foodcore reference dataset (USDA portion weights) built with 'python3 -m foodcore.cli build-usda'. Blank = use myMeal's built-in density table only, which is the default. Keep the file inside DATA_DIR so Home Assistant backs it up; it is never downloaded automatically. HA option: `foodcore_dataset`. |
+| `MYMEAL_FOODCORE_ENABLED` | boolean | `true` | no | yes | Consult the foodcore dataset for volume-to-weight conversions when one is configured. Turn off to ignore an imported dataset and go back to the built-in densities without deleting the file. Has no effect while FOODCORE_DATASET is blank. HA option: `enable_foodcore`. |
+
 ### MCP (Home Assistant Assist)
 
 | Variable | Type | Default | Secret | Restart | Notes |

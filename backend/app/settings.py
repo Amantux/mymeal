@@ -329,6 +329,21 @@ FIELDS: tuple[Field, ...] = (
           "Bearer token. Not needed when Edibl runs behind HA ingress with auth "
           "disabled.", secret=True, supports_file=True, ha_option="edibl_token"),
 
+    # --- foodcore (shared food reference data) ---
+    Field("FOODCORE_DATASET", as_str, "",
+          "Path to a foodcore reference dataset (USDA portion weights) built "
+          "with 'python3 -m foodcore.cli build-usda'. Blank = use myMeal's "
+          "built-in density table only, which is the default. Keep the file "
+          "inside DATA_DIR so Home Assistant backs it up; it is never "
+          "downloaded automatically.",
+          ha_option="foodcore_dataset"),
+    Field("FOODCORE_ENABLED", parse_bool, True,
+          "Consult the foodcore dataset for volume-to-weight conversions when "
+          "one is configured. Turn off to ignore an imported dataset and go "
+          "back to the built-in densities without deleting the file. Has no "
+          "effect while FOODCORE_DATASET is blank.",
+          ha_option="enable_foodcore"),
+
     # --- MCP ---
     Field("MCP_ENABLED", parse_bool, True,
           "Run the MCP server so Home Assistant Assist can use myMeal as a tool.",
@@ -708,6 +723,25 @@ def _validate_semantics(values, sources, in_ha, errors, warnings, strict_secret)
         warnings.append(
             "MYMEAL_EDIBL_API_TOKEN is set but MYMEAL_EDIBL_URL is not, so the "
             "Edibl integration is inactive."
+        )
+
+    # A missing reference dataset is a WARNING, never fatal. It is an
+    # enrichment layer: myMeal converts volumes from its built-in densities
+    # without it, so refusing to start over a path typo (or a dataset the
+    # operator has not built yet) would take the app down for a feature that
+    # was off by default yesterday.
+    foodcore_dataset = (values["FOODCORE_DATASET"] or "").strip()
+    if foodcore_dataset and not os.path.isfile(foodcore_dataset):
+        warnings.append(
+            f"MYMEAL_FOODCORE_DATASET points at {foodcore_dataset!r}, which is not "
+            "a file. myMeal will use its built-in density table. Build one with: "
+            "python3 -m foodcore.cli build-usda --fdc-dir <FoodData_Central_csv> "
+            f"--out {foodcore_dataset} --dataset-version '<release>' --retrieved <YYYY-MM-DD>"
+        )
+    if foodcore_dataset and not values["FOODCORE_ENABLED"]:
+        warnings.append(
+            "MYMEAL_FOODCORE_DATASET is set but MYMEAL_FOODCORE_ENABLED is off, so "
+            "the reference dataset is ignored and the built-in densities are used."
         )
 
     if values["MCP_ENABLED"] and values["MCP_PORT"] == values["PORT"]:

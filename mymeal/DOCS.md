@@ -260,6 +260,61 @@ until you hand out the new one. **Stop sharing** withdraws the feed entirely.
 
 The feed carries the last four weeks plus everything you have planned ahead.
 
+## Better gram weights (optional USDA reference data)
+
+myMeal converts "1 cup flour" to grams so it can scale a recipe and build a
+shopping list. Out of the box it uses a built-in table of about 41 everyday
+densities — enough for flour, sugar, oil and milk, and silent for everything
+else.
+
+You can give it the USDA FoodData Central portion weights instead, which cover
+thousands of foods and say where each number came from. **This is optional and
+off until you do it**; nothing changes on upgrade, and nothing is downloaded for
+you — the USDA export is several gigabytes, so pulling it in the background
+would be a surprise on a NUC with an SD card.
+
+Build it once, from a machine with the export (not necessarily this one):
+
+```bash
+# 1. Download "Full Download of All Data Types" (CSV) from
+#    https://fdc.nal.usda.gov/download-datasets.html and unzip it.
+# 2. Build the compact dataset file (tens of MB, not gigabytes):
+python3 -m foodcore.cli build-usda \
+    --fdc-dir ./FoodData_Central_csv \
+    --out ./foodcore.sqlite \
+    --dataset-version "April 2025" --retrieved 2025-04-01
+# 3. Check what it wrote:
+python3 -m foodcore.cli info --dataset ./foodcore.sqlite
+```
+
+For a much smaller file covering the best-measured foods only, add
+`--data-type foundation_food` (or `--data-type sr_legacy_food`) to the build.
+
+Copy `foodcore.sqlite` into the add-on's data directory (for example via the
+`share` folder, which is mapped into the add-on), then set:
+
+```yaml
+foodcore_dataset: /data/foodcore.sqlite
+```
+
+and restart. Keep it under `/data` so Home Assistant backs it up with your
+recipes.
+
+What to expect:
+
+- Where USDA has a measured weight for the food and the measure, that weight is
+  used — it beats the built-in density, because it was measured rather than
+  remembered.
+- Where it does not, or where the match is uncertain, myMeal falls back to the
+  built-in table exactly as before. **You never get a worse answer than you
+  have today, only more of them.**
+- Where neither knows, the line is left as written rather than converted to a
+  made-up number. "1 cup onions" is the honest example: USDA publishes 160 g for
+  a cup chopped and 115 g sliced, and myMeal will not pick one for you.
+- A path that does not exist is logged as a warning and ignored; the add-on
+  starts normally. `enable_foodcore: false` ignores an imported dataset without
+  deleting it.
+
 ## Data and backups
 
 Everything lives in the add-on's data directory: a SQLite database plus uploaded
