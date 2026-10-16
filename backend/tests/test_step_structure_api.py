@@ -35,7 +35,7 @@ def test_recipe_detail_surfaces_the_waiting_total(auth_client):
 
     summary = auth_client.get(f"/api/v1/recipes/{rid}").get_json()["stepStructure"]["summary"]
 
-    assert summary["waitText"] == "15 hr 5 min–3 days 3 hr"
+    assert summary["waitText"] == "15 hr 5 min – 3 days 3 hr"
     assert summary["waitingSteps"] == 5
 
 

@@ -209,7 +209,9 @@ def human_span(lo: int, hi: int) -> str:
     a, b = _SIMPLE_SPAN.match(low), _SIMPLE_SPAN.match(high)
     if a and b and a.group(2) == b.group(2):
         return f"{a.group(1)}–{b.group(1)} {b.group(2)}"
-    return f"{low}–{high}"
+    # A tight dash between multi-word ends reads as part of the last word:
+    # "15 hr 5 min–3 days" looks like a unit called "min-3". Space it.
+    return f"{low} – {high}"
 
 
 # --------------------------------------------------------------------------

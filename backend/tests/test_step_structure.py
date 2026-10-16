@@ -213,7 +213,7 @@ def test_focaccia_summary_surfaces_the_hidden_clock():
     summary = structure_steps(_steps(FOCACCIA))["summary"]
     # 5 + 5 + 40 + (720–4320) + 15 + 120  — every number stated in the text.
     assert summary["waitMinutes"] == {"lo": 905, "hi": 4505}
-    assert summary["waitText"] == "15 hr 5 min–3 days 3 hr"
+    assert summary["waitText"] == "15 hr 5 min – 3 days 3 hr"
     assert summary["cookMinutes"] == {"lo": 18, "hi": 20}
     assert summary["cookText"] == "18–20 min"
     assert summary["activeMinutes"] == {"lo": 2, "hi": 4}
@@ -263,4 +263,4 @@ def test_human_span_states_a_shared_unit_once():
     assert human_span(18, 20) == "18–20 min"
     assert human_span(120, 180) == "2–3 hr"
     # No shared unit to factor out, so both sides stay whole.
-    assert human_span(905, 4505) == "15 hr 5 min–3 days 3 hr"
+    assert human_span(905, 4505) == "15 hr 5 min – 3 days 3 hr"
