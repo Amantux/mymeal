@@ -77,3 +77,19 @@ def test_an_unrecognised_name_is_shown_exactly_as_written(auth_client, app):
     assert len(items) == 1
     assert items[0]["display"] == "bone-in chicken thighs"
     assert items[0]["quantity"] == 8.0
+
+
+@pytest.mark.parametrize("a, b", [
+    ("40 grams parmesan", "10 gram parmesan"),
+    ("2 ounces parmesan", "1 ounce parmesan"),
+    ("1 teaspoon parmesan", "2 tsps parmesan"),
+])
+def test_two_spellings_of_one_unit_are_one_line_to_buy(auth_client, app, a, b):
+    """The scope note at the top of this file said the unit half was already
+    correct. It was only correct for the spellings that happened to be in the
+    alias map: 'grams' resolved to 'g' and 'gram' did not, so the recipe's own
+    two lines minted two Unit rows and you bought parmesan twice.
+    """
+    items = _two(auth_client, app, a, b)
+    assert len(items) == 1, f"{a!r} and {b!r} produced " \
+                            f"{[(i['quantity'], i['unit']) for i in items]}"

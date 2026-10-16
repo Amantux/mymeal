@@ -12,20 +12,37 @@ import re
 from fractions import Fraction
 
 # --- Canonical units -> base amount. Volume base = millilitre, weight = gram --
+#
+# EXACTLY ONE canonical key per unit. That invariant is load-bearing, and the
+# table used to break it: 'g' and 'gram' both sat here as keys, so
+# canonical_unit('grams') came back 'g' (via the alias table) while
+# canonical_unit('gram') passed the membership test below and came back
+# unchanged. Three user-visible defects fell out of that one inconsistency:
+#
+#   * one recipe rendered two ways — scaling "1 gram garlic powder" gave
+#     "3 grams" while "40 grams parmesan" gave "120 g";
+#   * _DECIMAL_UNITS is keyed on 'g', so the singular spelling slipped past it
+#     and printed "337 1/2" — half a gram, as a vulgar fraction;
+#   * shopping consolidation grouped on the unit, so 'g' and 'gram' were two
+#     different units and you came home with parmesan twice.
+#
+# Adding 'gram' and 'ounce' as aliases would have fixed the two spellings that
+# were reported and left every other doubled key ('milliliter', 'cc', 'liter',
+# 'fluid ounce') live. Collapsing the table to one key each fixes the class.
 _VOLUME_ML = {
-    "ml": 1.0, "millilitre": 1.0, "milliliter": 1.0, "cc": 1.0,
-    "l": 1000.0, "litre": 1000.0, "liter": 1000.0,
-    "tsp": 4.92892, "teaspoon": 4.92892,
-    "tbsp": 14.7868, "tablespoon": 14.7868,
-    "fl oz": 29.5735, "fluid ounce": 29.5735,
+    "ml": 1.0,
+    "l": 1000.0,
+    "tsp": 4.92892,
+    "tbsp": 14.7868,
+    "fl oz": 29.5735,
     "cup": 236.588,
     "pint": 473.176, "quart": 946.353, "gallon": 3785.41,
 }
 _WEIGHT_G = {
-    "g": 1.0, "gram": 1.0,
-    "kg": 1000.0, "kilogram": 1000.0,
-    "oz": 28.3495, "ounce": 28.3495,
-    "lb": 453.592, "pound": 453.592,
+    "g": 1.0,
+    "kg": 1000.0,
+    "oz": 28.3495,
+    "lb": 453.592,
 }
 
 # Count-ish units that appear constantly in scraped recipes. They are
@@ -39,28 +56,59 @@ _COUNT_UNITS = {
     "stick", "sprig", "bunch", "head", "jar", "bottle", "packet",
 }
 
-# Map spellings/plurals/abbreviations to a canonical key above.
-_ALIASES = {
-    "milliliters": "ml", "millilitres": "ml", "millilitre": "ml",
-    "liters": "l", "litres": "l", "litre": "l",
-    "teaspoons": "tsp", "teaspoon": "tsp", "ts": "tsp",
-    "tablespoons": "tbsp", "tablespoon": "tbsp", "tbs": "tbsp", "tbl": "tbsp",
-    "cups": "cup", "c": "cup",
-    "fluid ounces": "fl oz", "floz": "fl oz", "fl. oz.": "fl oz", "fl. oz": "fl oz",
-    "pints": "pint", "pt": "pint",
-    "quarts": "quart", "qt": "quart",
-    "gallons": "gallon", "gal": "gallon",
-    "grams": "g", "gr": "g", "gm": "g", "gramme": "g", "grammes": "g",
-    "kilograms": "kg", "kilo": "kg", "kilos": "kg", "kgs": "kg",
-    "ounces": "oz", "ozs": "oz",
-    "pounds": "lb", "lbs": "lb", "#": "lb",
-    # plurals of the count units
-    "pinches": "pinch", "dashes": "dash", "handfuls": "handful",
-    "cloves": "clove", "slices": "slice", "cans": "can", "tins": "tin",
-    "packages": "package", "pkg": "package", "pkgs": "package",
-    "sticks": "stick", "sprigs": "sprig", "bunches": "bunch", "heads": "head",
-    "jars": "jar", "bottles": "bottle", "packets": "packet",
+# Canonical key -> the OTHER spellings a recipe writes it as. Irregular forms
+# only: plurals are derived below, so adding a spelling never means remembering
+# to add its plural too. That omission is what left canonical_unit('tsps')
+# returning None while 'teaspoons' worked.
+_SPELLINGS: dict[str, tuple[str, ...]] = {
+    "ml": ("millilitre", "milliliter", "cc"),
+    "l": ("litre", "liter"),
+    "tsp": ("teaspoon", "ts"),
+    "tbsp": ("tablespoon", "tbs", "tbl"),
+    "fl oz": ("fluid ounce", "floz", "fl. oz.", "fl. oz"),
+    "cup": ("c",),
+    "pint": ("pt",),
+    "quart": ("qt",),
+    "gallon": ("gal",),
+    "g": ("gram", "gramme", "gr", "gm"),
+    "kg": ("kilogram", "kilo"),
+    "oz": ("ounce",),
+    "lb": ("pound", "#"),
+    "package": ("pkg",),
 }
+
+
+def _plural_forms(word: str) -> tuple[str, ...]:
+    """Plural spellings to accept for a unit word.
+
+    Single characters are skipped deliberately: 'g'/'l'/'c'/'#' would pluralize
+    to 'gs'/'ls'/'cs', which nobody writes, and every alias widens the surface
+    the unit matcher scans. Everything else gets -s, plus -es after a sibilant
+    ('pinch' -> 'pinches', 'oz' -> 'ozes').
+
+    Deliberately generous rather than linguistically exact — it also mints
+    'pinchs' and 'ozes'. An alias nobody ever types costs nothing; a MISSING one
+    is the defect this derivation exists to prevent.
+    """
+    if len(word) < 2:
+        return ()
+    if word.endswith(("ch", "sh", "s", "x", "z")):
+        return (word + "s", word + "es")
+    return (word + "s",)
+
+
+# Every spelling -> its canonical key, derived once at import. Built from the
+# declaration above plus a regular plural for each spelling AND each canonical,
+# so "cups", "teaspoons", "tsps", "grams" and "cloves" all resolve without
+# being listed by hand.
+_ALIASES: dict[str, str] = {}
+for _canonical in list(_VOLUME_ML) + list(_WEIGHT_G) + sorted(_COUNT_UNITS):
+    for _form in (_canonical, *_plural_forms(_canonical)):
+        _ALIASES.setdefault(_form, _canonical)
+for _canonical, _spellings in _SPELLINGS.items():
+    for _spelling in _spellings:
+        for _form in (_spelling, *_plural_forms(_spelling)):
+            _ALIASES.setdefault(_form, _canonical)
 
 # Approximate densities (grams per millilitre) for common pantry foods, matched
 # by keyword against the ingredient text. Enough for a sensible weight readout;
@@ -272,15 +320,18 @@ def parse_line(text: str) -> dict:
 # spelling to ONE singular key ("cups" -> "cup"), which is right for arithmetic
 # and wrong for display the moment a quantity moves: "4 cup flour".
 #
-# Abbreviations (tsp, tbsp, g, kg, ml, l, oz, lb, fl oz, cc) are deliberately
+# Abbreviations (tsp, tbsp, g, kg, ml, l, oz, lb, fl oz) are deliberately
 # ABSENT — "4 tsps" is not how anyone writes it — so anything not listed here
 # is returned unchanged. Only whole words pluralize.
+#
+# Every metric and imperial MEASURE now canonicalises to its abbreviation (see
+# the table at the top), so "gram"/"ounce"/"fluid ounce" entries that used to
+# live here are unreachable and were removed rather than left as decoration.
+# This is also what makes one recipe render one way: a line written "1 gram" and
+# a line written "40 grams" both come out in 'g'.
 _PLURALS = {
     # volume
     "cup": "cups", "pint": "pints", "quart": "quarts", "gallon": "gallons",
-    "fluid ounce": "fluid ounces",
-    # weight
-    "gram": "grams", "kilogram": "kilograms", "ounce": "ounces", "pound": "pounds",
     # counts (all of _COUNT_UNITS; -es where the singular ends in ch/sh/s/x/z)
     "pinch": "pinches", "dash": "dashes", "handful": "handfuls",
     "clove": "cloves", "slice": "slices", "can": "cans", "tin": "tins",
@@ -302,6 +353,11 @@ def pluralize_unit(unit: str | None, qty: float | None) -> str:
     u = (unit or "").strip()
     if not u or qty is None:
         return u
+    # Canonicalise first. Callers pass parse_line's already-canonical unit, but
+    # this is public and a caller holding the raw word ("grams") must get the
+    # same answer as one holding the canonical — the kind of split that made a
+    # single recipe render two ways.
+    u = canonical_unit(u) or u
     if qty <= 1:
         return u
     return _PLURALS.get(u, u)
@@ -343,7 +399,10 @@ def format_qty_for_unit(value: float, unit: str | None) -> str:
     amounts keep one decimal rather than rounding away to "0", matching what
     _format_grams already does on the weight-annotation path.
     """
-    places = _DECIMAL_UNITS.get(unit)
+    # Canonicalise, for the same reason as pluralize_unit: _DECIMAL_UNITS is
+    # keyed on 'g'/'ml', so a caller holding "gram" used to slip past it and get
+    # "337 1/2" — the half-gram fraction this table exists to prevent.
+    places = _DECIMAL_UNITS.get(canonical_unit(unit) or unit)
     if places is None or value is None or value <= 0:
         return format_qty(value)
     if places == 0 and value < 1:
