@@ -52,13 +52,42 @@ def test_module_imports_nothing_outside_the_standard_library(path):
 
 @pytest.mark.parametrize("path", _module_files(), ids=lambda p: p.name)
 def test_no_path_escapes_the_package(path):
-    source = path.read_text()
+    """Standalone also fails if the CODE reaches out to a host-app path.
 
-    # A path reaching up out of the package is the other way "standalone"
-    # quietly stops being true.
-    assert ".." not in source.replace("...", "").replace("..`", "") or True
-    assert "/root/mymeal" not in source
-    assert "backend/app" not in source
+    Checked against code, not raw text: an earlier version grepped the whole
+    file and failed on a *comment* that explains why foodcore exists by naming
+    myMeal's units.py. Referring to a host app in prose is correct and useful;
+    opening a file there is the defect. A guard that cannot tell those apart
+    trains people to delete the sentence rather than fix the import.
+    """
+    import ast
+
+    tree = ast.parse(path.read_text())
+    # Identify docstrings by NODE, not by value: ast.get_docstring() returns a
+    # cleandoc()-normalised string that never equals the raw Constant, so a
+    # value-based exclusion silently excludes nothing.
+    docstring_nodes = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                             ast.AsyncFunctionDef)):
+            first = next(iter(node.body), None)
+            if (isinstance(first, ast.Expr)
+                    and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str)):
+                docstring_nodes.add(id(first.value))
+
+    code_literals = [n.value for n in ast.walk(tree)
+                     if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                     and id(n) not in docstring_nodes]
+
+    offenders = [v for v in code_literals
+                 if "/root/" in v or "backend/app" in v or v.startswith("../")]
+
+    assert not offenders, (
+        f"{path.name} builds a path outside the package: {offenders}. "
+        "foodcore must install into two host apps and be extractable to its "
+        "own repo without edits; the host owns the dataset path and passes it in."
+    )
 
 
 def test_pyproject_declares_zero_runtime_dependencies():
