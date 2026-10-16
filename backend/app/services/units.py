@@ -141,6 +141,37 @@ _UNICODE_FRACTIONS = {
     "⅛": Fraction(1, 8), "⅜": Fraction(3, 8), "⅝": Fraction(5, 8), "⅞": Fraction(7, 8),
 }
 
+# A fraction typed as separate glyphs — "¹⁄₂", "¹/₂", "³/₄" — rather than as one
+# precomposed character. Blogs and YouTube descriptions are full of these,
+# because that is what a word processor's autoformat produces and what survives
+# a copy-paste out of a PDF. The precomposed forms above already parsed, so the
+# defect was invisible until a real paste used the superscript form and the
+# quantity was silently LOST: "¹/₂ tsp salt" parsed to qty=None and the whole
+# line, half-teaspoon and all, fell through as unmeasured food text.
+#
+# ⚠️ Every mapping here is one character to one character, and parse_line relies
+# on that: it matches against the normalised copy but slices the food text out of
+# the ORIGINAL, so the two must stay aligned offset-for-offset. A mapping that
+# changed length (say "½" -> "1/2") would shift every later offset and start
+# eating letters off the food name.
+_NUMERAL_FORMS = str.maketrans({
+    # superscript digits (U+2070, U+00B9-00B3, U+2074-2079)
+    "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4",
+    "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9",
+    # subscript digits (U+2080-2089)
+    "₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4",
+    "₅": "5", "₆": "6", "₇": "7", "₈": "8", "₉": "9",
+    # FRACTION SLASH (U+2044) and DIVISION SLASH (U+2215), which look like "/"
+    # and mean "/" but are not "/"
+    "⁄": "/", "∕": "/",
+})
+
+
+def _normalize_numerals(s: str) -> str:
+    """Rewrite sub/superscript digits and fraction slashes as ASCII, preserving
+    length (see the warning on _NUMERAL_FORMS)."""
+    return s.translate(_NUMERAL_FORMS)
+
 # Longest unit spellings first so "fl oz" matches before "oz".
 _UNIT_KEYS = sorted(
     set(_VOLUME_ML) | set(_WEIGHT_G) | set(_ALIASES) | _COUNT_UNITS,
@@ -292,7 +323,13 @@ def parse_line(text: str) -> dict:
     """
     raw = strip_list_marker((text or "").strip())
     approx, body = _split_approximator(raw)
-    m = _QTY_RE.match(body)
+    # Match against a numeral-normalised COPY so "¹/₂ tsp" parses, but keep
+    # `body` for slicing the food text out of. The normalisation is
+    # length-preserving, so an offset into one is the same offset into the other
+    # — which is what lets the glyphs the author actually typed survive into the
+    # food name while the quantity is still read correctly.
+    body_n = _normalize_numerals(body)
+    m = _QTY_RE.match(body_n)
     if not m or not m.group("qty"):
         # A leading "(optional)" / "(or more to taste)" bracket defeats the
         # anchored quantity match. Look past ONE such group; if the remainder
@@ -310,7 +347,7 @@ def parse_line(text: str) -> dict:
         # "About" with no prefix to carry it back.
         return {"qty": None, "unit": None, "rest": raw, "range_hi": None, "prefix": ""}
     qty = _parse_number(m.group("qty"))
-    unit, rest = _match_unit(m.group("rest").strip())
+    unit, rest = _match_unit(body[m.start("rest"):].strip())
     hi = _parse_number(m.group("qty_hi")) if m.group("qty_hi") else None
     return {"qty": qty, "unit": unit, "rest": rest, "range_hi": hi, "prefix": approx}
 
