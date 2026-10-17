@@ -40,10 +40,22 @@ RUN pip install --no-cache-dir -r backend/requirements.txt
 # The checkout is removed after the install: what ships is the installed
 # package, so there is no second copy (nor foodcore's own `app/` directory and
 # tests) sitting next to the backend for an import to find by accident.
+#
+# The check below asserts the ARTIFACT, not just that an import succeeds. This
+# library has already shipped a wheel that imported cleanly while missing a
+# subpackage, and it now bundles its reference dataset as package DATA, which a
+# pyproject change can silently drop. Both failures present identically at
+# runtime — the feature quietly does nothing — and neither is visible from a
+# source checkout, where the files are simply there on disk.
 COPY foodcore/ ./foodcore/
 RUN pip install --no-cache-dir ./foodcore \
     && rm -rf /app/foodcore \
-    && python3 -c "import foodcore; print('foodcore', foodcore.__version__)"
+    && python3 -c "import foodcore, os, gzip; \
+p = os.path.join(os.path.dirname(foodcore.__file__), 'data', 'usda-sr-legacy-2018-04.sqlite.gz'); \
+assert os.path.isfile(p), 'the shipped reference dataset is missing from the installed wheel'; \
+assert len(gzip.open(p, 'rb').read(64)) == 64, 'the shipped reference dataset is not readable gzip'; \
+__import__('foodcore.rules.rulesets', fromlist=['x']).allergen_ruleset(); \
+print('foodcore', foodcore.__version__, '+ dataset', round(os.path.getsize(p) / 1e6, 1), 'MB')"
 
 COPY backend/ ./backend/
 COPY --from=frontend /build/dist ./frontend/dist
