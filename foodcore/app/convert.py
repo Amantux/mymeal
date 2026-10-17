@@ -573,19 +573,44 @@ def parse_quantity(text: str) -> ParsedQuantity:
     return ParsedQuantity(amount=amount, unit=unit, size=size, food_text=food_text)
 
 
-def convert_text(text: str, to_unit: str, *, dataset: Dataset,
+def convert_text(text: str, to_unit: str, *, dataset: Dataset | None = None,
                  package: PackageSize | None = None) -> Resolved | Unresolved:
     """Resolve a written quantity ('2 cups flour') into `to_unit`.
 
     Food resolution is the dataset's confidence-tiered matcher, and a LOW match
     refuses with the candidates rather than picking the first row — which is how
     '1 cup rice' stays unresolved while '1 cup cooked rice' resolves.
+
+    **But only when the food actually matters.** Pounds to grams is the 1959
+    yard-and-pound agreement, true of flour and feathers alike; millilitres to
+    litres likewise. Resolving the food first made '2 lb flour' refuse as
+    `ambiguous_food` against a real USDA import, where "flour" legitimately
+    matches arrowroot, carob, millet and potato flour — a REGRESSION against a
+    plain unit table, and invisible against a small fixture where nothing
+    collides. So the definitional conversion is attempted first and the food is
+    only consulted when the units cross dimensions.
     """
     parsed = parse_quantity(text)
     if parsed.amount is None:
         return Unresolved("no_quantity", f"no leading quantity found in {text!r}")
 
     unit = parsed.unit
+    # Same-dimension conversions are physics, not food science. Try that before
+    # touching the dataset — it also means these keep working with no dataset
+    # loaded at all.
+    if unit is not None and parsed.size is None and package is None:
+        physical = convert(parsed.amount, unit, to_unit, food=None,
+                           dataset=dataset)
+        if getattr(physical, "resolved", False):
+            return physical
+
+    if dataset is None:
+        return Unresolved(
+            "no_dataset",
+            "no reference dataset is loaded, so a food-specific conversion "
+            "cannot be justified; load one or convert between like units",
+        )
+
     food: FoodRecord | None = None
     if parsed.food_text:
         match = dataset.resolve_food(parsed.food_text)

@@ -459,3 +459,44 @@ def test_a_bare_count_assumes_a_whole_piece(dataset):
     assert isinstance(got, Resolved)
     approx(got.value, 330.0)
     assert got.provenance.confidence == CONF_COUNT_UNSIZED
+
+
+# --- the food only matters when the units cross dimensions ------------------
+
+def test_a_mass_to_mass_conversion_does_not_need_to_identify_the_food(dataset):
+    """REGRESSION, found by running a REAL USDA import rather than the fixture.
+
+    Pounds to grams is the 1959 yard-and-pound agreement — true of flour and of
+    feathers. Resolving the food first made '2 lb flour' refuse as
+    `ambiguous_food`, because against 7,793 real foods "flour" legitimately
+    matches arrowroot, carob, millet and potato flour. That is a REGRESSION
+    against a plain unit table, and it is invisible against a 37-food fixture
+    where nothing collides — which is exactly why it shipped.
+    """
+    for text, expected in (("2 lb flour", 907.18474),
+                           ("240 g egg whites", 240.0),
+                           ("1 kg rice", 1000.0)):
+        got = convert_text(text, "g", dataset=dataset)
+        assert getattr(got, "resolved", False), f"{text}: {got.reason} {got.detail}"
+        assert got.value == pytest.approx(expected, rel=1e-6)
+        # And it is definitional, not a lookup.
+        assert got.provenance.method == "measured"
+
+
+def test_like_unit_conversions_work_with_no_dataset_at_all():
+    """They are physics; a host app with no reference data imported must still
+    get them. Previously this raised AttributeError on `dataset.resolve_food`,
+    which also broke the module's never-raises contract."""
+    got = convert_text("2 lb flour", "g")
+
+    assert getattr(got, "resolved", False)
+    assert got.value == pytest.approx(907.18474, rel=1e-6)
+
+
+def test_a_cross_dimension_conversion_without_a_dataset_refuses_cleanly():
+    """Volume to mass needs a density, which needs the food. With no dataset
+    that is an honest Unresolved — not an exception."""
+    got = convert_text("2 cups flour", "g")
+
+    assert not getattr(got, "resolved", False)
+    assert got.reason == "no_dataset"
