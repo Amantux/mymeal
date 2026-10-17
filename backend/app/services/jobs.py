@@ -143,7 +143,7 @@ def _nutrition_job(job: Job) -> dict:
     import json as _json
 
     from .ai.base import ProviderError
-    from .ai.nutrition import estimate_nutrition
+    from .ai.nutrition import nutrition_for_recipe
     from .ai.registry import provider_for_group, resolve_job_provider
     from ..models import Recipe
 
@@ -153,7 +153,13 @@ def _nutrition_job(job: Job) -> dict:
         # Per-run override > the stored "Nutrition" async preference > chat provider.
         provider = resolve_job_provider("nutrition", gid, opts=opts) or provider_for_group(gid)
     except ProviderError as exc:
-        raise JobError(str(exc)) from exc
+        # Not fatal any more: with a reference dataset imported the job computes
+        # without a model. Fail only if the deterministic path also produces
+        # nothing, so a provider-less install still gets its nutrition filled in.
+        provider = None
+        _provider_error = str(exc)
+    else:
+        _provider_error = ""
 
     def missing_q():
         return (db.session.query(Recipe)
@@ -167,13 +173,17 @@ def _nutrition_job(job: Job) -> dict:
     for i, recipe in enumerate(recipes, 1):
         lines = [ing.display for ing in recipe.ingredients]
         try:
-            nutrition = estimate_nutrition(lines, recipe.servings, provider)
+            nutrition = nutrition_for_recipe(lines, recipe.servings, provider)
         except ProviderError:
             nutrition = None
         if nutrition:
             recipe.nutrition = _json.dumps(nutrition)
             estimated += 1
         bump(job, done=i)
+    if not estimated and recipes and provider is None and _provider_error:
+        # Nothing computed and no model to fall back on: report WHY instead of
+        # a silent zero-result run.
+        raise JobError(_provider_error)
     return {"estimated": estimated, "scanned": len(recipes), "remaining": missing_q().count()}
 
 

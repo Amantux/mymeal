@@ -9,9 +9,21 @@ than a plausible number.
 Everything in myMeal keeps calling ``units.to_grams``. This module is the one
 place that knows foodcore exists, so the library can be swapped, upgraded or
 removed without touching a caller. Only foodcore's **documented public API**
-(``load_dataset``, ``Dataset.search_foods``/``portion_grams``,
-``Resolved``/``Unresolved``, ``rule_version``) is used here; its internals are
-explicitly not a contract.
+(``load_dataset``, ``Dataset.search_foods``/``portion_grams``/``food_record``/
+``nutrient_per_100g``/``provenance_for``, ``foodcore.nutrition``'s record types
+and ``compute_recipe``, ``Resolved``/``Unresolved``, ``rule_version``) is used
+here; its internals are explicitly not a contract.
+
+Two questions, one seam
+-----------------------
+``grams_per`` answers "what does one cup of this weigh?" (Stage 1).
+``recipe_nutrition`` answers "what is this recipe's per-serving nutrition?"
+(Stage 2). They share the identity machinery below — the scoring tiers, the
+plural forms, the unrequested-state filter — because getting the *food* wrong
+produces a confidently wrong number in both cases, and a second copy of that
+policy is exactly the drift this module exists to prevent. They differ in the
+final gate: a weight answer is checked against the other candidates' *portion
+weights*, a nutrition answer against their *energy* (see ``_nutrition_food``).
 
 Three rules this module exists to enforce
 -----------------------------------------
@@ -69,6 +81,51 @@ _MEASURES: dict[str, tuple[str, ...]] = {
     "gallon": ("gallon",),
 }
 
+#: foodcore **dataset** nutrient key -> the nutrient id its **registry**
+#: (``foodcore.nutrition.NUTRIENTS``, which myMeal's stored field names match)
+#: reports it under, with the unit of that registry entry.
+#:
+#: THE TWO VOCABULARIES ARE NOT THE SAME, and this is the only place that knows
+#: it. The USDA adapter writes the keys it reads from FDC's nutrient names
+#: ("energy", "carbohydrate", "fat_total"); the arithmetic registry declares the
+#: ids a panel is labelled with ("calories", "carbs", "fat"). Three of the eight
+#: differ. Asking the dataset for "calories" returns ``Unresolved`` —
+#: indistinguishable from "this food has no data" — so a silent miss here would
+#: not raise, would not log, and would make the whole feature quietly answer
+#: "unknown" for every recipe. ``test_nutrient_key_map`` asserts both halves of
+#: every row against the live dataset and the live registry so a rename on
+#: either side fails a test instead of emptying a nutrition panel.
+#:
+#: Units are stated because they are a claim, not a convention: energy is kcal
+#: (FDC also publishes kJ rows, which the adapter does not map), the macros are
+#: grams and the minerals are milligrams. foodcore converts each value from the
+#: unit the dataset row carries into the registry entry's unit, so a dataset
+#: that changed units would convert rather than mislabel — but only if these
+#: ids line up.
+_DATASET_NUTRIENTS: dict[str, tuple[str, str]] = {
+    "energy": ("calories", "kcal"),
+    "protein": ("protein", "g"),
+    "fat_total": ("fat", "g"),
+    "fat_saturated": ("saturated_fat", "g"),
+    "carbohydrate": ("carbs", "g"),
+    "fiber": ("fiber", "g"),
+    "sugars": ("sugar", "g"),
+    "sodium": ("sodium", "mg"),
+    "calcium": ("calcium", "mg"),
+    "iron": ("iron", "mg"),
+}
+
+#: The dataset key whose values gate an ambiguous identity (see
+#: ``_nutrition_food``). Energy, because every composition record in a USDA
+#: import carries it and because it is the figure a cook actually reads.
+_GATE_NUTRIENT = "energy"
+
+#: Mass units, where grams are definitional physics rather than a lookup.
+#: Mirrors ``units._WEIGHT_G``'s keys; named here rather than imported because
+#: that name is private to ``units`` and this is a *claim about evidence*
+#: ("these grams were computed, not estimated"), not a conversion table.
+_MASS_UNITS = frozenset({"g", "kg", "oz", "lb"})
+
 #: How many dataset candidates to score. A full USDA import answers "onion"
 #: with dozens of rows; the question is only ever "is there one obvious
 #: winner", and that is visible in the first handful.
@@ -122,6 +179,7 @@ def reset_cache() -> None:
         _ambient_path = None
         _warned = False
         _lookup_grams.cache_clear()
+        _lookup_composition.cache_clear()
 
 
 def _setting(cfg, name: str, default):
@@ -388,4 +446,301 @@ def grams_per(unit: str, food_text: str, settings=None) -> float | None:
             )
         else:
             log.debug("foodcore lookup failed (%s)", type(exc).__name__)
+        return None
+
+
+# ===========================================================================
+# Recipe nutrition (Stage 2)
+#
+# `(edible_grams / 100) x per_100g`, summed, divided by servings — but the
+# arithmetic itself is `foodcore.nutrition.compute_recipe`'s and none of it is
+# reimplemented here. This section's whole job is to put myMeal's two facts
+# about an ingredient line (how many grams, and which food) into the shape that
+# engine demands, and to refuse where the evidence does not justify an answer.
+# ===========================================================================
+
+#: A dataset state word -> the composition BASIS it implies. foodcore refuses a
+#: raw record used as cooked rather than guessing a yield, so this mapping has
+#: to be conservative: only the words that genuinely fix a basis map, and
+#: "dry"/"dried"/"canned"/"frozen" deliberately do not — they describe a form,
+#: not whether water has been driven off or taken up by cooking, and claiming a
+#: basis we do not know would turn an honest `inferred` into a false `raw`.
+_BASIS_FOR_STATE: dict[str, str] = {
+    "raw": "raw",
+    "cooked": "cooked",
+    "boiled": "cooked",
+}
+
+#: Line words that say the cook is using the food COOKED. A superset of the
+#: dataset's own state vocabulary, because a recipe writes "roasted"/"steamed"
+#: where USDA writes "cooked".
+_COOKED_WORDS = frozenset({
+    "cooked", "boiled", "steamed", "braised", "roasted", "fried", "baked",
+    "poached", "grilled", "sauteed", "sautéed",
+})
+
+#: How far the top identity tier's energy values may spread and still be
+#: treated as the same food — ``_AGREEMENT``'s role, for nutrition. "Egg,
+#: white, raw" and "Egg, whole, raw" both match the line "2 eggs" at the
+#: head-segment tier and publish 52 and 143 kcal/100 g, a 175% spread. Picking
+#: one silently is how a nutrition panel comes to be confidently wrong, so a
+#: tier that disagrees refuses — and the recipe falls back to an AI estimate
+#: which is at least labelled as a guess.
+_ENERGY_AGREEMENT = 0.10
+
+
+def _basis_of_record(record) -> str:
+    """The basis a dataset record was measured on, from the states it declares."""
+    import foodcore.nutrition as fcn
+
+    for state in sorted(record.states):
+        basis = _BASIS_FOR_STATE.get(state)
+        if basis:
+            return basis
+    return fcn.BASIS_UNSPECIFIED
+
+
+def _basis_used_as(words: frozenset[str]) -> str:
+    """The basis the RECIPE LINE says it uses the food on.
+
+    Only "cooked" is ever asserted. A line that says nothing gets
+    ``unspecified``, NOT ``raw``: foodcore treats a one-sided ``unspecified``
+    as "used as-is, method capped at inferred", which is an honest record of
+    "we assumed the bases matched". Asserting ``raw`` would claim we knew.
+    """
+    import foodcore.nutrition as fcn
+
+    return fcn.BASIS_COOKED if (words & _COOKED_WORDS) else fcn.BASIS_UNSPECIFIED
+
+
+def _energy_of(record) -> float | None:
+    value = record.nutrients.get(_GATE_NUTRIENT)
+    return float(value[0]) if value else None
+
+
+def _nutrition_food(ds, canonical: str, text_states: frozenset[str], used_as: str):
+    """The one dataset food a line means, or None when nothing qualifies.
+
+    The tiers are ``grams_per``'s, for the reason given in the module
+    docstring. Two gates are this path's own:
+
+    * **basis** — when the line says it uses the food cooked and some candidate
+      was measured cooked, only those candidates remain. That is extra
+      evidence, not a guess, and without it "cooked rice" ties raw rice
+      (365 kcal) against cooked rice (130 kcal) and refuses a line it could
+      have answered exactly.
+    * **energy** — every candidate in the winning tier must publish energy and
+      the values must agree within ``_ENERGY_AGREEMENT``. An incomplete tier is
+      ambiguity (the answer would be decided by which rows happen to carry a
+      nutrient row), and a disagreeing tier means choosing a number rather than
+      reading one.
+    """
+    import foodcore.nutrition as fcn
+
+    forms = _forms(canonical)
+    candidates = [row for row in _candidates(ds, canonical, forms)
+                  if not _declares_unrequested_state(row.name, text_states)]
+    if not candidates:
+        return None
+    scored = [(_score(forms, row.name), len(row.name or ""), row) for row in candidates]
+    best = max(s for s, _, _ in scored)
+    if best < _MIN_SCORE:
+        return None
+
+    tier = sorted((item for item in scored if item[0] == best),
+                  key=lambda i: (i[1], i[2].name))
+    records = [r for r in (ds.food_record(row.key) for _s, _len, row in tier)
+               if r is not None]
+    if not records:
+        return None
+
+    if used_as != fcn.BASIS_UNSPECIFIED:
+        exact = [r for r in records if _basis_of_record(r) == used_as]
+        if exact:
+            records = exact
+
+    energies = [_energy_of(r) for r in records]
+    if any(e is None or e < 0 for e in energies):
+        return None
+    hi, lo = max(energies), min(energies)
+    # A tier of genuinely zero-energy foods (water, salt) agrees trivially, but
+    # the ratio test cannot be applied to it — so say so rather than divide by
+    # zero, and refuse a tier that mixes zero with non-zero.
+    if lo <= 0:
+        if hi > 0:
+            return None
+    elif hi / lo > 1 + _ENERGY_AGREEMENT:
+        return None
+    return records[0]
+
+
+def _composition(ds, record, version: str):
+    """A ``Composition`` for one dataset food, or None when it reports nothing.
+
+    Every value comes back through ``nutrient_per_100g`` rather than being read
+    off ``record.nutrients`` directly, because that is the call carrying the
+    per-value provenance — method, confidence, and the snapshot it came from.
+    ``Composition`` holds ONE provenance for the record, so the fields that can
+    differ per nutrient are reduced the way foodcore reduces them elsewhere:
+    weakest method, lowest confidence. A record is only as trustworthy as its
+    least trustworthy value.
+    """
+    import foodcore.nutrition as fcn
+
+    per_100g: dict = {}
+    methods: list[str] = []
+    confidences: list[float] = []
+    for ds_key, (registry_id, _unit) in _DATASET_NUTRIENTS.items():
+        if ds_key not in record.nutrients:
+            continue
+        outcome = ds.nutrient_per_100g(record.key, ds_key, version=version)
+        if not outcome.resolved:
+            continue
+        per_100g[registry_id] = fcn.NutrientAmount(
+            amount=float(outcome.value), unit=outcome.unit
+        )
+        methods.append(outcome.provenance.method)
+        confidences.append(float(outcome.provenance.confidence))
+    if not per_100g:
+        return None
+    return fcn.Composition(
+        food_id=record.key,
+        description=record.description,
+        basis=_basis_of_record(record),
+        per_100g=per_100g,
+        provenance=ds.provenance_for(
+            record.provider, record.source_id,
+            fcn.weakest_method(*methods), min(confidences), version,
+        ),
+    )
+
+
+@lru_cache(maxsize=2048)
+def _lookup_composition(ds, canonical: str, text_states: frozenset[str],
+                        used_as: str, version: str):
+    """Memoised per (dataset, food, requested states, basis, rule version), for
+    the reason ``_lookup_grams`` is: a recipe render asks for the same handful
+    of foods repeatedly, and a composition costs one query per nutrient."""
+    record = _nutrition_food(ds, canonical, text_states, used_as)
+    return _composition(ds, record, version) if record is not None else None
+
+
+def _grams_outcome(line: str, parsed: dict, version: str):
+    """``Resolved`` grams for one line, or ``Unresolved`` with a reason.
+
+    Grams come from ``units.to_grams`` — myMeal's existing, already-tested
+    answer, which itself consults this module for volume measures and falls
+    back to the density table. A second gram calculation here would let the
+    weight shown beside an ingredient and the weight its calories were
+    computed from disagree.
+    """
+    import foodcore
+    import foodcore.nutrition as fcn
+
+    from . import units  # local: keeps this module import-light
+
+    grams = units.to_grams(line)
+    if grams is None or grams <= 0:
+        return fcn.Unresolved(
+            reason="no_gram_weight",
+            detail=(
+                f"{line}: myMeal cannot weigh this line, so it has no mass to "
+                "contribute and no denominator to count against."
+            ),
+        )
+    # Definitional for a mass unit, derived for anything else. foodcore's
+    # weakest-link rule reads this, so over-claiming here would let "3 medium
+    # onions" produce a figure labelled `calculated`.
+    definitional = parsed.get("unit") in _MASS_UNITS
+    return fcn.Resolved(
+        value=float(grams),
+        unit="g",
+        provenance=foodcore.Provenance(
+            source="internal",
+            source_id="",
+            retrieved="",
+            method="calculated" if definitional else "estimated",
+            version=version,
+            confidence=1.0 if definitional else 0.9,
+            # "internal" is the honest licence for a number myMeal's own unit
+            # code produced. It AND-joins with the dataset's CC0 on the way
+            # out, so a derived total never claims a licence nothing granted.
+            license="internal",
+        ),
+    )
+
+
+def recipe_nutrition(lines, servings, nutrients=None, settings=None):
+    """Deterministic per-serving nutrition for a recipe, or ``None``.
+
+    ``None`` means **this module declined to answer**, and the caller must fall
+    back to whatever it did before: no dataset configured (the shipped
+    default), the dataset unusable, no ingredient lines, or any unexpected
+    failure. It never means "zero", and it is never an exception, because this
+    sits on the same request path as a recipe render.
+
+    A ``RecipeNutrition`` means the arithmetic ran. That is still not a promise
+    that every nutrient has a value — each one carries its own completeness and
+    is ``Unresolved`` below foodcore's floor. Reading ``.value`` (never
+    ``.partial_value``) is what keeps "unknown" from being printed as a number.
+
+    ``nutrients`` is the registry ids to report, supplied by the caller so this
+    module needs no opinion about which fields myMeal stores. ``None`` reports
+    the union of what the matched records happen to publish, which is useful
+    for diagnostics and wrong for a panel: a nutrient no record mentions would
+    simply not appear, rather than appearing as an explicit absence.
+    """
+    global _warned
+    try:
+        texts = [str(line).strip() for line in (lines or []) if str(line).strip()]
+        if not texts:
+            return None
+        ds = _dataset(settings)
+        if ds is None:
+            return None
+
+        import foodcore
+        import foodcore.nutrition as fcn
+
+        from . import food_resolve, units  # local: keeps this module import-light
+
+        version = foodcore.rule_version("nutrition")
+        recipe_lines = []
+        for text in texts:
+            parsed = units.parse_line(text)
+            words = frozenset(re.split(r"[^a-z0-9-]+", text.lower()))
+            used_as = _basis_used_as(words)
+            canonical = food_resolve.match_key(parsed.get("rest") or text)
+            composition = None
+            if canonical:
+                composition = _lookup_composition(
+                    ds, canonical.strip().lower(),
+                    frozenset(words & _STATE_WORDS), used_as, version,
+                )
+            recipe_lines.append(fcn.RecipeLine(
+                label=text,
+                edible_grams=_grams_outcome(text, parsed, version),
+                composition=composition if composition is not None else fcn.Unresolved(
+                    reason="no_composition",
+                    detail=(
+                        f"{text}: the reference dataset has no food this line "
+                        "unambiguously names. This is not zero."
+                    ),
+                ),
+                used_as=used_as,
+            ))
+
+        return fcn.compute_recipe(
+            fcn.RecipeInput(label="", servings=servings or None, lines=recipe_lines),
+            nutrients=tuple(nutrients) if nutrients else None,
+        )
+    except Exception as exc:  # noqa: BLE001 - nutrition must never break a request
+        if not _warned:
+            _warned = True
+            log.warning(
+                "foodcore nutrition failed (%s); myMeal will fall back to an AI "
+                "estimate for the rest of this process", type(exc).__name__,
+            )
+        else:
+            log.debug("foodcore nutrition failed (%s)", type(exc).__name__)
         return None

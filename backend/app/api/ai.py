@@ -503,9 +503,9 @@ def parse_ingredients_endpoint():
 @limiter.limit("30 per minute")
 @login_required
 def estimate_nutrition_endpoint(recipe_id):
-    """Estimate per-serving nutrition for one recipe from its ingredients, store
-    it on the recipe, and return it."""
-    from ..services.ai.nutrition import estimate_nutrition
+    """Per-serving nutrition for one recipe: USDA arithmetic when the reference
+    dataset can answer, a model estimate otherwise. Stored and returned."""
+    from ..services.ai.nutrition import nutrition_for_recipe
 
     recipe = db.session.get(Recipe, recipe_id)
     if not recipe or recipe.group_id != current_group().id:
@@ -513,14 +513,21 @@ def estimate_nutrition_endpoint(recipe_id):
     lines = [i.display for i in recipe.ingredients]
     if not lines:
         return jsonify({"error": "add ingredients before estimating nutrition"}), 422
+    # A missing provider is no longer fatal UP FRONT: with a reference dataset
+    # imported there is arithmetic to do and nothing to ask a model. Only refuse
+    # once the deterministic path has also declined — otherwise an install that
+    # deliberately runs without AI could never see nutrition at all.
     try:
         provider = get_provider()
     except ProviderError:
-        return jsonify({"error": "no AI provider is configured"}), 503
+        provider = None
     try:
-        nutrition = estimate_nutrition(lines, recipe.servings, provider)
+        nutrition = nutrition_for_recipe(lines, recipe.servings, provider)
     except ProviderError as exc:
         return jsonify({"error": str(exc)}), 502
+    if not nutrition and provider is None:
+        return jsonify({"error": "no AI provider is configured, and the food "
+                                 "reference data could not cover this recipe"}), 503
     recipe.nutrition = json.dumps(nutrition) if nutrition else ""
     db.session.commit()
     return jsonify({"nutrition": nutrition or None})

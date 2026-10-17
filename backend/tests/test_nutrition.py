@@ -35,7 +35,9 @@ def test_sanitize_handles_non_dict():
 
 def test_estimate_nutrition_returns_sanitized():
     out = estimate_nutrition(["2 eggs"], 4, FakeProvider({"calories": 90, "bad": 1}))
-    assert out == {"calories": 90.0}
+    # Unknown fields are still dropped; the `source` label is ADDED, because a
+    # stored figure now has to say whether it was multiplied or guessed.
+    assert out == {"calories": 90.0, "source": "estimated"}
 
 
 # --- endpoint ---------------------------------------------------------------
@@ -55,7 +57,8 @@ def test_estimate_nutrition_stores_and_returns(auth_client, monkeypatch):
     rid = _make_recipe(auth_client)
     r = auth_client.post(f"/api/v1/ai/nutrition/{rid}")
     assert r.status_code == 200
-    assert r.get_json()["nutrition"] == {"calories": 300.0, "protein": 12.0}
+    assert r.get_json()["nutrition"] == {"calories": 300.0, "protein": 12.0,
+                                        "source": "estimated"}
     # Persisted: the recipe now serializes the stored nutrition.
     got = auth_client.get(f"/api/v1/recipes/{rid}").get_json()["nutrition"]
     assert got["calories"] == 300.0

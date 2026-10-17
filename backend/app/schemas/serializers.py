@@ -290,6 +290,61 @@ def _effective_nutrition(r):
     return {k: round(v, 2) for k, v in total.items()}
 
 
+#: How much a stored figure can be stood behind, weakest first. A recipe that
+#: links components inherits the WEAKEST label among everything summed into its
+#: total: one model-guessed sub-recipe makes the whole number a guess, and
+#: saying otherwise would be the same "0 means both zero and unknown" dishonesty
+#: this feature exists to end. Mirrors foodcore's weakest-link confidence rule.
+_SOURCE_RANK = {"estimated": 0, "manual": 1, "computed": 2}
+
+
+def _effective_nutrition_source(r):
+    """The weakest source label among every node contributing a number, or None
+    when nothing numeric was found OR any contributor is unlabelled.
+
+    Written as collect-then-decide rather than a running minimum: the earlier
+    version tracked the weakest in-place and its "unlabelled" branch turned out
+    to be unreachable for a recipe with no components, which a mutation test
+    caught. Three plain steps are harder to get subtly wrong than one clever
+    loop, and this one is read by anybody auditing where a number came from.
+    """
+    from ..services.components import iter_recipe_tree
+
+    labels = []
+    for node, _mult in iter_recipe_tree(r):
+        data = _nutrition_dict(node)
+        if not any(_as_number(v) is not None for v in data.values()):
+            continue
+        labels.append(data.get("source"))
+
+    if not labels:
+        return None
+    # One unlabelled contributor makes the TOTAL unknown: it was stored before
+    # provenance existed, and a sum is only as trustworthy as its vaguest part.
+    if any(label not in _SOURCE_RANK for label in labels):
+        return None
+    return min(labels, key=lambda label: _SOURCE_RANK[label])
+
+
+def _effective_nutrition_completeness(r):
+    """Ingredient-mass coverage behind a COMPUTED figure, as a percentage.
+
+    Only meaningful for arithmetic — a model's guess has no coverage to report —
+    and only for a recipe standing alone: summing coverage across components
+    would need their masses, which this serializer does not have.
+    """
+    data = _nutrition_dict(r)
+    if data.get("source") != "computed":
+        return None
+    raw = data.get("completeness")
+    if isinstance(raw, dict):
+        raw = raw.get("overall", raw.get("mass"))
+    num = _as_number(raw)
+    if num is None:
+        return None
+    return round(num * 100, 1) if num <= 1 else round(num, 1)
+
+
 def recipe_media_out(v):
     """One item in a recipe's media slot — a photo or a how-to video.
 
@@ -346,6 +401,11 @@ def recipe_out(r):
             "notes": r.notes,
             "nutrition": json.loads(r.nutrition) if r.nutrition else None,
             "effectiveNutrition": _effective_nutrition(r),
+            # Whether that number was multiplied from reference data or guessed
+            # by a model, and (for arithmetic) how much of the recipe's mass it
+            # actually covers. Absent means "we do not know", never "fine".
+            "nutritionSource": _effective_nutrition_source(r),
+            "nutritionCompleteness": _effective_nutrition_completeness(r),
             "shareToken": r.share_token,
             "ingredients": [ingredient_out(i) for i in r.ingredients],
             "steps": [step_out(s) for s in r.steps],

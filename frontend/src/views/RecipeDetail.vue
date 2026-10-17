@@ -80,6 +80,25 @@ function amountOf(ing) {
 // amount already shows an empty amount column, so a per-row chip restated it
 // while stealing width from the ingredient text at phone size.
 const unscaledCount = computed(() => plainIngredients.value.filter((i) => i.scaled === false).length)
+
+// What the stored nutrition figure IS. A number multiplied from reference data
+// and one guessed by a language model are different claims, and the panel used
+// to present them identically. An ABSENT label means a value saved before
+// provenance was recorded — reported as unknown rather than silently assumed
+// sound, the same rule as a missing nutrient not being zero.
+const nutritionProvenance = computed(() => {
+  const r = recipe.value
+  if (!r || !r.nutrition) return ''
+  if (r.nutritionSource === 'computed') {
+    const cov = r.nutritionCompleteness
+    return cov != null && cov < 100
+      ? `Calculated from food reference data \u00b7 covers ${cov}% of this recipe by weight`
+      : 'Calculated from food reference data'
+  }
+  if (r.nutritionSource === 'estimated') return 'Estimated by AI \u2014 not calculated'
+  if (r.nutritionSource === 'manual') return 'Entered by hand'
+  return 'Source unknown \u2014 saved before figures recorded where they came from'
+})
 function resetServings() { viewServings.value = recipe.value?.servings || null }
 
 // Split the ingredient into what you scan (the amount) and what you read (the
@@ -1017,7 +1036,7 @@ const imageSrc = computed(() =>
           <h2>Nutrition <span class="muted" style="font-weight:400">— per serving</span></h2>
           <div class="grow"></div>
           <button class="secondary sm" :disabled="estimatingNutrition" @click="estimateNutrition">
-            {{ estimatingNutrition ? 'Estimating…' : '✨ Estimate with AI' }}
+            {{ estimatingNutrition ? 'Working…' : (recipe.nutrition ? 'Recalculate' : 'Calculate') }}
           </button>
         </div>
         <div v-if="recipe.nutrition" class="nutri-grid">
@@ -1028,8 +1047,16 @@ const imageSrc = computed(() =>
             </div>
           </template>
         </div>
+        <!-- Where the number came from. A figure computed from reference data
+             and one guessed by a language model are different claims, and until
+             now the panel presented them identically. Deliberately quiet: this
+             is a work surface, so it is a muted line under the grid, not a
+             badge competing with the values. -->
+        <p v-if="recipe.nutrition && nutritionProvenance" class="muted nutri-prov">
+          {{ nutritionProvenance }}
+        </p>
         <p v-else class="muted" style="margin:0">
-          No nutrition yet — estimate it with AI, or add it in edit mode.
+          No nutrition yet — calculate it, or add it in edit mode.
         </p>
       </div>
 
@@ -1321,6 +1348,7 @@ select.sm { padding: 2px 6px; }
 .nutri-grid { display: flex; flex-wrap: wrap; gap: 20px 28px; }
 .nutri-cell { min-width: 64px; }
 .nutri-val { font-size: 1.4rem; font-weight: 700; }
+.nutri-prov { margin: 10px 0 0; font-size: 0.82rem; }
 .nutri-lbl { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
 /* Media: one grid for photos, clips, embeds and the add tile. auto-fill so the
    slot is two-up on a desktop card and one-up on a phone with no breakpoint of
