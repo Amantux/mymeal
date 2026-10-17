@@ -219,3 +219,29 @@ def test_the_functional_and_weight_noise_lists_are_not_the_same_thing():
     assert conversions._NOISE != fr.FUNCTIONAL_QUALIFIERS
     # The proof that they must stay separate:
     assert fr.normalize("unsalted butter")[1] == ""
+
+
+def test_the_lexicon_is_case_insensitive():
+    """MUTATION GUARD. `_FOLDED` is keyed by lowercase seed names while `fold()`
+    preserves case, so a title-case food used to miss entirely:
+    is_known("Flour") was False while is_known("flour") was True.
+
+    This is not hypothetical casing pedantry — recipe text is overwhelmingly
+    title-case ("2 cups Flour", "Olive Oil"), and every caller read the miss as
+    "unknown food" rather than as a bug. It silently weakened the
+    material-boundary rule too, since an unrecognised head word cannot be
+    compared against its qualifier.
+    """
+    from app.services import food_resolve
+
+    for text in ("Flour", "FLOUR", "Olive Oil", "Green Beans"):
+        assert food_resolve.is_known(text), f"{text!r} not recognised"
+        assert food_resolve.match_key(text) == text.lower()
+
+
+def test_an_unknown_food_is_still_unknown_whatever_its_case():
+    """The fix must not turn the lexicon into a yes-machine."""
+    from app.services import food_resolve
+
+    for text in ("Quattro Formaggi Base", "quattro formaggi base"):
+        assert not food_resolve.is_known(text)

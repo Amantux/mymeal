@@ -305,8 +305,17 @@ for _alias, _canonical in SEED_ALIASES.items():
 
 
 def _lookup(phrase: str) -> str | None:
-    """The canonical name for a phrase, or None."""
-    return _FOLDED.get(fold(phrase))
+    """The canonical name for a phrase, or None.
+
+    Case-folded first. ``_FOLDED`` is keyed by lowercase seed names, while
+    ``fold()`` deliberately preserves case (it only singularizes the last word),
+    so without this a title-case food silently missed: ``is_known("Flour")`` was
+    False while ``is_known("flour")`` was True. Recipe text is full of
+    title-case ingredient names, and the docstring on ``is_known`` promises
+    "the lexicon recognises this food" with no mention of casing — so the miss
+    read as "unknown food" to every caller rather than as a bug.
+    """
+    return _FOLDED.get(fold((phrase or "").casefold()))
 
 
 def _material(name: str) -> tuple[str, frozenset[str]] | None:
