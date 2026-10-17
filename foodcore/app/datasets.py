@@ -581,6 +581,20 @@ class Dataset:
             nutrients=nutrients,
         )
 
+    def food_by_source_id(self, source_id: str) -> FoodRecord | None:
+        """The food a provider id names, or None if this dataset lacks it.
+
+        Exists so a curated convention can cite a stable upstream id (an FDC
+        number) rather than an internal key, which differs by import. Returning
+        None for an absent id is deliberate: releases differ and a convention
+        pointing at a row this dataset does not have must degrade to "no
+        default", never to an error.
+        """
+        row = self._connect().execute(
+            "SELECT key FROM food WHERE source_id = ? LIMIT 1", (str(source_id),)
+        ).fetchone()
+        return self.food_record(row[0]) if row else None
+
     def resolve_food(self, query: str) -> FoodMatch:
         """Confidence-tiered name resolution. Refuses rather than guesses.
 

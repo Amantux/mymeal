@@ -573,6 +573,52 @@ def parse_quantity(text: str) -> ParsedQuantity:
     return ParsedQuantity(amount=amount, unit=unit, size=size, food_text=food_text)
 
 
+def _household_food(dataset: Dataset, food_text: str):
+    """The food a cook's bare word conventionally means, with its rule note.
+
+    Returns None when the word is not one of the conventions, or when the
+    convention names a food this dataset does not contain — releases differ, and
+    a missing row must degrade to "no default", never to an error.
+    """
+    from .rules.household_v1 import household_note, household_source_id
+
+    source_id = household_source_id(food_text)
+    if not source_id:
+        return None
+    record = dataset.food_by_source_id(source_id)
+    if record is None:
+        return None
+    return record, household_note(food_text)
+
+
+def _as_convention(outcome, note: str):
+    """Re-stamp a resolved value as an inferred one.
+
+    The WEIGHT is still measured; the IDENTIFICATION is a convention, and the
+    chain is only as strong as its weakest link. Presenting "2 cups flour" with
+    the same confidence as an explicitly-named food would be the quiet
+    overclaim this library exists to avoid.
+    """
+    from .rules.household_v1 import CONFIDENCE, VERSION
+
+    if not getattr(outcome, "resolved", False):
+        return outcome
+    prov = outcome.provenance
+    return Resolved(
+        outcome.value,
+        outcome.unit,
+        Provenance(
+            source=prov.source,
+            source_id=f"{prov.source_id} via {VERSION}",
+            retrieved=prov.retrieved,
+            method="inferred",
+            version=f"{prov.version}+{VERSION}",
+            confidence=min(prov.confidence, CONFIDENCE),
+            license=prov.license,
+        ),
+    )
+
+
 def convert_text(text: str, to_unit: str, *, dataset: Dataset | None = None,
                  package: PackageSize | None = None) -> Resolved | Unresolved:
     """Resolve a written quantity ('2 cups flour') into `to_unit`.
@@ -614,6 +660,21 @@ def convert_text(text: str, to_unit: str, *, dataset: Dataset | None = None,
     food: FoodRecord | None = None
     if parsed.food_text:
         match = dataset.resolve_food(parsed.food_text)
+        # Only when the catalogue could not decide: a bare cooking word
+        # ("flour", "milk") is ambiguous as DATA and unambiguous as LANGUAGE.
+        # Consulted strictly after the matcher, so an explicit "arrowroot
+        # flour" resolves on its own merits and never reaches the convention.
+        if not match.confident:
+            household = _household_food(dataset, parsed.food_text)
+            if household is not None:
+                food, convention = household
+                if unit is None:
+                    unit = "piece"
+                if unit is None:
+                    return Unresolved("unknown_unit", f"no unit found in {text!r}")
+                out = convert(parsed.amount, unit, to_unit, food=food,
+                              dataset=dataset, size=parsed.size, package=package)
+                return _as_convention(out, convention)
         if not match.candidates:
             return Unresolved(
                 "unknown_food",

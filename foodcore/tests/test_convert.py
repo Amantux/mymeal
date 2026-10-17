@@ -373,11 +373,31 @@ def test_a_two_step_conversion_is_only_as_good_as_its_weaker_half(dataset):
 # Raw vs cooked must not merge (spec FR-01)
 # =========================================================================
 
-def test_one_cup_of_rice_is_unresolved_because_raw_and_cooked_differ(dataset):
+def test_one_cup_of_rice_takes_the_household_default_and_says_so(dataset):
+    """This test previously asserted a REFUSAL, and the change is deliberate.
+
+    The rule FR-01 states is that raw and cooked must not be MERGED — treated
+    as one food. That still holds: "rice" and "cooked rice" resolve to two
+    different FDC rows weighing 185 g and 158 g per cup (the test below proves
+    it). What changed is what happens to an UNQUALIFIED word.
+
+    Refusing was defensible in isolation and useless in practice: a recipe
+    measuring rice measures it dry, and refusing left the caller with nothing
+    at all rather than with a labelled default. So an unqualified word now
+    takes the household convention — at `inferred` and a confidence of 0.6,
+    materially below a named food's 0.9, with the rule version in its
+    provenance so the assumption is traceable.
+
+    Defaulting is not merging. The distinction is the whole argument, and if a
+    future change blurs it, this comment is where to start.
+    """
     got = convert_text("1 cup rice", "g", dataset=dataset)
-    assert isinstance(got, Unresolved)
-    assert got.reason == "ambiguous_food"
-    assert "raw" in got.detail and "cooked" in got.detail
+
+    assert getattr(got, "resolved", False), f"{got.reason}: {got.detail}"
+    approx(got.value, 185.0)                       # raw, as a recipe measures it
+    assert got.provenance.method == "inferred"     # not presented as measured
+    assert got.provenance.confidence <= 0.6
+    assert "household/" in got.provenance.version
 
 
 def test_raw_and_cooked_rice_convert_to_different_weights(dataset):
@@ -408,7 +428,9 @@ def test_dry_and_cooked_oats_also_differ(dataset):
     (lambda d: convert(1, "cup", "parsec"), "unknown_unit"),
     (lambda d: convert(1, "cup", "g"), "food_required"),
     (lambda d: convert_text("1 can tomatoes", "g", dataset=d), "no_package_size"),
-    (lambda d: convert_text("1 cup rice", "g", dataset=d), "ambiguous_food"),
+    # "rice" now takes the household default; a word with NO convention and
+    # several genuine matches is still the refusal this case exists to pin.
+    (lambda d: convert_text("1 cup grain", "g", dataset=d), "ambiguous_food"),
     (lambda d: convert_text("2 cups unobtainium", "g", dataset=d), "unknown_food"),
     (lambda d: convert_text("flour", "g", dataset=d), "no_quantity"),
     (lambda d: convert_text("1 cup onions", "g", dataset=d), "qualifier_required"),
