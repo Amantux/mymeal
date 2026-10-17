@@ -51,9 +51,12 @@ tests. The host names its own file or this module stands down.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 from functools import lru_cache
+
+from ..logsafe import scrub
 
 log = logging.getLogger(__name__)
 
@@ -195,7 +198,106 @@ def _setting(cfg, name: str, default):
 def _path_from(cfg) -> str:
     if not _setting(cfg, "FOODCORE_ENABLED", True):
         return ""
-    return str(_setting(cfg, "FOODCORE_DATASET", "") or "").strip()
+    configured = str(_setting(cfg, "FOODCORE_DATASET", "") or "").strip()
+    if configured:
+        return configured
+    # No explicit path: use the dataset foodcore ships. This is what makes the
+    # feature work out of the box rather than only for an operator who built a
+    # file by hand — the state it was in when it first shipped, where a correct
+    # implementation delivered nothing to anybody.
+    return shipped_dataset_path(cfg)
+
+
+#: Where the shipped dataset is expanded to.
+#:
+#: EPHEMERAL on purpose. The obvious home is DATA_DIR — the only durable path an
+#: add-on has — but Home Assistant backs that up wholesale, and this file is
+#: 9.9 MB of data regenerable from a 2.3 MB asset inside the image. Measured,
+#: expanding takes 0.05 s. Paying that once per container start is plainly
+#: better than adding 10 MB to every snapshot the user ever takes of data they
+#: already have.
+#:
+#: DATA_DIR remains the FALLBACK, for a deployment whose temp dir is unusable
+#: (read-only, noexec, tiny tmpfs). There the durability is incidental; the
+#: point is simply having somewhere to write.
+_SHIPPED_NAME = "foodcore-usda-sr-legacy-2018-04.sqlite"
+
+
+def shipped_dataset_path(cfg=None) -> str:
+    """The expanded shipped dataset, expanding it on first use. "" if absent.
+
+    foodcore ships the reference data gzipped (2.3 MB against 10.4 MB), because
+    a frozen CC0 release is better committed than downloaded during a build that
+    would then depend on a third party being reachable. SQLite cannot read a
+    gzip stream, so it is expanded once into DATA_DIR and opened read-only
+    thereafter.
+
+    Every failure here degrades to "" — the pre-existing hand-table behaviour —
+    and never raises. A read-only data dir, a half-written file from a killed
+    container, a packaging change that drops the asset: none of them are worth
+    taking the app down for a conversion refinement.
+    """
+    try:
+        import foodcore
+    except Exception:  # noqa: BLE001 - library absent is a valid deployment
+        return ""
+
+    source = os.path.join(os.path.dirname(os.path.abspath(foodcore.__file__)),
+                          "data", "usda-sr-legacy-2018-04.sqlite.gz")
+    if not os.path.isfile(source):
+        return ""
+
+    for directory in _expand_targets(cfg):
+        target = os.path.join(directory, _SHIPPED_NAME)
+        if os.path.isfile(target) and os.path.getsize(target) > 0:
+            return target
+        if _expand_to(source, target):
+            return target
+    return ""
+
+
+def _expand_targets(cfg) -> list[str]:
+    """Temp first, data dir second — see the note on _SHIPPED_NAME."""
+    import tempfile
+
+    out = [tempfile.gettempdir()]
+    data_dir = str(_setting(cfg, "DATA_DIR", "") or "").strip()
+    if data_dir:
+        out.append(data_dir)
+    return [d for d in out if d]
+
+
+def _expand_to(source: str, target: str) -> bool:
+    """Expand the gzipped dataset, atomically. False on any failure.
+
+    Never raises: a read-only directory, a full disk, or a packaging change
+    that drops the asset must all cost the conversion refinement and not the
+    app, which worked without any of this yesterday.
+    """
+    import gzip
+    import shutil
+
+    # Package DATA, not a sibling directory: foodcore is pip-installed, so the
+    # asset has to travel inside the package. Deriving the path from the repo
+    # layout worked in a checkout and silently found nothing once installed.
+    # Expand to a temporary name and rename into place, so a container killed
+    # mid-write leaves no truncated database for the next boot to open.
+    tmp = f"{target}.partial-{os.getpid()}"
+    try:
+        with gzip.open(source, "rb") as src, open(tmp, "wb") as dst:
+            shutil.copyfileobj(src, dst, 1024 * 1024)
+        os.replace(tmp, target)
+    except OSError as exc:
+        log.warning(
+            "could not expand the shipped food reference dataset to %s (%s); "
+            "trying the next location", scrub(target), exc)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+    log.info("expanded the shipped food reference dataset to %s", scrub(target))
+    return True
 
 
 def dataset_path(settings=None) -> str:

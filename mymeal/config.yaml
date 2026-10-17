@@ -106,14 +106,14 @@ schema:
   # Ignored if database_url is set. Leave the token blank to auto-obtain it.
   use_shared_postgres: bool
   postgres_provision_token: "password?"
-  # USDA portion weights, for "1 cup flour" → grams. Forget this and myMeal
-  # keeps using its built-in table of ~41 everyday densities, so nothing
-  # breaks — you just get an estimate for fewer foods and no source for it.
-  # Nothing is ever downloaded for you: the USDA export is gigabytes, so you
-  # build the file yourself (see DOCS.md) and put it somewhere under /data,
-  # e.g. /data/foodcore.sqlite, which Home Assistant backs up with everything
-  # else. A path that does not exist is logged and ignored, not an error.
+  # Leave BLANK unless you want a different USDA release. myMeal ships SR
+  # Legacy (7,793 foods) and expands it into /data on first start — "1 cup
+  # flour" → grams works with no setup. Set this only to override that, e.g.
+  # with Foundation Foods added; build the file per DOCS.md and put it under
+  # /data so Home Assistant backs it up. Nothing is ever downloaded at runtime.
+  # A path that does not exist is logged and ignored, not an error.
   foodcore_dataset: "str?"
-  # Ignore an imported dataset and go back to the built-in densities without
-  # deleting the file. No effect while foodcore_dataset is blank.
+  # Turn OFF to ignore reference food data entirely and use myMeal's built-in
+  # density table, which covers common baking staples and little else. Leaving
+  # it on is the default and needs no setup.
   enable_foodcore: bool

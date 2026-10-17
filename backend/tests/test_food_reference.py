@@ -13,6 +13,8 @@ shapes, not asserted facts about USDA's catalogue.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 # A hard import, NOT importorskip. foodcore is a shipped runtime dependency
@@ -22,6 +24,20 @@ import pytest
 import foodcore
 
 from app.services import food_reference, units
+
+
+class _Cfg:
+    """Minimal stand-in for the resolved settings object: food_reference reads
+    it through getattr and needs exactly two names."""
+
+    def __init__(self, data_dir, dataset="", enabled=True):
+        self.DATA_DIR = str(data_dir)
+        self.FOODCORE_DATASET = dataset
+        self.FOODCORE_ENABLED = enabled
+
+
+def _cfg(data_dir, dataset="", enabled=True):
+    return _Cfg(data_dir, dataset, enabled)
 
 
 class Cfg:
@@ -97,14 +113,39 @@ def test_no_dataset_means_no_file_is_ever_opened(monkeypatch):
     assert units.to_grams("1 cup flour") == pytest.approx(236.588 * 0.53)
 
 
-def test_blank_path_and_kill_switch_both_stand_the_seam_down(monkeypatch, tmp_path):
+def test_the_kill_switch_stands_the_seam_down(monkeypatch, tmp_path):
+    """Only FOODCORE_ENABLED=false does this now.
+
+    A blank path used to mean "no dataset"; since the library ships one, blank
+    means "use what we ship" and the explicit off switch is the single way to
+    get the built-in density table back. The old test asserted both, so this
+    one was split rather than loosened — the kill switch is the part that must
+    keep working exactly.
+    """
     monkeypatch.undo()  # drop the autouse dataset_path stub; exercise the real one
-    assert food_reference.dataset_path(Cfg(dataset="")) == ""
-    assert food_reference.dataset_path(Cfg(dataset="  ")) == ""
+
     assert food_reference.dataset_path(Cfg(dataset=str(tmp_path / "x.sqlite"),
                                            enabled=False)) == ""
+    assert food_reference.dataset_path(Cfg(dataset="", enabled=False)) == ""
+
+
+def test_an_explicit_path_is_used_verbatim(monkeypatch, tmp_path):
+    monkeypatch.undo()
+
     assert food_reference.dataset_path(
         Cfg(dataset=str(tmp_path / "x.sqlite"))) == str(tmp_path / "x.sqlite")
+
+
+def test_a_blank_path_falls_through_to_the_shipped_dataset(monkeypatch,
+                                                           isolated_expand,
+                                                           tmp_path):
+    """The behaviour change, asserted head-on: blank is no longer 'nothing'."""
+    monkeypatch.undo()
+
+    for blank in ("", "   "):
+        got = food_reference.dataset_path(Cfg(dataset=blank))
+        assert got.endswith(".sqlite"), f"{blank!r} gave {got!r}"
+        assert os.path.isfile(got)
 
 
 def _app_with(tmp_path, **settings):
@@ -122,18 +163,43 @@ def _app_with(tmp_path, **settings):
     return create_app(Cfg_)
 
 
-def test_the_app_boots_and_converts_with_no_dataset(tmp_path, monkeypatch):
-    """The whole settings chain, not a stub: a real app with the shipped
-    defaults starts, reports no warnings about foodcore, and converts exactly
-    as it always has."""
+def test_the_app_boots_and_uses_the_shipped_dataset_by_default(tmp_path,
+                                                               monkeypatch):
+    """The whole settings chain, not a stub.
+
+    This test previously asserted the OPPOSITE — that an unconfigured app used
+    no dataset at all — and the change is the point of the feature. Reference
+    data that only works for an operator who built a file by hand is a correct
+    implementation that delivers nothing, so foodcore now ships a frozen CC0
+    release and an unconfigured install uses it.
+
+    What has NOT changed, and is asserted here: FOODCORE_DATASET stays blank
+    (the shipped file is a default, not a value written into config), startup
+    reports no foodcore warnings, and a food the dataset cannot resolve still
+    falls through to the built-in density table rather than becoming an error.
+    """
     monkeypatch.undo()  # exercise the real dataset_path / settings lookup
     app = _app_with(tmp_path)
     assert app.config["SETTINGS"].values["FOODCORE_DATASET"] == ""
     assert not [w for w in app.config["SETTINGS"].warnings if "FOODCORE" in w]
     with app.app_context():
+        assert food_reference.dataset_path().endswith(".sqlite")
+        # Flour is in the dataset; the value is USDA's measured 125 g/cup
+        # rather than the hand table's density estimate.
+        assert units.to_grams("1 cup flour") == pytest.approx(125.0, rel=0.02)
+        # A food with no portion row still degrades, it does not raise.
+        assert units.to_grams("2 cups diced onion") is None
+
+
+def test_the_hand_table_still_answers_when_foodcore_is_turned_off(tmp_path,
+                                                                  monkeypatch):
+    """The off switch has to keep meaning what it meant. This is the old
+    default, now reachable deliberately rather than by accident."""
+    monkeypatch.undo()
+    app = _app_with(tmp_path, FOODCORE_ENABLED=False)
+    with app.app_context():
         assert food_reference.dataset_path() == ""
         assert units.to_grams("1 cup flour") == pytest.approx(236.588 * 0.53)
-        assert units.to_grams("2 cups diced onion") is None
 
 
 def test_a_configured_dataset_reaches_to_grams_through_real_settings(tmp_path, monkeypatch):
@@ -438,3 +504,96 @@ def test_the_generic_row_is_found_past_a_crowd_of_short_names(tmp_path, monkeypa
     _dataset(tmp_path, monkeypatch, foods=foods,
              portions=[_portion("usda:1", "cup", 185.0)])
     assert units.to_grams("1 cup rice") == pytest.approx(185.0)
+
+
+# --- the shipped dataset: working by default ------------------------------
+
+@pytest.fixture
+def isolated_expand(tmp_path, monkeypatch):
+    """Point BOTH expansion candidates at tmp_path.
+
+    The real order is system-temp then DATA_DIR, and the system temp dir
+    survives between tests — so without this a dataset expanded by an earlier
+    test is found by a later one and the failure-mode tests silently assert
+    nothing. (It cost three confusing failures to notice.)
+    """
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    return tmp_path
+
+
+def test_the_shipped_dataset_is_used_with_no_configuration(isolated_expand,
+                                                           tmp_path,
+                                                           monkeypatch):
+    """The feature's whole value rested on an operator building a file by hand,
+    which meant a correct implementation delivered nothing to anybody. foodcore
+    ships a frozen CC0 USDA release; with no configuration at all it must be
+    what gets used."""
+    from app.services import food_reference as fr
+
+    path = fr.shipped_dataset_path(_cfg(tmp_path))
+
+    assert path, "the shipped dataset did not resolve"
+    assert os.path.isfile(path)
+    assert os.path.getsize(path) > 1_000_000       # expanded, not the gzip
+
+
+def test_expanding_the_shipped_dataset_is_done_once(isolated_expand, tmp_path):
+    """It is 10 MB expanded. Doing that on every call would turn a render path
+    into a disk copy."""
+    from app.services import food_reference as fr
+
+    first = fr.shipped_dataset_path(_cfg(tmp_path))
+    stamp = os.path.getmtime(first)
+    second = fr.shipped_dataset_path(_cfg(tmp_path))
+
+    assert first == second
+    assert os.path.getmtime(second) == stamp      # not rewritten
+
+
+def test_a_half_written_dataset_is_never_left_behind(isolated_expand, tmp_path, monkeypatch):
+    """MUTATION GUARD. A container killed mid-expand must not leave a truncated
+    SQLite file for the next boot to open as though it were sound."""
+    from app.services import food_reference as fr
+
+    def _boom(*a, **kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("shutil.copyfileobj", _boom)
+    got = fr.shipped_dataset_path(_cfg(tmp_path))
+
+    assert got == ""                               # degraded, did not raise
+    leftovers = [p for p in os.listdir(tmp_path) if "partial" in p]
+    assert leftovers == [], f"left a partial file: {leftovers}"
+
+
+def test_an_unwritable_data_dir_degrades_instead_of_crashing(isolated_expand,
+                                                             tmp_path,
+                                                             monkeypatch):
+    """A read-only or root-owned data dir is a real add-on failure mode. It must
+    cost the conversion refinement, not the app."""
+    from app.services import food_reference as fr
+
+    monkeypatch.setattr("gzip.open", lambda *a, **kw: (_ for _ in ()).throw(
+        OSError("permission denied")))
+
+    assert fr.shipped_dataset_path(_cfg(tmp_path)) == ""
+
+
+def test_an_explicit_dataset_still_wins_over_the_shipped_one(tmp_path):
+    """An operator who built their own — a newer release, or Foundation Foods
+    on top — must not be silently overridden by the default."""
+    from app.services import food_reference as fr
+
+    mine = tmp_path / "mine.sqlite"
+    mine.write_bytes(b"x")
+
+    assert fr._path_from(_cfg(tmp_path, dataset=str(mine))) == str(mine)
+
+
+def test_turning_foodcore_off_disables_the_shipped_dataset_too(tmp_path):
+    """FOODCORE_ENABLED=false means the built-in density table, full stop —
+    otherwise the off switch would quietly stop working the moment a dataset
+    started shipping."""
+    from app.services import food_reference as fr
+
+    assert fr._path_from(_cfg(tmp_path, enabled=False)) == ""

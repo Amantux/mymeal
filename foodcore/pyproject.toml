@@ -44,7 +44,7 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-"foodcore.data" = ["*.json"]
+"foodcore.data" = ["*.json", "*.sqlite.gz"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

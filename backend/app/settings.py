@@ -331,17 +331,18 @@ FIELDS: tuple[Field, ...] = (
 
     # --- foodcore (shared food reference data) ---
     Field("FOODCORE_DATASET", as_str, "",
-          "Path to a foodcore reference dataset (USDA portion weights) built "
-          "with 'python3 -m foodcore.cli build-usda'. Blank = use myMeal's "
-          "built-in density table only, which is the default. Keep the file "
-          "inside DATA_DIR so Home Assistant backs it up; it is never "
-          "downloaded automatically.",
+          "Path to your OWN foodcore reference dataset, overriding the one "
+          "myMeal ships. Blank — the default — uses the bundled USDA SR Legacy "
+          "release (7,793 foods), which is expanded into DATA_DIR on first use "
+          "and needs no setup. Build your own with 'python3 -m foodcore.cli "
+          "build-usda' to use a different release, or add Foundation Foods. "
+          "Nothing is ever downloaded at runtime.",
           ha_option="foodcore_dataset"),
     Field("FOODCORE_ENABLED", parse_bool, True,
-          "Consult the foodcore dataset for volume-to-weight conversions when "
-          "one is configured. Turn off to ignore an imported dataset and go "
-          "back to the built-in densities without deleting the file. Has no "
-          "effect while FOODCORE_DATASET is blank.",
+          "Use reference food data for volume-to-weight conversions. Turn off "
+          "to ignore both the bundled dataset and any you configured, falling "
+          "back to myMeal's built-in density table — which covers the common "
+          "baking staples but not much else.",
           ha_option="enable_foodcore"),
 
     # --- MCP ---
