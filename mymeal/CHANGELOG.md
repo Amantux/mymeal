@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.2.58
+
+- Ship the reference dataset, so conversions work out of the box.
+
 ## 1.2.57
 
 - A curated vocabulary for what a cook means by a bare word.
