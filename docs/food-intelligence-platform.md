@@ -2,7 +2,11 @@
 
 > Response to the *Food Intelligence Platform* spec v1.0, assessed against what
 > myMeal, Edibl and HomeHoard actually contain today (verified by reading the
-> code, not from memory). Status: **proposal**. Nothing here is built.
+> code, not from memory). Status: **partly built** — Stage 1 (foodcore +
+> USDA portions), Stage 2 (deterministic nutrition) and Stage 3's *engine*
+> (allergens + dietary, §6) have shipped in myMeal. Stage 0, Stage 4 and
+> Stage 3's allergen *filter* remain proposals. The original wording said
+> "Nothing here is built"; each stage records its own status now.
 
 ## 1. The headline recommendation
 
@@ -53,8 +57,8 @@ the consumers are two Python apps that can simply import the code.)
 | FR-03 recipe ingestion | URL + JSON-LD + microdata + paste + archive import (Mealie/Tandoor/Paprika) + deterministic parser | — | **Ahead of the spec.** Keep in myMeal |
 | FR-04 pantry search | `inventory.py::rank_recipes` over Edibl's stock | stock/onhand | **Exists**, not quantity-aware yet |
 | FR-05 nutrition | **LLM estimate** stored as JSON (`services/ai/nutrition.py`) | — | **Direct conflict with the spec — see §3** |
-| FR-06 allergens | `Food.allergens` list; no rule engine, no evidence, no unknown state | allergen-ish classification | **Data field without a policy.** Safety gap |
-| FR-07 dietary profiles | none found | — | Absent |
+| FR-06 allergens | `Food.allergens` list; no rule engine, no evidence, no unknown state | allergen-ish classification | ~~**Data field without a policy.** Safety gap~~ → **engine shipped** (§6 Stage 3): four states + evidence via `food_reference.screen_lines`, `GET /recipes/<ident>/safety`, recipe-page card. `Food.allergens` is untouched and still not read for safety |
+| FR-07 dietary profiles | ~~none found~~ **`foodcore.dietary`, 9 diets, on the same endpoint** | — | Shipped alongside FR-06; advisory diets are never reported as certified |
 | FR-08 classification | cuisine/meal tags, AI-assisted | — | Partial |
 | FR-09 meal planning | meal plans, AI fill-the-week, ICS feed | — | **Exists**, not constraint-solved |
 | FR-10 shopping lists | aggregation, canonical grouping, aisle order, pantry deduction via Edibl | — | **Exists** |
@@ -104,6 +108,16 @@ Decide deliberately, in one place, before the filter exists: regulatory
 labelling is the right frame for an allergen filter, botany is the right frame
 for substitution and the material-boundary rule, and the two lexicons must
 therefore stay SEPARATE rather than being reconciled into one list.
+
+> **DECIDED and now enforced.** Exactly as above: `food_resolve.SEED_FOODS`
+> stays botanical (coconut has no allergens), foodcore stays regulatory
+> (coconut milk is a tree nut), and `backend/app/services/food_reference.py`
+> reads the ingredient **text** rather than `Food.allergens` so the two never
+> meet. The separation is documented at that site and asserted in both
+> directions by `test_the_two_lexicons_disagree_about_coconut_and_that_is_
+> correct` — a future "tidy-up" that merges them fails a test with a sentence
+> explaining why. Empty `Food.allergens` therefore still has no path to a
+> safety answer anywhere.
 
 ## 4. What to take, right-sized
 
@@ -189,9 +203,37 @@ with completeness/uncertainty. The LLM path becomes the *matcher*, not the
 arithmetic, and the stored estimate is clearly labelled as such until replaced.
 *Exit: nutrition carries provenance; unknown ≠ zero.*
 
-**Stage 3 — allergen evidence engine + dietary profiles.** Four-state model,
-evidence retained, rule versioned. Ship the engine before any UI filter.
-*Exit: a hard allergen filter that refuses to call unknowns safe.*
+**Stage 3 — allergen evidence engine + dietary profiles. ENGINE SHIPPED in
+myMeal; the filter is still deliberately absent.** `foodcore.allergens` and
+`foodcore.dietary` are reached through `food_reference.screen_lines()` — still
+the only module importing foodcore — and surfaced on
+`GET /api/v1/recipes/<ident>/safety` and a "What this contains" card on the
+recipe page. The endpoint reports the four states plus every piece of evidence
+and applies **no policy and no boolean**: deciding what is acceptable requires
+naming an `AvoidancePolicy`, and that belongs to the filter.
+
+That ordering is the point of this stage, so to restate it: **the filter is
+not missing, it is waiting.** The evidence model needs to be proven against
+real recipes first, and the engine shipping alone is what makes that possible.
+When the filter is built it will call `decide(policy)` — never `state !=
+CONTAINS`.
+
+One decision recorded here because it will come up again: screening reads the
+ingredient **text**, never `Food.allergens`, and §3.2's coconut divergence is
+now asserted in both directions by `test_the_two_lexicons_disagree_about_
+coconut_and_that_is_correct`. `SEED_FOODS` must keep every coconut form
+allergen-free; the API must keep reporting tree nuts for a coconut-milk recipe.
+
+Also learned, the hard way, while wiring it up: a line that is *dropped* is
+indistinguishable from a line that was read and matched nothing. Four separate
+routes dropped one (an empty linked sub-recipe, a row with no `display`, a row
+with only a quantity, and the flattening that lost the component row itself),
+and each produced `no_known_ingredient_identified` with `fullyScreened: true`.
+The fix is structural — a line with nothing to say must carry text that screens
+as `unknown`, and `SafetyLine` now refuses blank text at the constructor.
+
+*Exit (met): the four states, with evidence, in front of a cook. Still open: a
+hard allergen filter that refuses to call unknowns safe.*
 
 **Stage 4 — quantity-aware pantry search.** Edibl already holds quantities; with
 Stage 0+1 the matcher can finally compare *amounts*, not just names.
