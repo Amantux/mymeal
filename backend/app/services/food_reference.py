@@ -54,6 +54,7 @@ import logging
 import os
 import re
 import threading
+from dataclasses import dataclass
 from functools import lru_cache
 
 from ..logsafe import scrub
@@ -846,3 +847,192 @@ def recipe_nutrition(lines, servings, nutrients=None, settings=None):
         else:
             log.debug("foodcore nutrition failed (%s)", type(exc).__name__)
         return None
+
+
+# ===========================================================================
+# Recipe safety (Stage 3): allergen screening + dietary compatibility
+#
+# `foodcore.allergens` / `foodcore.dietary` are PURE RULE ENGINES — no dataset,
+# no sqlite, no I/O. So unlike `grams_per` and `recipe_nutrition` above, nothing
+# here is gated on `MYMEAL_FOODCORE_DATASET`: the rules ship inside the package,
+# so screening works on a stock install with no operator setup at all.
+#
+# ---------------------------------------------------------------------------
+# TWO LEXICONS, DELIBERATELY NOT RECONCILED. Do not "fix" this.
+# ---------------------------------------------------------------------------
+# `food_resolve.py` seeds `Food.allergens`; this seam screens the ingredient
+# TEXT through foodcore. They disagree, on purpose, and the canonical instance
+# is coconut:
+#
+#   food_resolve.py  "coconut": ("fruit", ())   -> no allergens
+#   foodcore         "coconut milk"             -> tree_nuts: CONTAINS
+#
+# Both are right in their own frame. `food_resolve`'s question is "which
+# material is this, and may a substring match cross into another material?"
+# (ADR-0001: almond milk is not milk) — botany answers that, and a coconut is a
+# drupe. foodcore's question is "what must a US label declare?" — and the FDA
+# counts coconut as a tree nut.
+#
+# Merging them yields ONE list that is wrong for one of its two consumers: fold
+# the FDA view into `Food.allergens` and the material-boundary rule starts
+# treating coconut as a nut for substitution and canonicalisation; fold botany
+# into foodcore and someone avoiding tree nuts is served a coconut curry.
+#
+# So: this module NEVER READS `Food.allergens`, and nothing here writes it.
+# foodcore's verdicts are the labelling answer and the only thing this seam
+# reports; `Food.allergens` stays exactly what it is, for exactly its own
+# callers. See docs/food-intelligence-platform.md §3.2.
+#
+# ---------------------------------------------------------------------------
+# AND: an empty `Food.allergens` is not "free from".
+# ---------------------------------------------------------------------------
+# `Food.allergens` is `[]` for everything a user typed, which means "nobody has
+# said", not "contains nothing". That is the whole reason this seam exists, and
+# it is why `[]` has no path to the wire from here: the four states come from
+# foodcore, `NO_KNOWN_INGREDIENT_IDENTIFIED` is the closest one to "nothing
+# found", and even that one says "(not a safety claim)" in its own `str()`.
+#
+# ---------------------------------------------------------------------------
+# No boolean without a policy — kept, not routed around.
+# ---------------------------------------------------------------------------
+# foodcore makes `bool(verdict)` raise and gives `permitted_under(policy)` /
+# `decide(policy)` no default. `RecipeSafety` below mirrors that (its own
+# `__bool__` raises) and this module adds NO convenience predicate: there is no
+# `is_safe`, no `free_of`, no `allergen_free`. A caller that wants a boolean
+# reaches through to `safety.allergens.decide(policy)` and therefore has to name
+# the policy, in code, where review can see it. `screening_policies()` hands the
+# enums over so doing that never requires a second foodcore importer.
+#
+# Which allergens and which diets are screened is foodcore's own default set
+# (`US_MAJOR_ALLERGENS`, `DIET_KEYS`), read from the library rather than
+# restated here. A local copy of either list would be a second place for the
+# policy to live, and the ruleset is versioned precisely so the answer may
+# change — every verdict carries the version it was produced under.
+# ===========================================================================
+
+
+class ScreeningUnavailable(RuntimeError):
+    """Screening could not run.
+
+    A TYPED domain exception carrying a curated message with no upstream text
+    in it, because "we cannot tell you" must never be rendered the same way as
+    "nothing to report". The API turns it into a 503, not an empty panel.
+    """
+
+
+class NothingToScreen(ScreeningUnavailable):
+    """There were no ingredient lines.
+
+    Separate from its parent because it is not a malfunction: a recipe with no
+    ingredients is a perfectly normal draft. It is still not a success — a panel
+    reading "no allergens found" over zero screened lines is exactly the false
+    clearance this seam exists to prevent — so the caller must handle it
+    explicitly rather than receive an empty verdict list.
+    """
+
+
+@dataclass(frozen=True)
+class SafetyLine:
+    """One ingredient line to screen, as plain data.
+
+    `text` is the line AS WRITTEN, not the resolved food name. foodcore's
+    `normalize_text` keeps commas and parentheticals precisely because that is
+    where allergen information hides ("margarine (contains milk)", "bread, may
+    contain sesame"); handing it `food.name` would discard that, and would also
+    launder the author's words through a canonicalisation that deliberately
+    strips preparation. `optional` comes from `units.annotations` — myMeal's
+    existing single answer to "is this line optional" — so there is no second
+    parser of the same text.
+    """
+
+    text: str
+    optional: bool = False
+
+
+@dataclass(frozen=True)
+class RecipeSafety:
+    """Both screenings for one recipe, plus the lines they ran over.
+
+    Has no truth value, for the same reason `AllergenScreening` has none: the
+    shortest wrong thing to write (`if safety:`) must fail loudly instead of
+    meaning something plausible and incorrect.
+    """
+
+    allergens: object  # foodcore AllergenScreening
+    diets: object      # foodcore DietaryScreening
+    lines: tuple[SafetyLine, ...]
+
+    def __bool__(self) -> bool:
+        raise TypeError(
+            "RecipeSafety has no truth value, on purpose: 'nothing found' is "
+            "not 'safe'. Call safety.allergens.decide(policy) or "
+            "safety.diets.decide(policy) with an explicit policy (STRICT "
+            "excludes unknown; PREFERENCE does not)."
+        )
+
+
+def _safety_engines():
+    """The two foodcore engines, or `ScreeningUnavailable`.
+
+    Imported lazily and at the point of USE: `import foodcore` failing is a
+    valid deployment of the rest of myMeal and must cost this panel rather than
+    the app. Only the error's class name is logged — its message could carry a
+    filesystem path.
+    """
+    try:
+        import foodcore.allergens as fca
+        import foodcore.dietary as fcd
+    except Exception as exc:  # noqa: BLE001 - library absent is a valid deployment
+        log.warning("foodcore allergen/dietary engines unavailable (%s)",
+                    type(exc).__name__)
+        raise ScreeningUnavailable(
+            "Allergen and dietary screening is unavailable on this install."
+        ) from None
+    return fca, fcd
+
+
+def screening_policies():
+    """`(AvoidancePolicy, DietPolicy)`, so a future filter can name a policy
+    without becoming a second foodcore importer. Raises `ScreeningUnavailable`
+    when the engines are missing."""
+    fca, fcd = _safety_engines()
+    return fca.AvoidancePolicy, fcd.DietPolicy
+
+
+def screen_lines(lines) -> RecipeSafety:
+    """Screen ingredient lines for allergens and dietary compatibility.
+
+    `lines` is an iterable of `SafetyLine` or plain strings; blank ones are
+    dropped. Returns a `RecipeSafety`, or raises — it never returns a
+    falsely-empty result. `NothingToScreen` when there was nothing to read,
+    `ScreeningUnavailable` when the engines are absent or failed.
+
+    Unlike everything above in this module, a failure here is NOT swallowed into
+    a `None` that the caller renders as "no data". Grams and calories degrade to
+    an older answer; "what does this contain" has no older answer to degrade to,
+    so silence would be indistinguishable from a clean result.
+    """
+    fca, fcd = _safety_engines()
+    rows = tuple(
+        line if isinstance(line, SafetyLine) else SafetyLine(text=str(line))
+        for line in (lines or [])
+    )
+    rows = tuple(r for r in rows if r.text.strip())
+    if not rows:
+        raise NothingToScreen(
+            "This recipe has no ingredient lines, so there is nothing to screen."
+        )
+
+    refs = [fca.IngredientRef(text=r.text, optional=r.optional) for r in rows]
+    try:
+        # foodcore's own defaults for both sets — see the note above on why this
+        # module keeps no copy of either list.
+        allergens = fca.screen(refs, fca.SensitivityProfile.us_major_allergens())
+        diets = fcd.screen_diets(refs)
+    except Exception as exc:  # noqa: BLE001 - never echo the engine's own text
+        log.warning("foodcore screening failed (%s)", type(exc).__name__)
+        raise ScreeningUnavailable(
+            "Allergen and dietary screening could not be completed for this "
+            "recipe."
+        ) from None
+    return RecipeSafety(allergens=allergens, diets=diets, lines=rows)
