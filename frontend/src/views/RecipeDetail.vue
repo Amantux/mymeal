@@ -310,6 +310,7 @@ async function load() {
 onMounted(async () => {
   await load()
   if (recipe.value) await loadVersions()
+  if (recipe.value) await loadSafety()
   try { allCategories.value = (await api.get('/categories')) || [] } catch { /* optional */ }
 })
 
@@ -416,6 +417,154 @@ async function save() {
     ui.error(e.message)
   }
 }
+
+// --- What this recipe contains (allergens + diets) --------------------------
+//
+// A WORK surface, so no flair: one dense list, no badge competing with the
+// accent, and the accent untouched because this card has no primary action.
+//
+// The hard part is `unknown`, and the rule it has to satisfy is that it must
+// look like NEITHER of the two easy readings:
+//
+//   * not "fine" — so it is never muted, never collapsed into the quiet
+//     summary line, and it sorts ABOVE the quiet states. The word used is
+//     "Not screened", which is a statement about us rather than about the
+//     food; "no nuts found" would be a claim we cannot make.
+//   * not an error — so it is not `--danger`, carries no error iconography,
+//     and the card renders normally around it. An unreadable ingredient is an
+//     ordinary fact about a hand-typed recipe, not a malfunction.
+//
+// It lands in the `--warning` family, separated from `may_contain` by a DASHED
+// rather than solid rail: same "needs your attention" register, visibly
+// incomplete rather than visibly suspected. And `fullyScreened: false` gets a
+// block at the top of the card naming the lines and the consequence, because
+// the actionable thing is "go read these labels", which a per-row state word
+// cannot say.
+const safety = ref(null)
+const safetyLoading = ref(true)
+// A separate ref from `safety`, deliberately: this panel must be able to say
+// "we could not screen this" out loud. Swallowing the failure into an empty
+// panel — the house `loadVersions()` pattern — would render exactly like a
+// clean result, which is the one outcome this feature exists to prevent.
+const safetyError = ref('')
+
+async function loadSafety() {
+  safetyLoading.value = true
+  safetyError.value = ''
+  try {
+    safety.value = await api.get(`/recipes/${recipe.value.id}/safety`)
+  } catch (e) {
+    safety.value = null
+    safetyError.value = e.message || 'Screening could not be loaded.'
+  } finally {
+    safetyLoading.value = false
+  }
+}
+
+// Severity first. `unknown` sits ABOVE the two quiet states on purpose — an
+// ingredient nobody could read is more worth a cook's eye than a rule that
+// matched nothing.
+const SAFETY_ORDER = {
+  contains: 0, incompatible: 0,
+  may_contain: 1, uncertain: 1,
+  unknown: 2,
+  no_known_ingredient_identified: 3, no_conflict_identified: 3,
+}
+const QUIET_STATES = ['no_known_ingredient_identified', 'no_conflict_identified']
+
+// The human word for a state. Not derived from the enum: "contains" is already
+// English, but `no_known_ingredient_identified` is not, and `unknown` on its
+// own is ambiguous about WHO is uncertain.
+const SAFETY_WORD = {
+  contains: 'Contains',
+  may_contain: 'May contain',
+  incompatible: 'Incompatible',
+  uncertain: 'Uncertain',
+  unknown: 'Not screened',
+}
+
+function safetyTone(state) {
+  if (state === 'contains' || state === 'incompatible') return 'bad'
+  if (state === 'may_contain' || state === 'uncertain') return 'warn'
+  if (state === 'unknown') return 'unscreened'
+  return 'quiet'
+}
+
+// The matched terms behind a verdict, deduped and in first-seen order — the
+// shortest true answer to "why does it say that". Evidence rows with no term
+// (a coverage record, an unreadable line) contribute nothing here; their
+// reason is the `unscreened` block at the top of the card instead.
+function safetyWhy(verdict) {
+  const seen = []
+  for (const e of verdict.evidence || []) {
+    if (e.matchedTerm && !seen.includes(e.matchedTerm)) seen.push(e.matchedTerm)
+  }
+  return seen.slice(0, 4).join(', ')
+}
+
+// A row exists to tell the reader something specific. When nine allergens are
+// `unknown` for the same unreadable ingredient, nine rows say one thing nine
+// times and bury anything that differs — the first screenshot of this panel had
+// exactly that, and the two `contains` rows above it were lost in the noise.
+// So rows that agree on state AND reason are merged into one, and only then
+// sorted by severity. Rows whose reasons differ stay separate, because then the
+// reason is the information.
+function loudRows(rows) {
+  const groups = new Map()
+  for (const r of rows || []) {
+    if (QUIET_STATES.includes(r.state)) continue
+    const why = safetyWhy(r)
+    const key = `${r.state}|${why}`
+    if (!groups.has(key)) {
+      groups.set(key, { key, state: r.state, why, labels: [] })
+    }
+    groups.get(key).labels.push(r.label)
+  }
+  return [...groups.values()]
+    .map((g) => ({ ...g, labels: g.labels.sort((a, b) => a.localeCompare(b)) }))
+    .sort((a, b) => (SAFETY_ORDER[a.state] ?? 9) - (SAFETY_ORDER[b.state] ?? 9)
+      || a.labels[0].localeCompare(b.labels[0]))
+}
+
+// The quiet states get ONE line listing their labels, not a row each. Twelve
+// rows of "nothing found" would bury the three that matter, and the heading
+// those labels sit under is the engine's own careful phrasing rather than
+// anything resembling "free from".
+function quietLabels(rows) {
+  return (rows || [])
+    .filter((r) => QUIET_STATES.includes(r.state))
+    .map((r) => r.label)
+    .sort((a, b) => a.localeCompare(b))
+}
+
+const allergensLoud = computed(() => loudRows(safety.value?.allergens))
+const allergensQuiet = computed(() => quietLabels(safety.value?.allergens))
+const dietsLoud = computed(() => loudRows(safety.value?.diets))
+const dietsQuiet = computed(() => quietLabels(safety.value?.diets))
+
+// An advisory is a property of the DIET, not of this recipe's verdict — the
+// same sentence every time, for every recipe. Inline on each row it was most
+// of the card's height and repeated under states it did not qualify. Collected
+// here instead: the headline (never certified) is always visible, the engine's
+// own reasons are one click away, and nothing is paraphrased.
+const advisoryDiets = computed(() =>
+  (safety.value?.diets || [])
+    .filter((d) => d.advisory)
+    .slice()
+    .sort((a, b) => a.label.localeCompare(b.label)))
+
+// Lines the engine could not fully read, with its reason for each.
+const unreadable = computed(() =>
+  (safety.value?.coverage || []).filter((c) => (c.unscreened || []).length))
+
+// The scope statement. Every number in it is reported by the server; none of
+// it is this component's opinion about how trustworthy the panel is.
+const safetyScope = computed(() => {
+  const s = safety.value
+  if (!s || s.status !== 'screened') return ''
+  return `Screened ${s.screenedLines} ingredient line${s.screenedLines === 1 ? '' : 's'} `
+    + `against ${s.rulesetVersions.allergens} and ${s.rulesetVersions.dietary}.`
+})
 
 // --- Versions & experiments -------------------------------------------------
 const versions = ref([])
@@ -1031,6 +1180,122 @@ const imageSrc = computed(() =>
         <p style="white-space:pre-wrap;margin:0">{{ recipe.notes }}</p>
       </div>
 
+      <!-- What this recipe contains. Sits with Nutrition rather than with
+           Ingredients: both are derived facts about the food that carry their
+           own provenance, and a cook mid-recipe should not have this between
+           the ingredient list and the steps. -->
+      <div class="card">
+        <h2>What this contains
+          <span class="muted" style="font-weight:400">— allergens &amp; diets</span>
+        </h2>
+
+        <!-- Loading: a skeleton shaped like the rows it replaces. -->
+        <div v-if="safetyLoading" class="sf-skel">
+          <div class="skeleton" style="height:14px;width:45%"></div>
+          <div class="skeleton" style="height:14px;width:62%"></div>
+          <div class="skeleton" style="height:14px;width:38%"></div>
+        </div>
+
+        <!-- Unavailable. Said out loud, because an empty panel here is
+             indistinguishable from a clean one. -->
+        <div v-else-if="safetyError" class="sf-notice sf-tone-unscreened">
+          <strong>This recipe has not been screened.</strong>
+          {{ safetyError }}
+          <button class="secondary sm" style="margin-left:8px" @click="loadSafety">
+            Try again
+          </button>
+        </div>
+
+        <p v-else-if="safety && safety.status === 'no_ingredients'" class="muted" style="margin:0">
+          No ingredients yet. Add them and this panel will report what the
+          recipe contains — and what it could not read.
+        </p>
+
+        <template v-else-if="safety && safety.status === 'screened'">
+          <!-- The consequence of an unreadable line, stated before any verdict
+               the reader might take at face value. -->
+          <div v-if="!safety.fullyScreened" class="sf-notice sf-tone-unscreened">
+            <strong>
+              {{ unreadable.length }} of {{ safety.screenedLines }} ingredient{{ safety.screenedLines === 1 ? '' : 's' }}
+              could not be read.
+            </strong>
+            Nothing below rules out an allergen in {{ unreadable.length === 1 ? 'it' : 'them' }} — check the label yourself.
+            <ul class="sf-reasons">
+              <li v-for="c in unreadable" :key="c.ingredient">
+                <span class="sf-line">{{ c.ingredient }}</span>
+                <span class="muted"> — {{ c.unscreened.join('; ') }}</span>
+              </li>
+            </ul>
+          </div>
+
+          <h3 class="sf-h">Allergens</h3>
+          <dl class="sf-rows">
+            <template v-for="row in allergensLoud" :key="row.key">
+              <dt :class="['sf-dt', 'sf-tone-' + safetyTone(row.state),
+                           'sf-text-' + safetyTone(row.state)]">
+                {{ SAFETY_WORD[row.state] || row.state }}
+              </dt>
+              <dd class="sf-dd">
+                <span class="sf-labels">{{ row.labels.join(' · ') }}</span>
+                <span v-if="row.why" class="muted sf-why">{{ row.why }}</span>
+                <span v-else-if="row.state === 'unknown'" class="muted sf-why">
+                  no rule could be applied to {{ unreadable.length === 1 ? 'the unreadable ingredient' : 'the unreadable ingredients' }} above
+                </span>
+              </dd>
+            </template>
+          </dl>
+          <!-- The quiet state, in the engine's own careful words. Never "free
+               from", never a tick: the labels on one muted line, under a
+               heading that says what the absence is bounded by. -->
+          <p v-if="allergensQuiet.length" class="muted sf-quiet">
+            <span class="sf-quiet-h">No known ingredient identified</span>
+            <span class="sf-quiet-note"> (not a safety claim)</span>:
+            {{ allergensQuiet.join(' · ') }}
+          </p>
+
+          <h3 class="sf-h">Diets</h3>
+          <dl class="sf-rows">
+            <template v-for="row in dietsLoud" :key="row.key">
+              <dt :class="['sf-dt', 'sf-tone-' + safetyTone(row.state),
+                           'sf-text-' + safetyTone(row.state)]">
+                {{ SAFETY_WORD[row.state] || row.state }}
+              </dt>
+              <dd class="sf-dd">
+                <span class="sf-labels">{{ row.labels.join(' · ') }}</span>
+                <span v-if="row.why" class="muted sf-why">{{ row.why }}</span>
+              </dd>
+            </template>
+          </dl>
+          <p v-if="dietsQuiet.length" class="muted sf-quiet">
+            <span class="sf-quiet-h">No conflict identified</span>
+            <span class="sf-quiet-note"> (not a certification)</span>:
+            {{ dietsQuiet.join(' · ') }}
+          </p>
+          <!-- Headline always visible, the engine's own reasons on demand. -->
+          <details v-if="advisoryDiets.length" class="sf-advisory">
+            <summary>
+              {{ advisoryDiets.map((d) => d.label).join(', ') }}
+              {{ advisoryDiets.length === 1 ? 'is' : 'are' }}
+              informational — never certified from ingredient text.
+            </summary>
+            <ul class="sf-reasons">
+              <li v-for="d in advisoryDiets" :key="d.key">
+                <span class="sf-line">{{ d.label }}</span>
+                <span class="muted"> — {{ d.advisory }}</span>
+              </li>
+            </ul>
+          </details>
+
+          <!-- Provenance, in the same quiet register as the nutrition panel's
+               line: a muted sentence under the data, not a badge above it. -->
+          <p class="muted sf-prov">
+            {{ safetyScope }}
+            This reports what the ingredient text says — it is not a safety
+            check. Always read the packaging.
+          </p>
+        </template>
+      </div>
+
       <div class="card">
         <div class="page-head" style="margin-bottom:10px">
           <h2>Nutrition <span class="muted" style="font-weight:400">— per serving</span></h2>
@@ -1350,6 +1615,93 @@ select.sm { padding: 2px 6px; }
 .nutri-val { font-size: 1.4rem; font-weight: 700; }
 .nutri-prov { margin: 10px 0 0; font-size: 0.82rem; }
 .nutri-lbl { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+
+/* --- What this contains ---------------------------------------------------
+   A work surface: tokens only, no new colour, and the accent is deliberately
+   absent — this card has no primary action, so spending the accent here would
+   compete with the page's real one.
+
+   The whole visual system is a 3px left rail, because the rail is the only
+   decoration that encodes something true: how much attention the row wants.
+     solid --danger   contains / incompatible
+     solid --warning  may contain / uncertain
+     dashed --warning NOT SCREENED
+   Dashed is doing real work. It keeps `unknown` in the attention family (so it
+   cannot be mistaken for "fine") while reading as structurally incomplete
+   rather than as a positive finding — and it is a second, non-colour signal,
+   so the distinction survives for a colour-blind reader and in a screenshot.
+   The state word is always spelled out too; colour is never the only signal. */
+.sf-skel { display: grid; gap: 8px; }
+.sf-h {
+  margin: 16px 0 8px; font-size: 0.78rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.03em; font-weight: 600;
+}
+.sf-h:first-of-type { margin-top: 4px; }
+
+/* STATE | labels + reason. State on the left so severity is the axis the eye
+   scans — the first attempt put the allergen names there, and once rows that
+   agree are merged a nine-name list shreds a narrow label column while leaving
+   the right half of the card empty. The left column is now four known words,
+   so it is a fixed, quiet rhythm and the names get the width they need.
+   Stacked on a phone, where the reason text needs all of it. */
+.sf-rows {
+  /* 132px fits the longest state word ("Incompatible") on one line at this
+     size; narrower and it either wrapped to two lines or ran under the names. */
+  display: grid; grid-template-columns: 132px 1fr;
+  gap: 6px 12px; margin: 0; align-items: baseline;
+}
+.sf-dt {
+  margin: 0; padding: 2px 0 2px 10px; font-weight: 600; font-size: 0.9rem;
+  border-left: 3px solid var(--border);
+}
+.sf-dd { margin: 0; padding: 2px 0; font-size: 0.9rem; display: flex; flex-wrap: wrap; gap: 2px 8px; }
+.sf-labels { font-weight: 600; }
+.sf-why { font-size: 0.84rem; }
+.sf-advisory { margin: 10px 0 0; font-size: 0.82rem; color: var(--muted); }
+.sf-advisory > summary { cursor: pointer; }
+.sf-advisory > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.sf-tone-bad { border-left-color: var(--danger); }
+.sf-tone-warn { border-left-color: var(--warning); }
+/* The one that matters. See the note above. */
+.sf-tone-unscreened { border-left-style: dashed; border-left-color: var(--warning); }
+.sf-tone-quiet { border-left-color: var(--border); }
+.sf-text-bad { color: var(--danger); }
+.sf-text-warn { color: var(--warning); }
+.sf-text-unscreened { color: var(--warning); }
+.sf-text-quiet { color: var(--muted); }
+
+/* The unreadable-ingredients notice, and the unavailable state — same shape,
+   because they say the same thing to a cook: part of this is unscreened. */
+.sf-notice {
+  margin: 0 0 12px; padding: 10px 12px; font-size: 0.88rem;
+  border-left: 3px dashed var(--warning);
+  background: var(--surface-2); border-radius: var(--radius-sm);
+}
+.sf-reasons { margin: 6px 0 0; padding-left: 18px; font-size: 0.84rem; }
+.sf-reasons li { margin: 2px 0; }
+.sf-line { font-weight: 600; }
+
+/* The quiet states, collapsed to one line. Indented to the rail so it reads as
+   part of the same list, but with no rail of its own — it is the absence of a
+   finding, and giving it a marker would make it look like one. */
+.sf-quiet { margin: 8px 0 0; padding-left: 13px; font-size: 0.84rem; }
+.sf-quiet-h { font-weight: 600; }
+.sf-quiet-note { font-size: 0.8rem; }
+.sf-prov { margin: 16px 0 0; font-size: 0.82rem; }
+
+@media (max-width: 560px) {
+  /* One column: the reason text is what a phone needs the width for, and a
+     160px label column would leave it two words wide. The rail moves to the
+     group so the label and its state stay visually bound together. */
+  .sf-rows { grid-template-columns: 1fr; gap: 0; }
+  .sf-dt { padding-bottom: 0; }
+  .sf-dd {
+    padding: 0 0 8px 10px; margin-bottom: 2px;
+    border-left: 3px solid transparent;
+  }
+  .sf-quiet { padding-left: 10px; }
+}
 /* Media: one grid for photos, clips, embeds and the add tile. auto-fill so the
    slot is two-up on a desktop card and one-up on a phone with no breakpoint of
    its own, and every cell shares the 16/9 frame so a portrait photo, a video
