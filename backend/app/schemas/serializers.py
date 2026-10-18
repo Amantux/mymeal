@@ -415,14 +415,28 @@ def recipe_safety_out(safety):
     a, d = safety.allergens, safety.diets
     return {
         "status": "screened",
-        "screenedLines": len(safety.lines),
+        # From the engine's own COVERAGE, not from the lines handed to it: a
+        # compound line contributes itself plus every component row beneath it,
+        # and counting only the top level would under-report what was read.
+        "screenedLines": len(a.coverage),
         # False means at least one line could not be fully read, so every
         # `unknown` below has a reason in `coverage`. The UI leads with this.
         "fullyScreened": a.fully_screened,
         "rulesetVersions": {
             "allergens": a.ruleset_version,
             "dietary": d.ruleset_version,
+            # The dietary engine DELEGATES dairy-free and gluten-free to the
+            # allergen engine, so a dietary verdict is only reproducible if you
+            # also know which allergen ruleset produced that half of it. It is
+            # normally the same string as `allergens`; it is published because
+            # "normally" is not a contract.
+            "dietaryAllergens": d.allergen_ruleset_version,
         },
+        # `AllergenScreening.profile` is deliberately NOT serialized. It is the
+        # request, not the answer — which allergens were asked for is already
+        # readable from the keys below — and it carries an `AvoidancePolicy`.
+        # A policy on the wire is an invitation to apply one, and no policy has
+        # been applied here.
         "allergens": [
             {
                 "key": v.allergen,

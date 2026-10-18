@@ -21,6 +21,16 @@ from __future__ import annotations
 _MAX_COMPONENT_DEPTH = 4
 _MAX_COMPONENT_EXPANSIONS = 100
 
+#: The same caps, public, for a caller that needs a different output SHAPE than
+#: the two iterators below produce. Allergen screening is the case: it builds a
+#: TREE (foodcore nests a component's contents under the parent line so the
+#: parent's own text stops being treated as opaque), which neither a flat leaf
+#: list nor a per-recipe walk can express. It must still obey the same cycle
+#: guard and the same limits — exported rather than copied so there is one
+#: place to change them.
+MAX_COMPONENT_DEPTH = _MAX_COMPONENT_DEPTH
+MAX_COMPONENT_EXPANSIONS = _MAX_COMPONENT_EXPANSIONS
+
 
 def component_load_opts(base=None):
     """Eager-load options for the component ingredient graph (ingredient → food/unit,

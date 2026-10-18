@@ -940,13 +940,36 @@ class SafetyLine:
     where allergen information hides ("margarine (contains milk)", "bread, may
     contain sesame"); handing it `food.name` would discard that, and would also
     launder the author's words through a canonicalisation that deliberately
-    strips preparation. `optional` comes from `units.annotations` — myMeal's
-    existing single answer to "is this line optional" — so there is no second
-    parser of the same text.
+    strips preparation. `optional` comes from `units.parse_line`, myMeal's
+    existing parser, so the same text is not read a second time here.
+
+    `components` is a compound line's declared contents — a linked sub-recipe's
+    own rows. Not a convenience: foodcore treats a line WITH components as
+    explained by them and stops charging the parent's text an opacity
+    `unknown`, while a line with none is screened on its own words. That is
+    what makes "1 batch Secret Sauce" honest in both directions — expanded it
+    reports what the sauce really contains, unexpandable it reports `unknown`
+    rather than vanishing.
+
+    `text` is never blank, and the constructor enforces it. foodcore reads an
+    empty string as a line it DID read and found nothing in, so a blank line
+    silently contributes a clearance it has not earned — the one way this seam
+    can manufacture the exact failure it exists to prevent. A caller with
+    nothing to say must say something unscreenable instead.
     """
 
     text: str
     optional: bool = False
+    components: tuple["SafetyLine", ...] = ()
+
+    def __post_init__(self) -> None:
+        if not (self.text or "").strip():
+            raise ValueError(
+                "SafetyLine.text is blank. An unscreenable line must carry "
+                "text that screens as `unknown`, never an empty string: "
+                "foodcore reads '' as a line it read and matched nothing in, "
+                "which is a clearance this line has not earned."
+            )
 
 
 @dataclass(frozen=True)
@@ -1016,18 +1039,24 @@ def screen_lines(lines) -> RecipeSafety:
     rows = tuple(
         line if isinstance(line, SafetyLine) else SafetyLine(text=str(line))
         for line in (lines or [])
+        if isinstance(line, SafetyLine) or str(line).strip()
     )
-    rows = tuple(r for r in rows if r.text.strip())
     if not rows:
         raise NothingToScreen(
             "This recipe has no ingredient lines, so there is nothing to screen."
+        )
+
+    def _ref(row: SafetyLine):
+        return fca.IngredientRef(
+            text=row.text, optional=row.optional,
+            components=tuple(_ref(c) for c in row.components),
         )
 
     try:
         # Inside the guard, not above it: building the refs is already a call
         # into the library, and a test that exploded on attribute access found
         # this escaping as a raw RuntimeError.
-        refs = [fca.IngredientRef(text=r.text, optional=r.optional) for r in rows]
+        refs = [_ref(r) for r in rows]
         # foodcore's own defaults for both sets — see the note above on why this
         # module keeps no copy of either list.
         allergens = fca.screen(refs, fca.SensitivityProfile.us_major_allergens())

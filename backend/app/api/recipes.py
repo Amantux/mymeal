@@ -486,6 +486,95 @@ def get_recipe(ident):
     return jsonify(out)
 
 
+#: Text for a row that has nothing to say. It must SCREEN as `unknown`, so it
+#: is a real phrase rather than "" — foodcore reads an empty string as a line
+#: it read and matched nothing in, which is a clearance. Asserted by
+#: `test_a_row_with_no_text_at_all_is_unknown_not_clean`.
+_UNDESCRIBED_LINE = "unnamed ingredient"
+
+
+def _ingredient_text(ing) -> str:
+    """The best words available for one row, never blank.
+
+    `display` is the author's own line and is what foodcore wants. But
+    `_set_ingredients` accepts a structured row with no `display` at all (the
+    SPA always composes one, a REST/MCP/HA client need not), and such a row
+    used to be skipped — which reported a peanut-butter ingredient as a line
+    that was read and found clean. Falling back to the food name screens it
+    correctly instead.
+
+    The fallback is anchored on the NAME, not on whatever fields happen to be
+    set. A row carrying only `quantity: 2` composes to "2.0", and foodcore
+    rightly discards bare numerals as noise — so the line came back fully
+    screened and clean, the same false clearance one layer down. Quantity and
+    unit are decoration here; without a food or a qualifier there is no
+    ingredient to screen and the row has to say so.
+    """
+    text = (ing.display or "").strip()
+    if text:
+        return text
+    name = " ".join(p for p in (
+        (getattr(ing, "qualifier", "") or "").strip(),
+        (getattr(getattr(ing, "food", None), "name", "") or "").strip(),
+    ) if p)
+    if not name:
+        return _UNDESCRIBED_LINE
+    amount = " ".join(p for p in (
+        str(ing.quantity) if ing.quantity else "",
+        (getattr(getattr(ing, "unit", None), "name", "") or "").strip(),
+    ) if p)
+    return f"{amount} {name}".strip()
+
+
+def _safety_lines(recipe, seen=None, depth=0, budget=None):
+    """Every ingredient row as a `SafetyLine`, components NESTED under parents.
+
+    A tree, not the flat list `components.iter_leaf_ingredients` produces, and
+    that difference is the point. foodcore stops charging a line an opacity
+    `unknown` only when it is given that line's `components`; flattening threw
+    the parent row away entirely, so a component whose sub-recipe happened to
+    have no rows vanished from the screening and every allergen came back
+    "no known ingredient identified" with `fullyScreened: true` — a false
+    clearance for a recipe that may well contain the allergen. Nested, the same
+    case keeps "1 batch Secret Peanut Sauce" in play and lands on `unknown`.
+
+    Same cycle guard and the same caps as the shared expander, imported from it
+    rather than copied. Beyond a cap a component is simply not expanded — it
+    stays as its own line and screens as text, which is the honest answer.
+
+    EVERY ROW IS REPRESENTED. There is no `continue` in this function, and
+    there must never be one: a dropped line is indistinguishable from a clean
+    line, and the whole feature exists to keep those apart.
+    """
+    from ..services import components, food_reference, units
+
+    seen = seen if seen is not None else frozenset({recipe.id})
+    budget = budget if budget is not None else {"n": 0}
+
+    rows = []
+    for ing in recipe.ingredients:
+        text = _ingredient_text(ing)
+        ref = getattr(ing, "ref_recipe", None)
+        ref_id = getattr(ing, "ref_recipe_id", None)
+        kids = ()
+        if (ref is not None and ref_id and ref_id not in seen
+                and depth < components.MAX_COMPONENT_DEPTH
+                and budget["n"] < components.MAX_COMPONENT_EXPANSIONS):
+            budget["n"] += 1
+            kids = tuple(_safety_lines(ref, seen | {ref_id}, depth + 1, budget))
+        rows.append(food_reference.SafetyLine(
+            text=text,
+            # `parse_line`, not `annotations`: annotations deliberately
+            # SUPPRESSES the flag when the word "optional" is still visible in
+            # the rendered text, which is right for display and wrong here —
+            # "(optional) 50 g peanuts" and "50 g peanuts, optional" would
+            # otherwise screen to different states for the same fact.
+            optional=bool(units.parse_line(text).get("optional")),
+            components=kids,
+        ))
+    return rows
+
+
 @bp.get("/recipes/<ident>/safety")
 @login_required
 def get_recipe_safety(ident):
@@ -514,28 +603,15 @@ def get_recipe_safety(ident):
     policy, which belongs to the filter that does not exist yet.
     """
     from ..schemas.serializers import recipe_safety_out
-    from ..services import components, food_reference, units
+    from ..services import components, food_reference
 
     recipe = _get_by_id_or_slug(ident, components.component_load_opts())
-    # Leaf ingredients, so a linked component sub-recipe is screened by its
-    # real contents rather than by the words "2 batches beef stock". Via the
-    # one shared expander (cycle-guarded, depth- and fan-out-capped); a
-    # component that cannot be expanded is yielded as its own line and screened
-    # as text, which honestly comes back `unknown`. The multiplier is ignored
-    # on purpose: screening is about presence, not amount.
-    lines = []
-    for ing, _mult in components.iter_leaf_ingredients(recipe):
-        text = (ing.display or "").strip()
-        if not text:
-            continue
-        # `units.annotations` is myMeal's existing single answer to "is this
-        # line optional" — the same call the serializer uses — so the word
-        # "optional" is not parsed a second time here with different rules.
-        lines.append(food_reference.SafetyLine(
-            text=text, optional=bool(units.annotations(text)["optional"])))
-
     try:
-        safety = food_reference.screen_lines(lines)
+        # Inside the guard with the screening itself: this loop lazy-loads the
+        # component graph and parses arbitrary user text, and the endpoint's
+        # whole promise is that it can say "unavailable" rather than hand the
+        # UI a bare 500 it cannot tell apart from "nothing found".
+        safety = food_reference.screen_lines(_safety_lines(recipe))
     except food_reference.NothingToScreen:
         # 200, because a draft with no ingredients is not an error. The verdict
         # arrays are ABSENT rather than empty: `[]` is the one shape a client

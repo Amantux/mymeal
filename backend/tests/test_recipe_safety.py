@@ -148,12 +148,49 @@ def test_an_engine_failure_is_not_echoed_at_the_caller(monkeypatch):
 
 
 def test_an_optional_line_is_screened_as_optional():
-    """`units.annotations` is the single source of "is this optional", and the
-    endpoint feeds its answer through — a contains downgrades to may_contain."""
+    """A contains downgrades to may_contain when the line is optional."""
     plain = fr.screen_lines([fr.SafetyLine(text="50 g peanuts")])
     assert plain.allergens.verdict("peanuts").state.value == "contains"
     opt = fr.screen_lines([fr.SafetyLine(text="50 g peanuts", optional=True)])
     assert opt.allergens.verdict("peanuts").state.value == "may_contain"
+
+
+def test_a_blank_line_cannot_be_constructed():
+    """The one way this seam could manufacture a false clearance.
+
+    foodcore reads "" as a line it DID read and matched nothing in, so a blank
+    `SafetyLine` would contribute a clearance to every allergen while looking
+    like an ordinary screened row.
+    """
+    with pytest.raises(ValueError, match="blank"):
+        fr.SafetyLine(text="")
+    with pytest.raises(ValueError, match="blank"):
+        fr.SafetyLine(text="   ")
+
+
+def test_a_components_line_is_explained_by_its_components():
+    """Both directions of foodcore's `components` contract.
+
+    WITH components, the parent's own text stops being charged an opacity
+    `unknown` and the children are screened. WITHOUT them, the parent's words
+    are all there is and an opaque one is `unknown` — never nothing.
+    """
+    expanded = fr.screen_lines([
+        fr.SafetyLine(text="1 batch secret sauce",
+                      components=(fr.SafetyLine(text="200 g peanut butter"),)),
+        fr.SafetyLine(text="200 g rice noodles"),
+    ])
+    assert expanded.allergens.verdict("peanuts").state.value == "contains"
+    assert expanded.allergens.fully_screened is True
+    # Three coverage rows: the parent and its child both count as read.
+    assert len(expanded.allergens.coverage) == 3
+
+    unexpanded = fr.screen_lines([
+        fr.SafetyLine(text="1 batch secret sauce"),
+        fr.SafetyLine(text="200 g rice noodles"),
+    ])
+    assert unexpanded.allergens.verdict("milk").state.value == "unknown"
+    assert unexpanded.allergens.fully_screened is False
 
 
 # --- MUTATION-CHECK: STRICT excludes unknown --------------------------------
@@ -214,10 +251,53 @@ def test_a_policy_cannot_be_omitted_or_faked():
 
 # --- MUTATION-CHECK: evidence survives to the API ---------------------------
 
-_EVIDENCE_FIELDS = {"ingredient", "matchedTerm", "ruleId", "ruleVersion",
-                    "matchKind", "contributes", "note", "provenance"}
-_PROVENANCE_FIELDS = {"source", "sourceId", "retrieved", "method", "version",
-                      "confidence", "license"}
+def _camel(name):
+    head, *rest = name.split("_")
+    return head + "".join(w.title() for w in rest)
+
+
+def _expected_fields(dataclass_type):
+    """The camelCase names foodcore's own dataclass declares.
+
+    Derived, not hardcoded. A hardcoded set passes forever: foodcore could add
+    a field to `Evidence` or `Provenance`, the serializer would silently drop
+    it, and the assertion would stay green — which is the exact failure mode
+    (`_effective_nutrition`) this payload was written longhand to avoid. The
+    ruleset is versioned precisely because it is expected to change, so the
+    test that guards its shape has to change with it.
+    """
+    import dataclasses
+
+    return {_camel(f.name) for f in dataclasses.fields(dataclass_type)}
+
+
+def _evidence_fields():
+    import foodcore.allergens as fca
+    import foodcore.dietary as fcd
+
+    allergen = _expected_fields(fca.Evidence)
+    diet = _expected_fields(fcd.DietEvidence)
+    assert allergen == diet, (
+        "the two evidence types have diverged; _evidence_out serializes both "
+        f"with one function. allergen-only={allergen - diet} "
+        f"diet-only={diet - allergen}")
+    return allergen
+
+
+def _provenance_fields():
+    import foodcore
+
+    return _expected_fields(foodcore.Provenance)
+
+
+def test_the_expected_field_sets_come_from_foodcore_not_from_memory():
+    """Guards the guard: if this drifts, the assertions below mean nothing."""
+    assert _evidence_fields() == {
+        "ingredient", "matchedTerm", "ruleId", "ruleVersion", "matchKind",
+        "contributes", "note", "provenance"}
+    assert _provenance_fields() == {
+        "source", "sourceId", "retrieved", "method", "version", "confidence",
+        "license"}
 
 
 def test_every_evidence_field_reaches_the_wire(auth_client):
@@ -231,11 +311,11 @@ def test_every_evidence_field_reaches_the_wire(auth_client):
     assert milk["state"] == "contains"
     assert milk["evidence"], "a verdict with no evidence must never serialize"
     for row in milk["evidence"]:
-        assert set(row) == _EVIDENCE_FIELDS
+        assert set(row) == _evidence_fields()
         assert row["ruleId"] and row["ruleVersion"] and row["matchKind"]
         assert row["contributes"] in {"contains", "may_contain", "unknown",
                                       "no_known_ingredient_identified"}
-        assert set(row["provenance"]) == _PROVENANCE_FIELDS
+        assert set(row["provenance"]) == _provenance_fields()
         assert row["provenance"]["version"]
         assert row["provenance"]["confidence"] is not None
 
@@ -247,7 +327,7 @@ def test_every_evidence_field_reaches_the_wire(auth_client):
     vegan = _by_key(data["diets"], "vegan")
     assert vegan["state"] == "incompatible"
     for row in vegan["evidence"]:
-        assert set(row) == _EVIDENCE_FIELDS
+        assert set(row) == _evidence_fields()
 
 
 def test_the_fourth_state_keeps_its_coverage_evidence_on_the_wire(auth_client):
@@ -353,6 +433,111 @@ def test_the_two_lexicons_disagree_about_coconut_and_that_is_correct(auth_client
 
 
 # --- the endpoint ------------------------------------------------------------
+
+# --- a dropped line is a false clearance -----------------------------------
+#
+# Found by adversarial review and reproduced against the running app before
+# being fixed. Every one of these returned `no_known_ingredient_identified`
+# with `fullyScreened: true` — the engine reporting a line it never saw as a
+# line it read and found clean. Each is written to fail if the row is ever
+# dropped again, in any of the four ways it could be.
+
+def test_a_component_whose_subrecipe_is_empty_is_unknown_not_clean(auth_client):
+    """The parent line must survive an expansion that yields nothing.
+
+    `iter_leaf_ingredients` recurses into the sub-recipe, finds no rows, and
+    yields nothing at all — so flattening lost "1 batch Secret Peanut Sauce"
+    entirely and peanuts came back clean.
+    """
+    stub = auth_client.post("/api/v1/recipes", json={
+        "name": "Secret Peanut Sauce", "servings": 1, "ingredients": [],
+        "steps": [{"text": "x"}]}).get_json()
+    parent = auth_client.post("/api/v1/recipes", json={
+        "name": "Noodles", "servings": 2, "steps": [{"text": "x"}],
+        "ingredients": [
+            {"display": "1 batch Secret Peanut Sauce", "quantity": 1,
+             "refRecipeId": stub["id"]},
+            {"display": "200 g rice noodles"},
+        ]}).get_json()
+
+    data = _safety(auth_client, parent["id"])
+
+    assert data["screenedLines"] == 2
+    assert data["fullyScreened"] is False
+    assert any("Secret Peanut Sauce" in c["ingredient"] for c in data["coverage"])
+    assert _by_key(data["allergens"], "milk")["state"] == "unknown"
+
+
+def test_a_recipe_that_is_only_an_empty_component_is_not_no_ingredients(
+        auth_client):
+    """It has an ingredient row, so the panel must not say it has none."""
+    stub = auth_client.post("/api/v1/recipes", json={
+        "name": "Empty Sub", "servings": 1, "ingredients": [],
+        "steps": [{"text": "x"}]}).get_json()
+    parent = auth_client.post("/api/v1/recipes", json={
+        "name": "Only A Component", "servings": 2, "steps": [{"text": "x"}],
+        "ingredients": [{"display": "1 batch Empty Sub", "quantity": 1,
+                         "refRecipeId": stub["id"]}]}).get_json()
+
+    data = _safety(auth_client, parent["id"])
+
+    assert data["status"] == "screened"
+    assert data["screenedLines"] == 1
+    assert data["fullyScreened"] is False
+
+
+def test_a_row_with_a_food_but_no_display_is_screened_on_the_food(auth_client):
+    """`display` is not required by the API; the SPA always sends one, a
+    REST/MCP/HA client need not. Such a row used to be skipped entirely."""
+    recipe = auth_client.post("/api/v1/recipes", json={
+        "name": "Satay Sauce", "servings": 2, "steps": [{"text": "x"}],
+        "ingredients": [
+            {"food": "peanut butter", "quantity": 200, "unit": "g"},
+            {"display": "1 tsp salt"},
+        ]}).get_json()
+
+    data = _safety(auth_client, recipe["id"])
+
+    assert data["screenedLines"] == 2
+    assert _by_key(data["allergens"], "peanuts")["state"] == "contains"
+
+
+def test_a_row_with_no_text_at_all_is_unknown_not_clean(auth_client):
+    """A quantity is not a food. Composing "2.0" made foodcore discard it as a
+    bare numeral and report the line as read-and-clean."""
+    recipe = auth_client.post("/api/v1/recipes", json={
+        "name": "Mystery Row", "servings": 2, "steps": [{"text": "x"}],
+        "ingredients": [{"quantity": 2}, {"display": "1 tsp salt"}]}).get_json()
+
+    data = _safety(auth_client, recipe["id"])
+
+    assert data["screenedLines"] == 2
+    assert data["fullyScreened"] is False
+    assert _by_key(data["allergens"], "peanuts")["state"] == "unknown"
+
+
+def test_the_optional_flag_does_not_depend_on_how_the_line_is_phrased(
+        auth_client):
+    """`units.annotations` suppresses the flag when the word "optional" is
+    still visible in the rendered text — right for display, wrong here. Two
+    phrasings of one fact must not produce two different states."""
+    # The first measures; the rest are the phrasings `annotations` suppresses
+    # (it hides the flag when the word is still in the rendered text, and when
+    # the line has no leading quantity). All five state the same fact.
+    lines = [
+        "50 g peanuts, optional",
+        "50 g peanuts (optional)",
+        "(optional) 50 g peanuts",
+        "peanuts, optional",
+        "a handful of peanuts, optional",
+    ]
+    states = {}
+    for i, line in enumerate(lines):
+        recipe = _make_recipe(auth_client, f"Optional {i}", [line])
+        data = _safety(auth_client, recipe["id"])
+        states[line] = _by_key(data["allergens"], "peanuts")["state"]
+    assert set(states.values()) == {"may_contain"}, states
+
 
 def test_safety_requires_auth(app, auth_client):
     """A FRESH client, not the `client` fixture: `auth_client` IS `client` with
@@ -460,3 +645,11 @@ def test_a_component_subrecipe_is_screened_by_its_real_contents(auth_client,
     assert peanuts["state"] == "contains"
     # The evidence names the sub-recipe's line, not the parent's component row.
     assert any("peanut" in e["ingredient"].lower() for e in peanuts["evidence"])
+
+    # `screenedLines` counts what the ENGINE read, not the rows handed to it:
+    # the parent's two rows plus the sub-recipe's two. Counting the top level
+    # would under-report a compound recipe by exactly the part a cook most
+    # wants counted, and the number is what every state below it is bounded by.
+    assert data["screenedLines"] == 4
+    assert len(data["coverage"]) == 4
+    assert sum("Peanut Stock →" in c["ingredient"] for c in data["coverage"]) == 2

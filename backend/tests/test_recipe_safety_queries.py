@@ -61,9 +61,11 @@ def test_component_expansion_does_not_scale_the_query_count(auth_client, app):
     small_data, small_q = _selects_for(auth_client, app, small["id"])
     large_data, large_q = _selects_for(auth_client, app, large["id"])
 
-    # It really did expand, through the shared cycle-guarded expander.
-    assert small_data["screenedLines"] == 1 + 2 * 3
-    assert large_data["screenedLines"] == 1 + 8 * 3
+    # It really did expand. The count is the parent's own row, plus each
+    # component ROW (which is screened too — that is what stops an
+    # unexpandable one from vanishing), plus that component's three lines.
+    assert small_data["screenedLines"] == 1 + 2 * (1 + 3)
+    assert large_data["screenedLines"] == 1 + 8 * (1 + 3)
     assert any(a["key"] == "peanuts" and a["state"] == "contains"
                for a in large_data["allergens"])
 
