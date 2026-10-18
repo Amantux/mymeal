@@ -173,14 +173,61 @@ describe('the quiet state never reads as a clearance', () => {
       }],
     })
     const text = cardText(w)
-    expect(text).toContain('No known ingredient identified')
-    expect(text).toContain('(not a safety claim)')
-    expect(text).toContain('No conflict identified')
-    expect(text).toContain('(not a certification)')
+    // The LIMITATION leads, and the allergen name follows it. The first draft
+    // read "No known ingredient identified (not a safety claim): Milk …",
+    // which skims as a free-from list — the caveat has to be in the headline,
+    // not in a parenthesis after the reassurance.
+    const quiet = w.find('.sf-quiet').text()
+    expect(quiet).toContain('not the same as free from them')
+    expect(quiet.indexOf('not the same as free from them'))
+      .toBeLessThan(quiet.indexOf('Milk'))
+    const diets = w.findAll('.sf-quiet')[1].text()
+    expect(diets).toContain('not a certification')
+    expect(diets.indexOf('not a certification')).toBeLessThan(diets.indexOf('Vegan'))
+
+    // ...and it is not shrunk below the line it qualifies. The old
+    // `.sf-quiet-note` rule set it to 0.8rem inside a 0.84rem line.
+    expect(w.find('.sf-quiet-note').exists()).toBe(false)
+
     // No word a reader could bank on. `certified: true` must not become a tick.
-    expect(text).not.toMatch(/\bfree from\b|\ballergen-free\b|\bsafe\b|\bcertified\b(?! from)/i)
+    expect(text).not.toMatch(/\ballergen-free\b|\bsafe\b|\bcertified\b(?! from)/i)
     expect(text).not.toContain('✓')
+    // "free from" may appear ONLY as something being denied. Every occurrence
+    // must have a negation close in front of it.
+    for (const m of text.matchAll(/free from/gi)) {
+      const before = text.slice(Math.max(0, m.index - 30), m.index)
+      expect(before, `unqualified "free from" after "…${before}"`)
+        .toMatch(/\bnot\b/i)
+    }
   })
+
+  test('a wholly-quiet allergen section gets the limitation as a full sentence',
+    async () => {
+      // The highest-risk screen: nothing else is on the card to compare
+      // against, so the prefix alone is not enough.
+      const w = await mountWith({
+        ...SCREENED,
+        allergens: [allergen('milk', 'Milk', 'no_known_ingredient_identified')],
+      })
+      const lead = w.find('.sf-quiet-lead')
+      expect(lead.exists()).toBe(true)
+      expect(lead.text()).toContain('nothing found')
+      expect(lead.text()).toContain('not')
+      expect(lead.text()).toContain('free from')
+    })
+
+  test('the lead sentence is dropped once there is a real finding to compare to',
+    async () => {
+      const w = await mountWith({
+        ...SCREENED,
+        allergens: [
+          allergen('wheat', 'Wheat', 'contains'),
+          allergen('milk', 'Milk', 'no_known_ingredient_identified'),
+        ],
+      })
+      expect(w.find('.sf-quiet-lead').exists()).toBe(false)
+      expect(w.find('.sf-quiet').exists()).toBe(true)
+    })
 
   test('the card always states what it is bounded by', async () => {
     const w = await mountWith({

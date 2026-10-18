@@ -1198,10 +1198,12 @@ const imageSrc = computed(() =>
 
         <!-- Unavailable. Said out loud, because an empty panel here is
              indistinguishable from a clean one. -->
-        <div v-else-if="safetyError" class="sf-notice sf-tone-unscreened">
+        <div v-else-if="safetyError" class="sf-notice">
           <strong>This recipe has not been screened.</strong>
           {{ safetyError }}
-          <button class="secondary sm" style="margin-left:8px" @click="loadSafety">
+          <!-- On its own line: inline, it broke the sentence's line box and
+               left a ragged gap above itself at 390px. -->
+          <button class="secondary sm sf-retry" @click="loadSafety">
             Try again
           </button>
         </div>
@@ -1214,7 +1216,7 @@ const imageSrc = computed(() =>
         <template v-else-if="safety && safety.status === 'screened'">
           <!-- The consequence of an unreadable line, stated before any verdict
                the reader might take at face value. -->
-          <div v-if="!safety.fullyScreened" class="sf-notice sf-tone-unscreened">
+          <div v-if="!safety.fullyScreened" class="sf-notice">
             <strong>
               {{ unreadable.length }} of {{ safety.screenedLines }} ingredient{{ safety.screenedLines === 1 ? '' : 's' }}
               could not be read.
@@ -1235,7 +1237,7 @@ const imageSrc = computed(() =>
                            'sf-text-' + safetyTone(row.state)]">
                 {{ SAFETY_WORD[row.state] || row.state }}
               </dt>
-              <dd class="sf-dd">
+              <dd :class="['sf-dd', 'sf-tone-' + safetyTone(row.state)]">
                 <span class="sf-labels">{{ row.labels.join(' · ') }}</span>
                 <span v-if="row.why" class="muted sf-why">{{ row.why }}</span>
                 <span v-else-if="row.state === 'unknown'" class="muted sf-why">
@@ -1244,12 +1246,27 @@ const imageSrc = computed(() =>
               </dd>
             </template>
           </dl>
-          <!-- The quiet state, in the engine's own careful words. Never "free
-               from", never a tick: the labels on one muted line, under a
-               heading that says what the absence is bounded by. -->
+          <!-- The quiet state. The DANGEROUS one, and the first draft got it
+               wrong: it led with "No known ingredient identified" in bold and
+               put "(not a safety claim)" after it, parenthesised and a size
+               SMALLER than the line it qualified. On a recipe where nothing
+               matched, that made the entire allergens section read, at a
+               glance, as "No … Egg · Milk · Peanuts · Tree nuts" — a free-from
+               list. The caveat is now in the headline, at full size, and the
+               reassuring half never stands alone.
+
+               When there is nothing else in the section it gets a full
+               sentence first, because that is the screen where a cook has
+               least to compare against. -->
+          <p v-if="allergensQuiet.length && !allergensLoud.length"
+             class="muted sf-quiet-lead">
+            No ingredient matched an allergen rule. The rules read common
+            ingredient names, not labels — so this is "nothing found", not
+            "free from".
+          </p>
           <p v-if="allergensQuiet.length" class="muted sf-quiet">
-            <span class="sf-quiet-h">No known ingredient identified</span>
-            <span class="sf-quiet-note"> (not a safety claim)</span>:
+            <span class="sf-quiet-h">No rule matched these — which is not the
+              same as free from them</span>:
             {{ allergensQuiet.join(' · ') }}
           </p>
 
@@ -1260,15 +1277,21 @@ const imageSrc = computed(() =>
                            'sf-text-' + safetyTone(row.state)]">
                 {{ SAFETY_WORD[row.state] || row.state }}
               </dt>
-              <dd class="sf-dd">
+              <dd :class="['sf-dd', 'sf-tone-' + safetyTone(row.state)]">
                 <span class="sf-labels">{{ row.labels.join(' · ') }}</span>
                 <span v-if="row.why" class="muted sf-why">{{ row.why }}</span>
+                <!-- Same fallback the allergen rows get. Without it this row
+                     stood alone with no qualifier at all, and on a phone it can
+                     sit a screen and a half below the notice that explains it. -->
+                <span v-else-if="row.state === 'unknown'" class="muted sf-why">
+                  no rule could be applied to {{ unreadable.length === 1 ? 'the unreadable ingredient' : 'the unreadable ingredients' }} above
+                </span>
               </dd>
             </template>
           </dl>
           <p v-if="dietsQuiet.length" class="muted sf-quiet">
-            <span class="sf-quiet-h">No conflict identified</span>
-            <span class="sf-quiet-note"> (not a certification)</span>:
+            <span class="sf-quiet-h">No rule conflicted with these — which is
+              not a certification</span>:
             {{ dietsQuiet.join(' · ') }}
           </p>
           <!-- Headline always visible, the engine's own reasons on demand. -->
@@ -1646,15 +1669,29 @@ select.sm { padding: 2px 6px; }
    Stacked on a phone, where the reason text needs all of it. */
 .sf-rows {
   /* 132px fits the longest state word ("Incompatible") on one line at this
-     size; narrower and it either wrapped to two lines or ran under the names. */
+     size; narrower and it either wrapped to two lines or ran under the names.
+     `stretch`, not `baseline`: the rail is only as tall as the box it is drawn
+     on, and a 3px dashed border across one line of text renders about two
+     dashes — indistinguishable from solid unless a solid sibling happens to be
+     directly adjacent. Stretching the term to the row's height gives the dash
+     pattern room to actually read as a dash pattern. */
   display: grid; grid-template-columns: 132px 1fr;
-  gap: 6px 12px; margin: 0; align-items: baseline;
+  gap: 6px 12px; margin: 0; align-items: stretch;
 }
 .sf-dt {
   margin: 0; padding: 2px 0 2px 10px; font-weight: 600; font-size: 0.9rem;
   border-left: 3px solid var(--border);
 }
-.sf-dd { margin: 0; padding: 2px 0; font-size: 0.9rem; display: flex; flex-wrap: wrap; gap: 2px 8px; }
+.sf-dd {
+  margin: 0; padding: 2px 0; font-size: 0.9rem;
+  display: flex; flex-wrap: wrap; align-content: flex-start; gap: 2px 8px;
+  /* Width 0, not `border-left: none`, and NOT re-declared as a shorthand in
+     the media query below. The tone classes set only colour and style, so a
+     later shorthand would silently reset the colour back to --border — which
+     is exactly what happened: every stacked row drew a neutral grey rail
+     regardless of its state. Only the WIDTH changes at the breakpoint. */
+  border-left: 0 solid var(--border);
+}
 .sf-labels { font-weight: 600; }
 .sf-why { font-size: 0.84rem; }
 .sf-advisory { margin: 10px 0 0; font-size: 0.82rem; color: var(--muted); }
@@ -1666,41 +1703,60 @@ select.sm { padding: 2px 6px; }
 /* The one that matters. See the note above. */
 .sf-tone-unscreened { border-left-style: dashed; border-left-color: var(--warning); }
 .sf-tone-quiet { border-left-color: var(--border); }
-.sf-text-bad { color: var(--danger); }
-.sf-text-warn { color: var(--warning); }
-.sf-text-unscreened { color: var(--warning); }
+/* The -text variants, not the raw status tokens: a state word is the finding
+   itself, and --danger fails AA as text in dark while --warning fails it in
+   light. The rails above keep the raw tokens — a 3px rule only needs 3:1. */
+.sf-text-bad { color: var(--danger-text); }
+.sf-text-warn { color: var(--warning-text); }
+.sf-text-unscreened { color: var(--warning-text); }
 .sf-text-quiet { color: var(--muted); }
 
 /* The unreadable-ingredients notice, and the unavailable state — same shape,
-   because they say the same thing to a cook: part of this is unscreened. */
+   because they say the same thing to a cook: part of this is unscreened.
+   The rail is a ::before, not a border-left: a left-only dashed border on a
+   rounded box bends its end dashes around the corner radius into little hooks,
+   which made the card's signature device look like a rendering bug. */
 .sf-notice {
-  margin: 0 0 12px; padding: 10px 12px; font-size: 0.88rem;
-  border-left: 3px dashed var(--warning);
+  position: relative;
+  margin: 0 0 12px; padding: 10px 12px 10px 15px; font-size: 0.88rem;
   background: var(--surface-2); border-radius: var(--radius-sm);
+}
+.sf-notice::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  background: repeating-linear-gradient(
+    to bottom, var(--warning) 0 5px, transparent 5px 10px);
 }
 .sf-reasons { margin: 6px 0 0; padding-left: 18px; font-size: 0.84rem; }
 .sf-reasons li { margin: 2px 0; }
 .sf-line { font-weight: 600; }
+.sf-retry { display: block; margin: 10px 0 0; }
 
-/* The quiet states, collapsed to one line. Indented to the rail so it reads as
-   part of the same list, but with no rail of its own — it is the absence of a
-   finding, and giving it a marker would make it look like one. */
-.sf-quiet { margin: 8px 0 0; padding-left: 13px; font-size: 0.84rem; }
+/* The quiet states, collapsed to one line. Indented to the rail (10px padding
+   + 3px border) so it reads as part of the same list, but with no rail of its
+   own — it is the absence of a finding, and a marker would make it look like
+   one. The caveat is NOT shrunk: it was 0.8rem against the 0.84rem line it
+   qualified, which made the most load-bearing clause on the card the least
+   legible thing in it. */
+.sf-quiet-lead { margin: 6px 0 0; padding-left: 13px; font-size: 0.84rem; }
+.sf-quiet { margin: 6px 0 0; padding-left: 13px; font-size: 0.84rem; }
 .sf-quiet-h { font-weight: 600; }
-.sf-quiet-note { font-size: 0.8rem; }
 .sf-prov { margin: 16px 0 0; font-size: 0.82rem; }
 
 @media (max-width: 560px) {
   /* One column: the reason text is what a phone needs the width for, and a
-     160px label column would leave it two words wide. The rail moves to the
-     group so the label and its state stay visually bound together. */
+     132px state column would leave it two words wide.
+
+     Stacked, the dd is directly below the dt, so the rail CAN continue through
+     it — and must. It carried `transparent` before, which left a ~20px stub
+     next to the state word: two dashes, which is not a pattern anyone reads as
+     dashed. Running the tone border down the labels too makes the rail 4–6
+     dashes tall AND brackets state→labels as one unit, which is the thing the
+     two-column alignment was doing before it collapsed. */
   .sf-rows { grid-template-columns: 1fr; gap: 0; }
   .sf-dt { padding-bottom: 0; }
-  .sf-dd {
-    padding: 0 0 8px 10px; margin-bottom: 2px;
-    border-left: 3px solid transparent;
-  }
-  .sf-quiet { padding-left: 10px; }
+  .sf-dd { padding: 0 0 10px 10px; margin-bottom: 2px; border-left-width: 3px; }
+  .sf-quiet, .sf-quiet-lead { padding-left: 10px; }
 }
 /* Media: one grid for photos, clips, embeds and the add tile. auto-fill so the
    slot is two-up on a desktop card and one-up on a phone with no breakpoint of

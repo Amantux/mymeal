@@ -23,6 +23,25 @@
   --warning: #d97706;
   --success: #16a34a;
 
+  /* Status-coloured TEXT, the same split --accent-text exists for and for the
+     same measured reason: --danger and --warning are tuned as borders, icons
+     and fills, and neither clears 4.5:1 as text in BOTH themes.
+
+         on --surface / --surface-2      light         dark
+         --danger                      4.83 / 4.56   3.49 / 3.72  <- dark fails
+         --warning                     3.19 / 3.01   5.29 / 5.64  <- light fails
+
+     Each one fails in the theme the other passes in, so a single value cannot
+     work and a per-theme override is the only honest fix. These clear 4.5:1 on
+     --surface AND --surface-2 in their own theme. Use them for any status
+     WORD; keep --danger / --warning for rails, borders and fills, which only
+     need the 3:1 non-text floor and already meet it everywhere.
+
+     Status words are not decoration — they are the finding — so failing AA on
+     one is a legibility bug, not a polish item. */
+  --danger-text: #c81e1e;   /* 5.74 / 5.41 on light */
+  --warning-text: #b45309;  /* 5.02 / 4.74 on light */
+
   --radius: 14px;
   --radius-sm: 9px;
   --shadow: 0 1px 2px rgba(28, 25, 23, 0.06), 0 4px 16px rgba(28, 25, 23, 0.05);
@@ -41,6 +60,11 @@
   /* Lighter, not darker, against the dark surfaces — and still needed here:
      --accent on the dark tint is 3.58:1, which also fails. */
   --accent-text: #f07a52;
+  /* Lighter red; --danger is 3.49:1 on --surface here. --warning-text is NOT
+     overridden: the base --warning already measures 5.29 / 5.64 against these
+     surfaces, and darkening it for consistency's sake would make it worse. */
+  --danger-text: #f87171;   /* 6.09 / 6.49 on dark */
+  --warning-text: var(--warning);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 20px rgba(0, 0, 0, 0.35);
   --shadow-lg: 0 16px 50px rgba(0, 0, 0, 0.55);
 }
