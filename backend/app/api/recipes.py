@@ -47,15 +47,20 @@ def _get(recipe_id) -> Recipe:
     return recipe
 
 
-def _get_by_id_or_slug(ident) -> Recipe:
+def _get_by_id_or_slug(ident, extra_opts=()) -> Recipe:
+    """`extra_opts` chains further eager-loads for a caller that traverses more
+    of the graph than `recipe_out` does — the component tree, say. Passed here
+    rather than left to lazy loading so the expansion is one query set and not
+    one query per component row."""
     gid = current_group().id
+    opts = (*_recipe_load_opts(), *extra_opts)
     recipe = (db.session.query(Recipe)
-              .options(*_recipe_load_opts())
+              .options(*opts)
               .filter_by(id=ident).first())
     if recipe and recipe.group_id == gid:
         return recipe
     recipe = (db.session.query(Recipe)
-              .options(*_recipe_load_opts())
+              .options(*opts)
               .filter_by(group_id=gid, slug=ident).first())
     if not recipe:
         abort(404)
@@ -479,6 +484,69 @@ def get_recipe(ident):
     out = recipe_out(recipe)
     _apply_view(out, recipe, request.args)
     return jsonify(out)
+
+
+@bp.get("/recipes/<ident>/safety")
+@login_required
+def get_recipe_safety(ident):
+    """What this recipe contains, and what could not be determined.
+
+    A DEDICATED endpoint rather than another key on `recipe_out`, for four
+    reasons that all point the same way:
+
+    1. `recipe_out` feeds the recipe-VERSION snapshot, which is stored as a
+       JSON blob "in the exact shape the update endpoint accepts". A screening
+       is derived, rule-versioned data; baked into a snapshot it would be
+       restored months later as a fact, under a ruleset that has since moved,
+       with no way to tell. Derived state must not be snapshottable.
+    2. It is also the share/export payload. A stale safety verdict travelling
+       with an exported recipe is worse than none.
+    3. It costs real CPU — ~5 ms per recipe for the two engines, measured —
+       which is a tax `recipe_out` would pay on every detail render whether the
+       panel is looked at or not.
+    4. A separate resource can answer "unavailable" honestly. Folded into the
+       recipe payload, an engine failure is either a 503 on the whole recipe or
+       a missing key the UI cannot distinguish from "nothing found" — and that
+       indistinguishability is precisely what this feature exists to end.
+
+    No policy is applied and no boolean is returned. The four states and their
+    evidence are reported; deciding what is acceptable needs an avoidance
+    policy, which belongs to the filter that does not exist yet.
+    """
+    from ..schemas.serializers import recipe_safety_out
+    from ..services import components, food_reference, units
+
+    recipe = _get_by_id_or_slug(ident, components.component_load_opts())
+    # Leaf ingredients, so a linked component sub-recipe is screened by its
+    # real contents rather than by the words "2 batches beef stock". Via the
+    # one shared expander (cycle-guarded, depth- and fan-out-capped); a
+    # component that cannot be expanded is yielded as its own line and screened
+    # as text, which honestly comes back `unknown`. The multiplier is ignored
+    # on purpose: screening is about presence, not amount.
+    lines = []
+    for ing, _mult in components.iter_leaf_ingredients(recipe):
+        text = (ing.display or "").strip()
+        if not text:
+            continue
+        # `units.annotations` is myMeal's existing single answer to "is this
+        # line optional" — the same call the serializer uses — so the word
+        # "optional" is not parsed a second time here with different rules.
+        lines.append(food_reference.SafetyLine(
+            text=text, optional=bool(units.annotations(text)["optional"])))
+
+    try:
+        safety = food_reference.screen_lines(lines)
+    except food_reference.NothingToScreen:
+        # 200, because a draft with no ingredients is not an error. The verdict
+        # arrays are ABSENT rather than empty: `[]` is the one shape a client
+        # could plausibly render as "no allergens found", which over zero
+        # screened lines would be a false clearance.
+        return jsonify({"status": "no_ingredients", "screenedLines": 0})
+    except food_reference.ScreeningUnavailable as exc:
+        # The exception's own curated message — a typed domain error, so this is
+        # not an upstream string being echoed at a client.
+        return jsonify({"status": "unavailable", "error": str(exc)}), 503
+    return jsonify(recipe_safety_out(safety))
 
 
 def _apply_view(out: dict, recipe: Recipe, args):

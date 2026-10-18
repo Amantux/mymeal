@@ -345,6 +345,127 @@ def _effective_nutrition_completeness(r):
     return round(num * 100, 1) if num <= 1 else round(num, 1)
 
 
+# ---------------------------------------------------------------------------
+# Recipe safety: allergen states and dietary compatibility
+#
+# EVERY field of every piece of evidence reaches the wire, and that is the whole
+# point of writing these three functions out longhand instead of reaching for a
+# generic dataclass-to-camelCase walker.
+#
+# The cautionary tale is directly above. `_effective_nutrition` sums only values
+# that pass `_as_number`, so the non-numeric keys a nutrition record carries —
+# `source`, `completeness`, the provenance of the figure — were silently dropped
+# one layer below the UI. Nobody noticed until somebody went looking, and the
+# fix was two extra top-level fields (`nutritionSource`,
+# `nutritionCompleteness`) bolted on afterwards.
+#
+# Here the stakes are higher: a verdict whose evidence did not survive
+# serialization is a bare word like "unknown" with nothing behind it, and
+# foodcore raises rather than construct one. Dropping it on the way out would
+# reproduce by accident exactly the thing the engine refuses to do on purpose.
+# `test_recipe_safety.py` asserts field-by-field that nothing is lost.
+#
+# There is also no boolean in this payload that a client could read as "safe".
+# `state` is one of the four words, `stateText` is the engine's OWN phrasing of
+# it (so "(not a safety claim)" travels with the data instead of being
+# reinvented in the UI), and `certified` is foodcore's narrowly-defined dietary
+# term, never an allergen one. No `safe`, no `free`, no `ok`.
+# ---------------------------------------------------------------------------
+
+def _provenance_out(p):
+    """A foodcore `Provenance`, or None. All seven fields; `confidence` is a
+    number and `method`/`license` are the claims that qualify it."""
+    if p is None:
+        return None
+    return {
+        "source": p.source,
+        "sourceId": p.source_id,
+        "retrieved": p.retrieved,
+        "method": p.method,
+        "version": p.version,
+        "confidence": p.confidence,
+        "license": p.license,
+    }
+
+
+def _evidence_out(e):
+    """One `Evidence`/`DietEvidence` row. The two types have identical fields by
+    design, so one function serializes both; `contributes` carries whichever
+    state enum its own engine uses."""
+    return {
+        "ingredient": e.ingredient,
+        "matchedTerm": e.matched_term,
+        "ruleId": e.rule_id,
+        "ruleVersion": e.rule_version,
+        "matchKind": e.match_kind,
+        "contributes": e.contributes.value,
+        "note": e.note,
+        "provenance": _provenance_out(e.provenance),
+    }
+
+
+def recipe_safety_out(safety):
+    """A `food_reference.RecipeSafety` as camelCase JSON.
+
+    `screenedLines` is not decoration: every state below is bounded by it, and a
+    verdict list rendered without it is a claim about a recipe rather than a
+    report on the lines that were read. Same for `rulesetVersions` — the states
+    are only reproducible against the rules that produced them.
+    """
+    a, d = safety.allergens, safety.diets
+    return {
+        "status": "screened",
+        "screenedLines": len(safety.lines),
+        # False means at least one line could not be fully read, so every
+        # `unknown` below has a reason in `coverage`. The UI leads with this.
+        "fullyScreened": a.fully_screened,
+        "rulesetVersions": {
+            "allergens": a.ruleset_version,
+            "dietary": d.ruleset_version,
+        },
+        "allergens": [
+            {
+                "key": v.allergen,
+                "label": v.label,
+                "state": v.state.value,
+                "stateText": str(v.state),
+                "needsReview": v.needs_review,
+                "evidence": [_evidence_out(e) for e in v.evidence],
+            }
+            for v in a.verdicts
+        ],
+        "diets": [
+            {
+                "key": v.diet,
+                "label": v.label,
+                "state": v.state.value,
+                "stateText": str(v.state),
+                # True only when nothing conflicted AND the diet is
+                # machine-checkable from ingredient text. An advisory diet
+                # (keto, paleo, whole30, gluten-free cross-contact) is never
+                # certified, and `advisory` says why in the engine's own words.
+                "certified": v.certified,
+                "advisory": v.advisory,
+                "needsReview": v.needs_review,
+                "evidence": [_evidence_out(e) for e in v.evidence],
+            }
+            for v in d.verdicts
+        ],
+        # What the engine understood, line by line. The same `unscreened`
+        # reasons appear inside each allergen's evidence (once per allergen,
+        # with that allergen's rule id); this is the per-line view, which is how
+        # a cook finds the ingredient to go and read a label on.
+        "coverage": [
+            {
+                "ingredient": c.ingredient,
+                "recognised": list(c.recognised),
+                "unscreened": list(c.unscreened),
+            }
+            for c in a.coverage
+        ],
+    }
+
+
 def recipe_media_out(v):
     """One item in a recipe's media slot — a photo or a how-to video.
 

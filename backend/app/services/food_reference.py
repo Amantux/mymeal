@@ -1023,8 +1023,11 @@ def screen_lines(lines) -> RecipeSafety:
             "This recipe has no ingredient lines, so there is nothing to screen."
         )
 
-    refs = [fca.IngredientRef(text=r.text, optional=r.optional) for r in rows]
     try:
+        # Inside the guard, not above it: building the refs is already a call
+        # into the library, and a test that exploded on attribute access found
+        # this escaping as a raw RuntimeError.
+        refs = [fca.IngredientRef(text=r.text, optional=r.optional) for r in rows]
         # foodcore's own defaults for both sets — see the note above on why this
         # module keeps no copy of either list.
         allergens = fca.screen(refs, fca.SensitivityProfile.us_major_allergens())
