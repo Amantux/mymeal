@@ -22,11 +22,12 @@ vi.mock('vue-router', () => ({
 }))
 
 const get = vi.fn()
+const put = vi.fn()
 vi.mock('../../api', () => ({
   api: {
     get: (...a) => get(...a),
     post: vi.fn().mockResolvedValue({}),
-    put: vi.fn().mockResolvedValue({}),
+    put: (...a) => put(...a),
     del: vi.fn().mockResolvedValue({}),
     patch: vi.fn().mockResolvedValue({}),
     upload: vi.fn(),
@@ -93,7 +94,12 @@ function cardText(w) {
   return card.text()
 }
 
-beforeEach(() => get.mockReset())
+beforeEach(() => {
+  get.mockReset()
+  // `save()` assigns the response straight onto `recipe`, so the PUT has to
+  // hand back a whole recipe or the template blows up on the next render.
+  put.mockReset().mockResolvedValue(RECIPE)
+})
 
 describe('an unscreened allergen is never presented as a clear one', () => {
   test('`unknown` is called out, not folded into the quiet line', async () => {
@@ -315,6 +321,133 @@ describe('the panel says when it cannot answer', () => {
       expect(w.findAll('.sf-dt')).toHaveLength(0)
       expect(w.find('.sf-quiet').exists()).toBe(false)
     })
+})
+
+describe('the panel is never stale', () => {
+  // The verdicts describe an ingredient list. The moment that list changes,
+  // a panel that does not re-screen is showing last week's answer under this
+  // week's ingredients — and it is silent about it. Found by review: the call
+  // sat in `onMounted`, so neither saving an edit nor restoring a version
+  // refreshed it.
+  function serveCounting(first, second) {
+    let n = 0
+    get.mockImplementation((raw) => {
+      const path = String(raw || '')
+      if (path.endsWith('/safety')) return Promise.resolve(n++ ? second : first)
+      if (path.includes('/versions')) return Promise.resolve({ items: [] })
+      if (path === '/categories') return Promise.resolve([])
+      return Promise.resolve(RECIPE)
+    })
+    return () => n
+  }
+
+  const CLEAN = {
+    ...SCREENED,
+    allergens: [allergen('peanuts', 'Peanuts', 'no_known_ingredient_identified')],
+  }
+  const DIRTY = {
+    ...SCREENED,
+    allergens: [allergen('peanuts', 'Peanuts', 'contains',
+      { evidence: [ev({ matchedTerm: 'peanut butter' })] })],
+  }
+
+  test('saving an edit re-screens', async () => {
+    serveCounting(CLEAN, DIRTY)
+    const w = mount(RecipeDetail, { global: { plugins: [createPinia()] } })
+    await flushPromises(); await flushPromises()
+    expect(cardText(w)).toContain('No rule matched these')
+
+    await w.vm.save()
+    await flushPromises(); await flushPromises()
+
+    const text = cardText(w)
+    expect(text).toContain('Contains')
+    expect(text).toContain('peanut butter')
+    expect(text).not.toContain('No rule matched these')
+  })
+
+  test('re-reading the recipe re-screens, so restoring a version does too',
+    async () => {
+      // `promoteVersion` swaps the whole ingredient list and calls `load()`.
+      serveCounting(CLEAN, DIRTY)
+      const w = mount(RecipeDetail, { global: { plugins: [createPinia()] } })
+      await flushPromises(); await flushPromises()
+      expect(cardText(w)).toContain('No rule matched these')
+
+      await w.vm.load()
+      await flushPromises(); await flushPromises()
+
+      expect(cardText(w)).toContain('Contains')
+    })
+})
+
+describe('an unfamiliar state is never rendered as fine', () => {
+  test('a state this view has not heard of gets the attention tone and sorts first',
+    async () => {
+      // Fail open, not quiet: a future foodcore state must not land muted at
+      // the bottom of the card looking like an absence of findings.
+      const w = await mountWith({
+        ...SCREENED,
+        allergens: [
+          allergen('milk', 'Milk', 'contains'),
+          allergen('egg', 'Egg', 'probably_contains_somehow'),
+        ],
+      })
+      const rows = w.findAll('.sf-dt')
+      expect(rows[0].classes()).toContain('sf-tone-unscreened')
+      expect(rows[0].text()).toBe('probably_contains_somehow')
+      // And it is not swept into the quiet line.
+      expect(w.find('.sf-quiet').exists()).toBe(false)
+    })
+})
+
+describe('a hedged verdict shows WHY it is hedged', () => {
+  test("the engine's note is surfaced on may_contain", async () => {
+    // Without it, a `contains` downgraded because the line claims to be vegan
+    // renders as "May contain Milk — butter": indistinguishable from an
+    // ordinary precautionary match, and the actionable half is gone.
+    const w = await mountWith({
+      ...SCREENED,
+      allergens: [allergen('milk', 'Milk', 'may_contain', {
+        evidence: [ev({
+          contributes: 'may_contain', matchedTerm: 'butter',
+          matchKind: 'declared_free_from',
+          note: 'declared vegan; claim not verified',
+        })],
+      })],
+    })
+    const text = cardText(w)
+    expect(text).toContain('butter')
+    expect(text).toContain('declared vegan; claim not verified')
+  })
+
+  test('a plain contains stays terse — no note is invented', async () => {
+    const w = await mountWith({
+      ...SCREENED,
+      allergens: [allergen('milk', 'Milk', 'contains', {
+        evidence: [ev({ matchedTerm: 'butter', note: 'some internal note' })],
+      })],
+    })
+    expect(cardText(w)).not.toContain('some internal note')
+  })
+})
+
+describe('rows merge on the full reason, not the displayed one', () => {
+  test('verdicts differing past the 4-term cutoff stay separate', async () => {
+    const terms = (...t) => ({
+      evidence: t.map((x) => ev({ matchedTerm: x })),
+    })
+    const w = await mountWith({
+      ...SCREENED,
+      allergens: [
+        allergen('milk', 'Milk', 'contains', terms('a', 'b', 'c', 'd', 'e')),
+        allergen('egg', 'Egg', 'contains', terms('a', 'b', 'c', 'd', 'f')),
+      ],
+    })
+    // Same first four terms, different fifth: two findings, two rows.
+    expect(w.findAll('.sf-dt')).toHaveLength(2)
+    expect(cardText(w)).toContain('+1 more')
+  })
 })
 
 describe('diet advisories', () => {

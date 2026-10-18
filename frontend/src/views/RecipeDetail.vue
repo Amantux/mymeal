@@ -306,11 +306,17 @@ async function load() {
   } finally {
     loading.value = false
   }
+  // Re-screen whenever the recipe is re-read, not only on mount. `load()` is
+  // what restoring a version and the media actions call, and with the call
+  // sitting in `onMounted` instead, promoting an experiment swapped the whole
+  // ingredient list underneath a verdict list that never changed — showing
+  // last week's allergen states, with "Screened 3 ingredient lines" under
+  // them, as if they described what is now on screen.
+  if (recipe.value) await loadSafety()
 }
 onMounted(async () => {
   await load()
   if (recipe.value) await loadVersions()
-  if (recipe.value) await loadSafety()
   try { allCategories.value = (await api.get('/categories')) || [] } catch { /* optional */ }
 })
 
@@ -411,6 +417,11 @@ async function save() {
       recipe.value = await api.put(`/recipes/${recipe.value.id}`, payload)
       editing.value = false
       await loadVersions()   // the pre-edit auto snapshot now exists
+      // The ingredient list just changed, so every verdict below it is now
+      // about a recipe that no longer exists. A stale "no known ingredient
+      // identified" sitting under a freshly-added jar of peanut butter is the
+      // worst thing this panel can do, and it is silent.
+      await loadSafety()
       ui.toast('Saved')
     }
   } catch (e) {
@@ -483,23 +494,44 @@ const SAFETY_WORD = {
   unknown: 'Not screened',
 }
 
+// The two QUIET states are listed explicitly and everything else falls through
+// to `unscreened`, not to `quiet`. A state this view has never heard of — a
+// future foodcore release adding one — must surface as something that wants
+// attention, not as a muted afterthought at the bottom of the card. Failing
+// open is how a new state would get rendered as "fine".
+const QUIET_TONE_STATES = ['no_known_ingredient_identified', 'no_conflict_identified']
+
 function safetyTone(state) {
   if (state === 'contains' || state === 'incompatible') return 'bad'
   if (state === 'may_contain' || state === 'uncertain') return 'warn'
-  if (state === 'unknown') return 'unscreened'
-  return 'quiet'
+  if (QUIET_TONE_STATES.includes(state)) return 'quiet'
+  return 'unscreened'
 }
 
-// The matched terms behind a verdict, deduped and in first-seen order — the
-// shortest true answer to "why does it say that". Evidence rows with no term
-// (a coverage record, an unreadable line) contribute nothing here; their
-// reason is the `unscreened` block at the top of the card instead.
+// Why a verdict says what it says. Matched terms first — the shortest true
+// answer — then, for the HEDGED states, the engine's own note.
+//
+// The note matters because without it a hedge is indistinguishable from a
+// plain match: foodcore downgrades a `contains` to `may_contain` when the line
+// claims to be free of the allergen ("declared vegan; claim not verified") or
+// when the ingredient is optional, and both rendered as a bare
+// "May contain Milk — butter". That reads as an ordinary precautionary match
+// and loses the one fact a cook would act on.
+//
+// Returns `{ terms, extra, full }`: `full` is the ungrouped term list, which
+// is what `loudRows` keys on — grouping on the TRUNCATED string merged two
+// verdicts that differed only in their fifth term.
 function safetyWhy(verdict) {
-  const seen = []
+  const terms = []
+  const notes = []
+  const hedged = verdict.state === 'may_contain' || verdict.state === 'uncertain'
   for (const e of verdict.evidence || []) {
-    if (e.matchedTerm && !seen.includes(e.matchedTerm)) seen.push(e.matchedTerm)
+    if (e.matchedTerm && !terms.includes(e.matchedTerm)) terms.push(e.matchedTerm)
+    if (hedged && e.note && !notes.includes(e.note)) notes.push(e.note)
   }
-  return seen.slice(0, 4).join(', ')
+  const shown = terms.slice(0, 4).join(', ')
+  const more = terms.length > 4 ? ` +${terms.length - 4} more` : ''
+  return { terms: shown + more, extra: notes[0] || '', full: terms.join(' ') }
 }
 
 // A row exists to tell the reader something specific. When nine allergens are
@@ -514,15 +546,23 @@ function loudRows(rows) {
   for (const r of rows || []) {
     if (QUIET_STATES.includes(r.state)) continue
     const why = safetyWhy(r)
-    const key = `${r.state}|${why}`
+    // Keyed on the FULL term list and the note, never on the displayed string:
+    // that one is truncated at four terms, so two verdicts differing only in
+    // their fifth term merged into a single row that was wrong for both.
+    const key = `${r.state}|${why.full}|${why.extra}`
     if (!groups.has(key)) {
-      groups.set(key, { key, state: r.state, why, labels: [] })
+      groups.set(key, {
+        key, state: r.state, why: why.terms, extra: why.extra, labels: [],
+      })
     }
     groups.get(key).labels.push(r.label)
   }
   return [...groups.values()]
     .map((g) => ({ ...g, labels: g.labels.sort((a, b) => a.localeCompare(b)) }))
-    .sort((a, b) => (SAFETY_ORDER[a.state] ?? 9) - (SAFETY_ORDER[b.state] ?? 9)
+    // `?? -1`, not `?? 9`: an unrecognised state sorts FIRST. Same reasoning as
+    // `safetyTone` — something this view does not understand belongs where it
+    // will be read, not at the bottom.
+    .sort((a, b) => (SAFETY_ORDER[a.state] ?? -1) - (SAFETY_ORDER[b.state] ?? -1)
       || a.labels[0].localeCompare(b.labels[0]))
 }
 
@@ -1191,9 +1231,9 @@ const imageSrc = computed(() =>
 
         <!-- Loading: a skeleton shaped like the rows it replaces. -->
         <div v-if="safetyLoading" class="sf-skel">
-          <div class="skeleton" style="height:14px;width:45%"></div>
-          <div class="skeleton" style="height:14px;width:62%"></div>
-          <div class="skeleton" style="height:14px;width:38%"></div>
+          <div class="skeleton sf-skel-a"></div>
+          <div class="skeleton sf-skel-b"></div>
+          <div class="skeleton sf-skel-c"></div>
         </div>
 
         <!-- Unavailable. Said out loud, because an empty panel here is
@@ -1223,7 +1263,9 @@ const imageSrc = computed(() =>
             </strong>
             Nothing below rules out an allergen in {{ unreadable.length === 1 ? 'it' : 'them' }} — check the label yourself.
             <ul class="sf-reasons">
-              <li v-for="c in unreadable" :key="c.ingredient">
+              <!-- Keyed by index: two identical ingredient lines are legal and
+                   produce two coverage rows with the same label. -->
+              <li v-for="(c, i) in unreadable" :key="i">
                 <span class="sf-line">{{ c.ingredient }}</span>
                 <span class="muted"> — {{ c.unscreened.join('; ') }}</span>
               </li>
@@ -1240,7 +1282,12 @@ const imageSrc = computed(() =>
               <dd :class="['sf-dd', 'sf-tone-' + safetyTone(row.state)]">
                 <span class="sf-labels">{{ row.labels.join(' · ') }}</span>
                 <span v-if="row.why" class="muted sf-why">{{ row.why }}</span>
-                <span v-else-if="row.state === 'unknown'" class="muted sf-why">
+                <!-- The engine's own note on a HEDGED state. Without it,
+                     "May contain Milk — butter" hides the fact that the line
+                     claimed to be vegan, or that the ingredient is optional —
+                     which is the part a cook would act on. -->
+                <span v-if="row.extra" class="muted sf-why sf-note">{{ row.extra }}</span>
+                <span v-else-if="!row.why && row.state === 'unknown'" class="muted sf-why">
                   no rule could be applied to {{ unreadable.length === 1 ? 'the unreadable ingredient' : 'the unreadable ingredients' }} above
                 </span>
               </dd>
@@ -1655,6 +1702,11 @@ select.sm { padding: 2px 6px; }
    so the distinction survives for a colour-blind reader and in a screenshot.
    The state word is always spelled out too; colour is never the only signal. */
 .sf-skel { display: grid; gap: 8px; }
+/* Shaped like the rows it replaces: three ragged lines, not a spinner. */
+.sf-skel > div { height: 16px; }
+.sf-skel-a { width: 45%; }
+.sf-skel-b { width: 62%; }
+.sf-skel-c { width: 38%; }
 .sf-h {
   margin: 16px 0 8px; font-size: 0.78rem; color: var(--muted);
   text-transform: uppercase; letter-spacing: 0.03em; font-weight: 600;
@@ -1694,6 +1746,8 @@ select.sm { padding: 2px 6px; }
 }
 .sf-labels { font-weight: 600; }
 .sf-why { font-size: 0.84rem; }
+/* The engine's note gets its own line: it is a sentence, not a term list. */
+.sf-note { flex-basis: 100%; }
 .sf-advisory { margin: 10px 0 0; font-size: 0.82rem; color: var(--muted); }
 .sf-advisory > summary { cursor: pointer; }
 .sf-advisory > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
