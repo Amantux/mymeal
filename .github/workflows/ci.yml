@@ -34,11 +34,11 @@ jobs:
           # Pin ruff so CI matches the version developers lint against locally —
           # an unpinned `ruff` silently pulls new releases whose changed lint
           # defaults then fail CI on unrelated, pre-existing code.
+          # foodcore is pinned to a commit of its own repository inside
+          # requirements.txt, so this one line installs it too — CI exercises
+          # exactly the artifact the image ships, not a sibling checkout that
+          # could silently differ.
           pip install -r requirements.txt pytest ruff==0.15.12
-          # foodcore is a path dependency in this repo, installed as a package
-          # (never imported off sys.path — its source dir is `app/` and would
-          # shadow the backend's own `app` package). Zero runtime deps.
-          pip install ../foodcore
       - name: Ruff
         working-directory: backend
         run: ruff check .

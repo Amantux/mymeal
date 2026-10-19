@@ -22,12 +22,25 @@ beautifulsoup4>=4.15.0
 # MCP server exposed to Home Assistant (runs alongside the app in the same container)
 mcp==1.29.1  # pin: newer mcp dropped mcp.server.fastmcp (breaks the MCP server + CI)
 uvicorn>=0.29.0
-# foodcore (shared food-reference library) is NOT listed here on purpose: it is
-# a path dependency inside this repo, and a relative requirement line would be
-# resolved against the working directory, which differs between Docker, CI and
-# a dev checkout. It is installed explicitly instead — `pip install ./foodcore`
-# in the Dockerfile and in the CI backend job. Imported lazily, so the backend
-# still runs (on its built-in densities) if it is not installed.
+# foodcore — the shared food-reference engine (unit conversion, USDA portion
+# weights, deterministic nutrition, allergen + dietary screening). It lives in
+# its own repository and is PINNED TO A COMMIT, deliberately.
+#
+# It used to be a directory in this repo installed by path, which made the
+# dependency one-sided: an edit here took effect immediately, while Edibl — the
+# other consumer — only saw it when someone remembered to bump a SHA. One app
+# silently ahead of the other is the drift the cross-app rule exists to prevent.
+# A pin on BOTH sides makes "shared code changes in all consumers together" a
+# mechanism rather than a convention: upgrading becomes a visible, reviewable,
+# bisectable commit in each repo.
+#
+# Bumping: change the SHA here and in Edibl's requirements.txt in the same
+# session, and check foodcore's own CI is green on that SHA first — it is the
+# only signal either consumer has.
+#
+# Imported lazily, so the backend still runs (on its built-in densities) if the
+# package is somehow absent.
+foodcore @ git+https://github.com/Amantux/foodcore.git@9f68f20586aec10f27ab75468fd516f6ce2d0df2
 
 # Pluggable AI providers (all optional at runtime — imported lazily).
 anthropic>=0.39.0

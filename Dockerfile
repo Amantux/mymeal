@@ -28,29 +28,29 @@ RUN apt-get update \
     && groupadd -r app && useradd -r -g app -u 1000 -m -d /home/app app
 
 COPY backend/requirements.txt ./backend/requirements.txt
-RUN pip install --no-cache-dir -r backend/requirements.txt
+# `git` is needed only to RESOLVE the pinned foodcore requirement, so it is
+# installed and purged inside one layer — leaving it in the image would ship a
+# build tool to every user for no runtime purpose. foodcore itself has zero
+# runtime dependencies, so nothing else arrives with it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && pip install --no-cache-dir -r backend/requirements.txt \
+    && apt-get purge -y --auto-remove git \
+    && rm -rf /var/lib/apt/lists/*
 
-# foodcore (shared food-reference library: unit conversion, USDA portion
-# weights) is INSTALLED as a package, not imported off a relative path. The
-# directory is named `foodcore/` but its source dir is `app/`, so an
-# uninstalled sys.path reach into it would shadow this app's own `app` package.
-# Zero runtime dependencies, so this adds nothing but the package itself.
-# No reference DATA is baked in: the USDA export is gigabytes and the dataset
-# file belongs in the operator's /data (see MYMEAL_FOODCORE_DATASET).
-# The checkout is removed after the install: what ships is the installed
-# package, so there is no second copy (nor foodcore's own `app/` directory and
-# tests) sitting next to the backend for an import to find by accident.
+# foodcore lives in its own repository and is pinned to a commit in
+# backend/requirements.txt, so there is no copy of it in this tree: nothing for
+# an accidental sys.path reach to find (its source dir is `app/` and would
+# shadow this app's own `app` package), and no way for this repo to drift ahead
+# of the other consumer. The reference dataset travels inside the wheel.
 #
 # The check below asserts the ARTIFACT, not just that an import succeeds. This
 # library has already shipped a wheel that imported cleanly while missing a
-# subpackage, and it now bundles its reference dataset as package DATA, which a
-# pyproject change can silently drop. Both failures present identically at
-# runtime — the feature quietly does nothing — and neither is visible from a
-# source checkout, where the files are simply there on disk.
-COPY foodcore/ ./foodcore/
-RUN pip install --no-cache-dir ./foodcore \
-    && rm -rf /app/foodcore \
-    && python3 -c "import foodcore, os, gzip; \
+# subpackage, and its reference dataset is package DATA that a pyproject change
+# can silently drop. Both failures present identically at runtime — the feature
+# quietly does nothing — and neither is visible from a source checkout, where
+# the files are simply there on disk.
+RUN python3 -c "import foodcore, os, gzip; \
 p = os.path.join(os.path.dirname(foodcore.__file__), 'data', 'usda-sr-legacy-2018-04.sqlite.gz'); \
 assert os.path.isfile(p), 'the shipped reference dataset is missing from the installed wheel'; \
 assert len(gzip.open(p, 'rb').read(64)) == 64, 'the shipped reference dataset is not readable gzip'; \
