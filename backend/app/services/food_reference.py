@@ -223,6 +223,25 @@ def _path_from(cfg) -> str:
 #: point is simply having somewhere to write.
 _SHIPPED_NAME = "foodcore-usda-sr-legacy-2018-04.sqlite"
 
+#: The expansion lives in a PRIVATE per-euid directory, never directly in the
+#: temp dir. A predictable name in a world-writable directory is somewhere any
+#: other local user can leave a file — or a symlink — for us to open as our
+#: reference data, and every weight, nutrient and portion the app reports would
+#: silently become theirs. Proven before this was added: planting a symlink at
+#: the old fixed path made "1 cup quinoa" answer 1700 g instead of 170 g, and
+#: the value still arrived stamped `usda` / `CC0-1.0` / `measured`, laundered
+#: through the very provenance meant to make it trustworthy.
+#:
+#: In the HA add-on /tmp belongs to the container and nobody else is there; a
+#: standalone or compose install shares the host's. The hardening costs one
+#: mkdir, so it is not worth deciding which case we are in.
+#:
+#: The euid suffix keeps a root-created directory (the container starts as root
+#: and drops) from locking out the unprivileged server. Ported from Edibl, which
+#: hardened this independently — the sibling sweep that should have happened
+#: when it was written.
+_EXPANSION_DIR = "mymeal-foodcore"
+
 
 def shipped_dataset_path(cfg=None) -> str:
     """The expanded shipped dataset, expanding it on first use. "" if absent.
@@ -248,10 +267,14 @@ def shipped_dataset_path(cfg=None) -> str:
     if not os.path.isfile(source):
         return ""
 
-    for directory in _expand_targets(cfg):
+    for base in _expand_targets(cfg):
+        directory = _private_dir(base)
+        if not directory:
+            continue
         target = os.path.join(directory, _SHIPPED_NAME)
-        if os.path.isfile(target) and os.path.getsize(target) > 0:
-            return target
+        existing = _usable_existing(target)
+        if existing:
+            return existing
         if _expand_to(source, target):
             return target
     return ""
@@ -268,6 +291,68 @@ def _expand_targets(cfg) -> list[str]:
     return [d for d in out if d]
 
 
+def _private_dir(base: str) -> str:
+    """A 0700 directory under `base` that belongs to us alone, or "".
+
+    Refuses rather than repairs. A directory at this path that we do not own, or
+    that anyone else can write to, is not a situation to silently take over —
+    returning "" costs the conversion refinement, which is exactly the behaviour
+    that preceded the shipped dataset.
+    """
+    import stat
+
+    path = os.path.join(base, f"{_EXPANSION_DIR}-{os.geteuid()}")
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        # scrub: the path is composed from $TMPDIR, which is operator-supplied
+        # and so must not be able to forge a log line.
+        log.warning("could not create the food reference cache directory (%s); "
+                    "using the built-in density table", scrub(exc))
+        return ""
+    try:
+        # lstat, NOT stat: a symlink planted here has to be seen as a symlink
+        # rather than followed to whatever it points at.
+        st = os.lstat(path)
+    except OSError:
+        return ""
+    if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid()
+            or st.st_mode & (stat.S_IRWXG | stat.S_IRWXO)):
+        log.warning("the food reference cache directory is not private to this "
+                    "user; using the built-in density table")
+        return ""
+    return path
+
+
+def _usable_existing(target: str) -> str:
+    """`target` if it is a real, non-empty file we can reuse, else "".
+
+    Anything else at that path — a symlink, a directory, a truncated file — is
+    removed rather than opened. `os.path.isfile` follows symlinks and so cannot
+    tell the difference, which is how the unhardened version could be handed a
+    dataset of someone else's choosing.
+    """
+    import stat
+
+    try:
+        st = os.lstat(target)
+    except FileNotFoundError:
+        return ""
+    except OSError:
+        return ""
+    if stat.S_ISREG(st.st_mode) and st.st_size > 0:
+        return target
+    if stat.S_ISDIR(st.st_mode):
+        return ""
+    try:
+        os.unlink(target)
+    except OSError:
+        return ""
+    return ""
+
+
 def _expand_to(source: str, target: str) -> bool:
     """Expand the gzipped dataset, atomically. False on any failure.
 
@@ -277,6 +362,7 @@ def _expand_to(source: str, target: str) -> bool:
     """
     import gzip
     import shutil
+    import zlib
 
     # Package DATA, not a sibling directory: foodcore is pip-installed, so the
     # asset has to travel inside the package. Deriving the path from the repo
@@ -288,7 +374,12 @@ def _expand_to(source: str, target: str) -> bool:
         with gzip.open(source, "rb") as src, open(tmp, "wb") as dst:
             shutil.copyfileobj(src, dst, 1024 * 1024)
         os.replace(tmp, target)
-    except OSError as exc:
+    # A truncated or corrupt asset raises EOFError or zlib.error, NEITHER of
+    # which is an OSError — only gzip.BadGzipFile is. Catching OSError alone
+    # made this function's "never raises" docstring false AND left the cleanup
+    # below unreachable, so every boot leaked a ~10 MB partial into the temp
+    # directory. Found in Edibl, which hit it first.
+    except (OSError, EOFError, zlib.error) as exc:
         log.warning(
             "could not expand the shipped food reference dataset to %s (%s); "
             "trying the next location", scrub(target), exc)

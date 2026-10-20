@@ -597,3 +597,80 @@ def test_turning_foodcore_off_disables_the_shipped_dataset_too(tmp_path):
     from app.services import food_reference as fr
 
     assert fr._path_from(_cfg(tmp_path, enabled=False)) == ""
+
+
+# --- the expansion directory is ours alone ---------------------------------
+
+def test_a_hostile_symlink_is_never_opened_as_the_dataset(isolated_expand,
+                                                          tmp_path):
+    """SECURITY REGRESSION, proven exploitable before this guard existed.
+
+    The dataset used to expand to a FIXED name directly in the system temp dir.
+    Any other local user could plant a symlink there, and `os.path.isfile`
+    follows symlinks, so the app opened whatever it pointed at as its reference
+    data. Measured against the real code: a substituted dataset made
+    "1 cup quinoa" answer 1700 g instead of 170 g — and the value still arrived
+    stamped usda / CC0-1.0 / measured, laundered through the provenance that is
+    supposed to make it trustworthy.
+
+    Not exploitable inside the HA add-on, where /tmp belongs to the container,
+    but a standalone or compose install shares the host's.
+    """
+    import os
+
+    from app.services import food_reference as fr
+
+    hostile = tmp_path / "attacker.sqlite"
+    hostile.write_bytes(b"not a dataset")
+
+    private = fr._private_dir(str(tmp_path))
+    assert private, "the private directory should have been created"
+    planted = os.path.join(private, fr._SHIPPED_NAME)
+    os.symlink(hostile, planted)
+
+    got = fr.shipped_dataset_path(_cfg(tmp_path))
+
+    # The symlink is removed and a real expansion put in its place — never
+    # followed, and never simply trusted because something exists there.
+    assert got == planted
+    assert not os.path.islink(planted)
+    assert os.path.getsize(planted) > 1_000_000
+
+
+def test_a_shared_expansion_directory_is_refused_not_taken_over(tmp_path):
+    """MUTATION GUARD. A directory at our path that anyone else can write to is
+    not something to silently adopt — refusing costs the conversion refinement,
+    which is the behaviour that preceded the shipped dataset."""
+    import os
+
+    from app.services import food_reference as fr
+
+    shared = tmp_path / f"{fr._EXPANSION_DIR}-{os.geteuid()}"
+    shared.mkdir(mode=0o777)
+    os.chmod(shared, 0o777)          # mkdir honours umask; force it
+
+    assert fr._private_dir(str(tmp_path)) == ""
+
+
+def test_a_corrupt_asset_leaves_no_partial_behind(isolated_expand, tmp_path,
+                                                  monkeypatch):
+    """A truncated gzip raises EOFError or zlib.error — NEITHER is an OSError.
+    Catching only OSError made the 'never raises' docstring false and left the
+    cleanup unreachable, so every boot leaked a ~10 MB partial."""
+    import gzip
+    import os
+
+    from app.services import food_reference as fr
+
+    def _truncated(*a, **kw):
+        raise EOFError("Compressed file ended before the end-of-stream marker")
+
+    monkeypatch.setattr(gzip, "open", _truncated)
+
+    got = fr.shipped_dataset_path(_cfg(tmp_path))
+
+    assert got == ""                                   # degraded, did not raise
+    leftovers = []
+    for root, _dirs, files in os.walk(tmp_path):
+        leftovers += [f for f in files if "partial" in f]
+    assert leftovers == [], f"leaked a partial: {leftovers}"
