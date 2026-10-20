@@ -18,6 +18,9 @@
 > shared library rather than a service. Consequences: the engines stay pure
 > Python with no Flask/SQLAlchemy dependency, the host app owns the dataset file
 > and persistence, and lifting `foodcore/` into its own repo must remain a no-op.
+> **Done, 2026-10-19:** it lives at github.com/Amantux/foodcore (extracted with
+> its history via `git subtree split`) and both apps pin it by commit SHA. The
+> no-op requirement held — not one import line changed.
 > Sections below that say "service", "add-on" or "foodcore API" should be read
 > as "module" and "function call".
 
@@ -172,6 +175,12 @@ a host app, and extracting `foodcore/` into its own repository must not change a
 single import line. Enforced by a test that installs the package into a venv
 with neither Flask nor SQLAlchemy present.
 
+**This was exercised for real on 2026-10-19 and the constraint held**: the
+extraction changed no import in either consumer. The venv test moved with it and
+is now foodcore's own `installed-artifact` CI job, which additionally asserts
+the bundled dataset and the rules subpackage actually shipped — the failure a
+source checkout structurally cannot see, and one this package has had twice.
+
 ## 6. Staged plan (each stage independently shippable)
 
 **Stage 0 — unify quantities (no new service).** Pick one unit model between
@@ -247,10 +256,14 @@ Stages 0–2 are where essentially all the user-visible value sits for a househo
 1. Is "discover recipes you don't have" ever a goal? If no, the entire restricted
    recipe-corpus tier (§3.2 of the spec, and most of its licensing complexity)
    drops out permanently.
-2. ~~Is foodcore a fourth add-on, or a module?~~ **Answered: a standalone module
-   both apps import.** Remaining sub-question: how does Edibl consume it — vendored
-   copy, git-pinned dependency, or submodule? Whichever is chosen must make the
-   SOP's §8 rule enforceable: shared code changes in all consumers together.
+2. ~~Is foodcore a fourth add-on, or a module? How does Edibl consume it?~~
+   **Both answered and built.** A standalone module, in its own repository, that
+   BOTH apps consume as a commit-pinned dependency — not a vendored copy and not
+   a submodule. The pin is what makes SOP §8 enforceable rather than aspirational:
+   neither app holds the source, so neither can edit the shared engine in place,
+   and an upgrade is a visible commit in each repo. Bumping is three steps —
+   commit in foodcore, check its CI, move the SHA in both consumers in the same
+   session.
 3. Does anyone else install these? If this estate is one household, the licensing
    tiers (§12) collapse to "attribute OFF, stay CC0 elsewhere" and a lot of the
    spec's governance machinery is unnecessary.
