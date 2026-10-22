@@ -13,7 +13,7 @@ const view = ref('week') // 'day' | 'week' | 'month'
 const anchor = ref(startOfDay(new Date()))
 const busy = ref(false)
 
-// Copy week modal
+// Duplicate week modal
 const showCopyModal = ref(false)
 const copyForm = ref({
   sourceStart: '',
@@ -366,7 +366,7 @@ async function buildList() {
          accent moves to the empty state's CTA and this drops to secondary.
          One primary per view, and it points at what actually helps. -->
     <button :class="{ secondary: !entries.length }" @click="buildList">🛒 Build shopping list</button>
-    <button class="secondary" @click="openCopyModal">📅 Copy week</button>
+    <button class="secondary" @click="openCopyModal">📅 Duplicate week</button>
   </div>
 
   <div v-if="showPlanOpts" class="card plan-opts">
@@ -587,10 +587,10 @@ async function buildList() {
     </template>
   </div>
 
-  <!-- Copy week modal -->
+  <!-- Duplicate week modal -->
   <div v-if="showCopyModal" class="copy-modal">
     <div class="card">
-      <h2>📅 Copy week</h2>
+      <h2>📅 Duplicate week</h2>
       <p class="muted">Duplicate meals from one week to another.</p>
 
       <div class="field">
@@ -626,7 +626,7 @@ async function buildList() {
       <div class="actions">
         <button class="secondary" @click="showCopyModal = false">Cancel</button>
         <button @click="copyWeek" :disabled="busy">
-          {{ busy ? 'Copying…' : 'Copy week' }}
+          {{ busy ? 'Duplicating…' : 'Duplicate week' }}
         </button>
       </div>
     </div>
@@ -719,7 +719,7 @@ button.secondary.active { color: var(--accent-text); border-color: var(--accent)
   .mp-week { grid-template-columns: 1fr; }
 }
 
-/* Copy week modal */
+/* Duplicate week modal */
 .copy-modal {
   position: fixed;
   inset: 0;
