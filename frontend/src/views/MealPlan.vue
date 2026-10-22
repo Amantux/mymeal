@@ -13,6 +13,16 @@ const view = ref('week') // 'day' | 'week' | 'month'
 const anchor = ref(startOfDay(new Date()))
 const busy = ref(false)
 
+// Copy week modal
+const showCopyModal = ref(false)
+const copyForm = ref({
+  sourceStart: '',
+  sourceEnd: '',
+  targetStart: '',
+  overwrite: false,
+})
+const copyResult = ref(null)
+
 // Constraint-aware planning options (feature #6). Sent to /ai/plan.
 const showPlanOpts = ref(false)
 const planOpts = ref({ maxMinutes: null, exclude: '', servings: null })
@@ -296,6 +306,38 @@ function copyFeed() {
   )
 }
 
+async function copyWeek() {
+  busy.value = true
+  try {
+    const res = await api.post('/mealplans/copy', {
+      source_start: copyForm.value.sourceStart,
+      source_end: copyForm.value.sourceEnd,
+      target_start: copyForm.value.targetStart,
+      overwrite: copyForm.value.overwrite,
+    })
+    copyResult.value = res
+    ui.toast(`Copied ${res.created} entries, skipped ${res.skipped}`)
+    showCopyModal.value = false
+    await reload()
+  } catch (e) {
+    ui.error(e.message)
+  } finally {
+    busy.value = false
+  }
+}
+
+function openCopyModal() {
+  const r = range.value
+  copyForm.value.sourceStart = iso(r.start)
+  copyForm.value.sourceEnd = iso(r.end)
+  // Default target: next week
+  const nextWeekStart = addDays(r.start, 7)
+  copyForm.value.targetStart = iso(nextWeekStart)
+  copyForm.value.overwrite = false
+  copyResult.value = null
+  showCopyModal.value = true
+}
+
 async function buildList() {
   try {
     const sl = await api.post('/shopping-lists', { name: `Plan ${iso(range.value.start)}` })
@@ -324,6 +366,7 @@ async function buildList() {
          accent moves to the empty state's CTA and this drops to secondary.
          One primary per view, and it points at what actually helps. -->
     <button :class="{ secondary: !entries.length }" @click="buildList">🛒 Build shopping list</button>
+    <button class="secondary" @click="openCopyModal">📅 Copy week</button>
   </div>
 
   <div v-if="showPlanOpts" class="card plan-opts">
@@ -543,6 +586,51 @@ async function buildList() {
       </div>
     </template>
   </div>
+
+  <!-- Copy week modal -->
+  <div v-if="showCopyModal" class="copy-modal">
+    <div class="card">
+      <h2>📅 Copy week</h2>
+      <p class="muted">Duplicate meals from one week to another.</p>
+
+      <div class="field">
+        <label>Source week</label>
+        <div style="display:flex; gap:8px;">
+          <input v-model="copyForm.sourceStart" type="date">
+          <span style="align-self:center;">to</span>
+          <input v-model="copyForm.sourceEnd" type="date">
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Target week (first day)</label>
+        <input v-model="copyForm.targetStart" type="date">
+      </div>
+
+      <div class="checkbox">
+        <input id="overwrite" v-model="copyForm.overwrite" type="checkbox">
+        <label for="overwrite">Overwrite existing entries</label>
+      </div>
+
+      <div v-if="copyResult" class="result" :class="{ success: copyResult.created > 0, error: !copyResult.created }">
+        <strong v-if="copyResult.created > 0">Success!</strong>
+        <strong v-else>Failed</strong>
+        <p style="margin:4px 0 0;">
+          Created: {{ copyResult.created }} | Skipped: {{ copyResult.skipped }}
+          <span v-if="copyResult.skipped_details && copyResult.skipped_details.length">
+            ({{ copyResult.skipped_details.length }} collisions)
+          </span>
+        </p>
+      </div>
+
+      <div class="actions">
+        <button class="secondary" @click="showCopyModal = false">Cancel</button>
+        <button @click="copyWeek" :disabled="busy">
+          {{ busy ? 'Copying…' : 'Copy week' }}
+        </button>
+      </div>
+    </div>
+  </div>
 </template>
 
 <style scoped>
@@ -629,5 +717,62 @@ button.secondary.active { color: var(--accent-text); border-color: var(--accent)
 /* Stack the week into a single column on small screens (still uniform boxes). */
 @media (max-width: 900px) {
   .mp-week { grid-template-columns: 1fr; }
+}
+
+/* Copy week modal */
+.copy-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.copy-modal .card {
+  width: 100%;
+  max-width: 480px;
+  padding: 20px;
+}
+.copy-modal .field {
+  margin-bottom: 12px;
+}
+.copy-modal .field label {
+  display: block;
+  font-size: 0.82rem;
+  margin-bottom: 4px;
+}
+.copy-modal input[type="date"] {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 1rem;
+}
+.copy-modal .checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.copy-modal .checkbox input {
+  width: auto;
+}
+.copy-modal .actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+.copy-modal .result {
+  margin-top: 16px;
+  padding: 12px;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+}
+.copy-modal .result.success {
+  border-left: 4px solid var(--accent);
+}
+.copy-modal .result.error {
+  border-left: 4px solid var(--danger);
 }
 </style>

@@ -1,7 +1,6 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from flask import Blueprint, request, jsonify, abort
-
 from ..extensions import db
 from ..models import MealPlanEntry, Recipe
 from ..auth import login_required, current_group
@@ -190,3 +189,121 @@ def parse_date(value):
     if isinstance(value, (date, datetime)):
         return value
     return _parse_date(value)
+
+
+@bp.post("/mealplans/copy")
+@login_required
+def copy_mealplan():
+    """Copy a range of meal plan entries to a target week.
+
+    Body: {source_start, source_end, target_start, overwrite=false}
+    - source_start/source_end: ISO date strings (inclusive), range <= 14 days
+    - target_start: ISO date string for the first day of the target week
+    - overwrite: bool, default false — if true, delete existing entries in copied slots
+
+    Response: {created: N, skipped: M}
+    """
+    data = request.get_json(force=True) or {}
+
+    source_start = _parse_date(data.get("source_start"))
+    source_end = _parse_date(data.get("source_end"))
+    target_start = _parse_date(data.get("target_start"))
+    overwrite = data.get("overwrite", False)
+
+    # Validation
+    if not source_start or not source_end or not target_start:
+        return jsonify({"error": "source_start, source_end, and target_start are required"}), 400
+
+    if source_start > source_end:
+        return jsonify({"error": "source_start must be <= source_end"}), 400
+
+    # Check range is <= 14 days
+    day_count = (source_end - source_start).days + 1
+    if day_count > 14:
+        return jsonify({"error": "source range must be <= 14 days"}), 400
+
+    gid = current_group().id
+
+    # Fetch source entries for the range
+    from sqlalchemy.orm import selectinload
+    from ..services.components import component_load_opts
+
+    source_entries = (
+        db.session.query(MealPlanEntry)
+        .filter_by(group_id=gid)
+        .filter(MealPlanEntry.date >= source_start, MealPlanEntry.date <= source_end)
+        .options(*component_load_opts(selectinload(MealPlanEntry.recipe)))
+        .order_by(MealPlanEntry.date.asc())
+        .all()
+    )
+
+    # Calculate date offset
+    date_offset = (target_start - source_start).days
+
+    # Determine which target slots are occupied
+    target_end = target_start + timedelta(days=day_count - 1)
+    existing_entries = (
+        db.session.query(MealPlanEntry)
+        .filter_by(group_id=gid)
+        .filter(MealPlanEntry.date >= target_start, MealPlanEntry.date <= target_end)
+        .all()
+    )
+    existing_slots = {(e.date, e.meal_type): e for e in existing_entries}
+
+    created_count = 0
+    skipped_count = 0
+    skipped_details = []
+
+    for source_entry in source_entries:
+        # Calculate target date
+        target_date = source_entry.date + timedelta(days=date_offset)
+
+        # Check if recipe belongs to current group (if it's a recipe entry)
+        if source_entry.recipe_id:
+            recipe = db.session.get(Recipe, source_entry.recipe_id)
+            if not recipe or recipe.group_id != gid:
+                # Skip foreign recipes
+                skipped_count += 1
+                skipped_details.append({
+                    "date": source_entry.date.isoformat(),
+                    "meal_type": source_entry.meal_type,
+                    "reason": "foreign_recipe"
+                })
+                continue
+
+        # Check for collision
+        slot_key = (target_date, source_entry.meal_type)
+        if slot_key in existing_slots:
+            if overwrite:
+                # Delete the existing entry
+                db.session.delete(existing_slots[slot_key])
+                db.session.flush()
+            else:
+                skipped_count += 1
+                skipped_details.append({
+                    "date": target_date.isoformat(),
+                    "meal_type": source_entry.meal_type,
+                    "reason": "collision"
+                })
+                continue
+
+        # Create new entry
+        new_entry = MealPlanEntry(
+            date=target_date,
+            meal_type=source_entry.meal_type,
+            title=source_entry.title,
+            notes=source_entry.notes,
+            servings=source_entry.servings,
+            recipe_id=source_entry.recipe_id,
+            group_id=gid,
+        )
+        db.session.add(new_entry)
+        created_count += 1
+
+    db.session.commit()
+
+    return jsonify({
+        "created": created_count,
+        "skipped": skipped_count,
+        "skipped_details": skipped_details
+    })
