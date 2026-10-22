@@ -156,6 +156,10 @@ def recipe_summary(r):
     from ..services.cooking import format_temperature
 
     _media = [recipe_media_out(v) for v in r.videos]
+    # Cook event summary: count and last cooked timestamp
+    cook_events = getattr(r, "cook_events", [])
+    count = len(cook_events)
+    last_cooked_at = cook_events[0].created_at.isoformat() if cook_events else None
     return {
         "id": r.id,
         "name": r.name,
@@ -178,6 +182,8 @@ def recipe_summary(r):
         "categories": [category_out(c) for c in r.categories],
         "createdAt": iso(r.created_at),
         "updatedAt": iso(r.updated_at),
+        "cookCount": count,
+        "lastCookedAt": last_cooked_at,
     }
 
 

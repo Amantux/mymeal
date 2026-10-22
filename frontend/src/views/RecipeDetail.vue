@@ -314,10 +314,54 @@ async function load() {
   // them, as if they described what is now on screen.
   if (recipe.value) await loadSafety()
 }
+// Cook history
+const cookHistory = ref({ count: 0, lastCookedAt: null, events: [] })
+
+async function loadCookHistory() {
+  if (!recipe.value) return
+  try {
+    const res = await api.getCookEvents(recipe.value.id)
+    cookHistory.value = res
+  } catch {
+    cookHistory.value = { count: 0, lastCookedAt: null, events: [] }
+  }
+}
+
+async function logCook() {
+  if (!recipe.value) return
+  try {
+    await api.logCook(recipe.value.id)
+    await loadCookHistory()
+    ui.toast('Cook logged')
+  } catch (e) {
+    ui.error(e.message || 'Could not log cook')
+  }
+}
+
+async function undoCook(eventId) {
+  if (!recipe.value) return
+  try {
+    await api.undoCook(recipe.value.id, eventId)
+    await loadCookHistory()
+    ui.toast('Cook undone')
+  } catch (e) {
+    if (e.status === 404) {
+      ui.toast('Cook already undone')
+    } else {
+      ui.error(e.message || 'Could not undo cook')
+    }
+  }
+}
+
+function fmtDate(s) {
+  try { return new Date(s).toLocaleString() } catch { return s }
+}
+
 onMounted(async () => {
   await load()
   if (recipe.value) await loadVersions()
   try { allCategories.value = (await api.get('/categories')) || [] } catch { /* optional */ }
+  if (recipe.value) await loadCookHistory()
 })
 
 async function createCategory() {
@@ -947,6 +991,7 @@ const imageSrc = computed(() =>
            (Delete used to land alone, left-aligned, looking like a mistake). -->
       <div class="head-actions">
         <template v-if="!editing">
+          <button @click="logCook">🔥 Cook</button>
           <button v-if="recipe.steps.length" @click="openCookMode">
             👨‍🍳 Cook
           </button>
@@ -988,6 +1033,26 @@ const imageSrc = computed(() =>
             </p>
           </div>
         </div>
+      </div>
+
+      <!-- Cook history -->
+      <div class="card" v-if="cookHistory.count">
+        <div class="page-head" style="margin-bottom:10px">
+          <h2>Cook history</h2>
+        </div>
+        <div class="row wrap" style="gap:8px;margin-top:8px">
+          <span class="badge tnum">🔥 {{ cookHistory.count }} cooked</span>
+          <span class="badge tnum">📅 Last: {{ fmtDate(cookHistory.lastCookedAt) }}</span>
+        </div>
+        <details v-if="cookHistory.events.length > 1">
+          <summary>View all {{ cookHistory.events.length }} cook events</summary>
+          <ul class="hist-list" style="margin-top:8px">
+            <li v-for="event in cookHistory.events" :key="event.id" class="row" style="gap:8px;align-items:center">
+              <span class="muted sm fill">{{ fmtDate(event.createdAt) }}</span>
+              <button class="secondary sm danger" @click="undoCook(event.id)">✕ Undo</button>
+            </li>
+          </ul>
+        </details>
       </div>
 
       <!-- Media sits here, below the hero card and above Ingredients, NOT

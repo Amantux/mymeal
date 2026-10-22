@@ -7,10 +7,9 @@ file ended up with two different `_insert`s, one silently overriding the other).
 import os
 import subprocess
 
-
 def _run_alembic(db_path, *args):
     env = dict(os.environ, MYMEAL_DATABASE_URL=f"sqlite:///{db_path}")
-    return subprocess.run(["python3", "-m", "alembic", *args],
+    return subprocess.run(["/Users/amantux/.local/bin/python3.11", "-m", "alembic", *args],
                           capture_output=True, text=True, env=env,
                           cwd=os.path.dirname(os.path.dirname(__file__)))
 
