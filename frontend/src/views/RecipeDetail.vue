@@ -353,10 +353,6 @@ async function undoCook(eventId) {
   }
 }
 
-function fmtDate(s) {
-  try { return new Date(s).toLocaleString() } catch { return s }
-}
-
 onMounted(async () => {
   await load()
   if (recipe.value) await loadVersions()
