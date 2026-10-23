@@ -12,7 +12,7 @@ from werkzeug.utils import safe_join
 
 from ..extensions import db
 from ..services import videos
-from ..models import RecipeVideo, Recipe, RecipeIngredient, RecipeStep, Category, Tag, Unit, Food
+from ..models import RecipeVideo, Recipe, RecipeIngredient, RecipeStep, Category, Tag, Unit, Food, CookEvent
 from ..auth import login_required, current_group
 from ..schemas.serializers import recipe_media_out, recipe_out, recipe_summary
 from ..services import recipe_resolve
@@ -1115,7 +1115,6 @@ def get_media_file(recipe_id, media_id):
 # =============================================================================
 # COOK LOG API
 # =============================================================================
-from ..models import CookEvent
 
 
 def _get_cook_event(recipe_id: str, event_id: str) -> CookEvent:
@@ -1169,7 +1168,7 @@ def get_cook_events(recipe_id):
 @login_required
 def undo_cook(recipe_id, event_id):
     """Remove a cook event (undo)."""
-    recipe = _get(recipe_id)
+    _get(recipe_id)  # 404 if the recipe doesn't exist / isn't in this group
     event = _get_cook_event(recipe_id, event_id)
     db.session.delete(event)
     db.session.commit()
