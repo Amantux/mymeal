@@ -84,6 +84,11 @@ class Recipe(IDMixin, TimestampMixin, db.Model):
         cascade="all, delete-orphan",
         order_by="RecipeVersion.created_at.desc()",
     )
+    cook_events = relationship(
+        "CookEvent",
+        back_populates="recipe",
+        cascade="all, delete-orphan",
+    )
 
 
 class RecipeIngredient(IDMixin, TimestampMixin, db.Model):

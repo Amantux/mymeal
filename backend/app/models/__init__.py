@@ -21,6 +21,7 @@ from .chat import ChatSession, ChatMessage  # noqa: F401
 from .setting import Setting  # noqa: F401
 from .job import Job  # noqa: F401
 from .ai_suggestion import AiSuggestion  # noqa: F401
+from .cook_log import CookEvent  # noqa: F401
 
 __all__ = [
     "gen_uuid",
@@ -53,4 +54,5 @@ __all__ = [
     "ChatSession",
     "ChatMessage",
     "Setting",
+    "CookEvent",
 ]

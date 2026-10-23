@@ -12,7 +12,7 @@ from werkzeug.utils import safe_join
 
 from ..extensions import db
 from ..services import videos
-from ..models import RecipeVideo, Recipe, RecipeIngredient, RecipeStep, Category, Tag, Unit, Food
+from ..models import RecipeVideo, Recipe, RecipeIngredient, RecipeStep, Category, Tag, Unit, Food, CookEvent
 from ..auth import login_required, current_group
 from ..schemas.serializers import recipe_media_out, recipe_out, recipe_summary
 from ..services import recipe_resolve
@@ -1110,3 +1110,66 @@ def get_media_file(recipe_id, media_id):
     if not os.path.isfile(path):
         abort(404)
     return send_file(path, mimetype=mime, conditional=True)
+
+
+# =============================================================================
+# COOK LOG API
+# =============================================================================
+
+
+def _get_cook_event(recipe_id: str, event_id: str) -> CookEvent:
+    """Get a cook event for the current group, or abort 404."""
+    event = (
+        db.session.query(CookEvent)
+        .filter_by(id=event_id, recipe_id=recipe_id)
+        .first()
+    )
+    if not event or event.group_id != current_group().id:
+        abort(404)
+    return event
+
+
+@bp.post("/recipes/<recipe_id>/cooked")
+@login_required
+def log_cook(recipe_id):
+    """Record that a recipe was cooked."""
+    recipe = _get(recipe_id)
+    event = CookEvent(recipe_id=recipe.id, group_id=recipe.group_id)
+    db.session.add(event)
+    db.session.commit()
+    return jsonify({"id": event.id, "createdAt": event.created_at.isoformat()}), 201
+
+
+@bp.get("/recipes/<recipe_id>/cooked")
+@login_required
+def get_cook_events(recipe_id):
+    """Get cook events for a recipe, plus summary counts."""
+    recipe = _get(recipe_id)
+    events = (
+        db.session.query(CookEvent)
+        .filter_by(recipe_id=recipe.id)
+        .order_by(CookEvent.created_at.desc())
+        .all()
+    )
+    count = len(events)
+    last_cooked_at = events[0].created_at.isoformat() if events else None
+    return jsonify(
+        {
+            "events": [
+                {"id": e.id, "createdAt": e.created_at.isoformat()} for e in events
+            ],
+            "count": count,
+            "lastCookedAt": last_cooked_at,
+        }
+    )
+
+
+@bp.delete("/recipes/<recipe_id>/cooked/<event_id>")
+@login_required
+def undo_cook(recipe_id, event_id):
+    """Remove a cook event (undo)."""
+    _get(recipe_id)  # 404 if the recipe doesn't exist / isn't in this group
+    event = _get_cook_event(recipe_id, event_id)
+    db.session.delete(event)
+    db.session.commit()
+    return "", 204
