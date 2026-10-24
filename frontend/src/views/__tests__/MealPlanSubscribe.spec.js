@@ -55,8 +55,31 @@ async function mountPage(opts) {
   return w
 }
 
-const findButton = (w, text) =>
-  w.findAll('button').find((b) => b.text().includes(text))
+// Matches the label EXACTLY, preferring a button inside the subscription card.
+//
+// This used to match any button on the page whose text merely CONTAINED the
+// label, which made it a trap for anyone else working on this view: a
+// "Copy week" button added elsewhere on the meal plan silently captured every
+// `findButton(w, 'Copy')` here, and three unrelated feature PRs went red on
+// tests about a feature they had not touched. A test that fails for someone
+// else's correct change is a tax on the next person, not a safety net.
+//
+// Exact-match first (so "Copy week" can never answer for "Copy"), and among
+// equals prefer the card's own button. The prefix fallback exists only for
+// labels that carry pending state ("Copying…").
+const findButton = (w, text) => {
+  const all = w.findAll('button')
+  const inCard = (b) => b.element.closest('.mp-subscribe') !== null
+  // EXACT first. This is the whole fix: the card's button is labelled exactly
+  // "Copy", so it wins outright and "Copy week" can never answer for it.
+  const exact = all.filter((b) => b.text().trim() === text)
+  if (exact.length) return exact.find(inCard) || exact[0]
+  // Then contains, because several real labels carry an emoji or a pending
+  // prefix ("🔗 Publish calendar link", "Replacing…"). Still card-first, so an
+  // unrelated button elsewhere on the page loses to the one being tested.
+  const loose = all.filter((b) => b.text().includes(text))
+  return loose.find(inCard) || loose[0]
+}
 const feedField = (w) => w.find('textarea[readonly]')
 
 // The link is masked until asked for, so most assertions need it revealed.
