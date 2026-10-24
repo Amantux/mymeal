@@ -421,13 +421,29 @@ def list_recipes():
     category = request.args.get("category")
     if category:
         query = query.filter(Recipe.categories.any(Category.slug == category))
+    min_rating = request.args.get("minRating")
+    if min_rating:
+        try:
+            min_rating_val = int(min_rating)
+            query = query.filter(Recipe.rating >= min_rating_val)
+        except (ValueError, TypeError):
+            pass  # Ignore invalid minRating values
+    sort = request.args.get("sort", "name")
+    if sort == "rating":
+        query = query.order_by(Recipe.rating.desc())
+    elif sort == "newest":
+        query = query.order_by(Recipe.created_at.desc())
+    elif sort == "prep_time":
+        query = query.order_by(Recipe.total_minutes.asc())
+    else:  # default "name" or unknown sort value
+        query = query.order_by(Recipe.name.asc())
 
     # Eager-load taxonomy so the summary loop doesn't fire ~2 queries per row.
     query = query.options(
         selectinload(Recipe.tags), selectinload(Recipe.categories),
         selectinload(Recipe.videos),  # recipe_summary reads r.videos per row
     )
-    recipes = query.order_by(Recipe.name.asc()).all()
+    recipes = query.all()
     return jsonify(
         {"items": [recipe_summary(r) for r in recipes], "total": len(recipes)}
     )

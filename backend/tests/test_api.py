@@ -210,3 +210,61 @@ def test_api_token_auth(auth_client):
     fresh = auth_client.application.test_client()
     r = fresh.get("/api/v1/recipes", headers={"Authorization": f"Bearer {raw}"})
     assert r.status_code == 200
+
+
+def test_recipes_sort_and_min_rating(auth_client):
+    """Test sort and minRating query params on /api/v1/recipes."""
+    # Create recipes with varying ratings and prep times
+    auth_client.post(
+        "/api/v1/recipes",
+        json={"name": "Recipe A", "rating": 5, "totalMinutes": 10},
+    )
+    auth_client.post(
+        "/api/v1/recipes",
+        json={"name": "Recipe B", "rating": 3, "totalMinutes": 5},
+    )
+    auth_client.post(
+        "/api/v1/recipes",
+        json={"name": "Recipe C", "rating": 4, "totalMinutes": 15},
+    )
+
+    # Test default sort (by name)
+    res = auth_client.get("/api/v1/recipes").get_json()
+    assert [r["name"] for r in res["items"]] == ["Recipe A", "Recipe B", "Recipe C"]
+
+    # Test sort=rating (descending)
+    res = auth_client.get("/api/v1/recipes?sort=rating").get_json()
+    assert [r["name"] for r in res["items"]] == ["Recipe A", "Recipe C", "Recipe B"]
+
+    # Test sort=newest (descending by created_at)
+    res = auth_client.get("/api/v1/recipes?sort=newest").get_json()
+    # Newest first, so reverse creation order
+    assert [r["name"] for r in res["items"]] == ["Recipe C", "Recipe B", "Recipe A"]
+
+    # Test sort=prep_time (ascending)
+    res = auth_client.get("/api/v1/recipes?sort=prep_time").get_json()
+    assert [r["name"] for r in res["items"]] == ["Recipe B", "Recipe A", "Recipe C"]
+
+    # Test minRating filter
+    res = auth_client.get("/api/v1/recipes?minRating=4").get_json()
+    assert [r["name"] for r in res["items"]] == ["Recipe A", "Recipe C"]
+
+    # Test minRating=5 (only one match)
+    res = auth_client.get("/api/v1/recipes?minRating=5").get_json()
+    assert [r["name"] for r in res["items"]] == ["Recipe A"]
+
+    # Test minRating=6 (no matches)
+    res = auth_client.get("/api/v1/recipes?minRating=6").get_json()
+    assert res["total"] == 0
+
+    # Test invalid minRating is ignored (returns all)
+    res = auth_client.get("/api/v1/recipes?minRating=invalid").get_json()
+    assert res["total"] == 3
+
+    # Test invalid sort falls back to default (name)
+    res = auth_client.get("/api/v1/recipes?sort=invalid").get_json()
+    assert [r["name"] for r in res["items"]] == ["Recipe A", "Recipe B", "Recipe C"]
+
+    # Test combined sort and minRating
+    res = auth_client.get("/api/v1/recipes?sort=rating&minRating=4").get_json()
+    assert [r["name"] for r in res["items"]] == ["Recipe A", "Recipe C"]
