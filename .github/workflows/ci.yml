@@ -124,87 +124,53 @@ jobs:
     needs: [backend-tests, frontend-build, validate-addon, integration-tests]
     outputs:
       new_version: ${{ steps.bump.outputs.new_version }}
-      bump_sha: ${{ steps.commit.outputs.sha }}
+      bump_sha: ${{ steps.bump.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-      - name: Bump version in config.yaml + manifest.json
+      - name: Bump version, commit and push (retrying on a concurrent push)
         id: bump
         env:
-          # The triggering commit's message decides the bump level: include
-          # [major] or [minor] to bump that component (and zero the lower ones);
-          # otherwise it's a patch. Lets a feature milestone land an exact
-          # X.Y.0 without a stray auto-patch on top.
+          # The triggering commit's SUBJECT decides the bump level: [major] or
+          # [minor] bump that component, otherwise patch. See tools/bump_version.py
+          # for why only the subject is scanned.
           COMMIT_MSG: ${{ github.event.head_commit.message }}
-        run: |
-          python3 - <<'PY'
-          import json, re, os
-
-          cfg_path = "mymeal/config.yaml"
-          man_path = "custom_components/mymeal/manifest.json"
-
-          text = open(cfg_path).read()
-          m = re.search(r'^version:\s*"?([0-9]+\.[0-9]+\.[0-9]+)"?', text, re.M)
-          old = m.group(1)
-          major, minor, patch = (int(x) for x in old.split("."))
-          # Scan ONLY the commit SUBJECT (first line), not the whole message —
-          # otherwise a body that merely mentions "[major]"/"[minor]" (e.g. this
-          # feature's own docs) would trigger a bump. (It did, once: it turned a
-          # [minor] into 1.0.0.)
-          subject = (os.environ.get("COMMIT_MSG", "").splitlines() or [""])[0].lower()
-          msg = subject
-          if "[major]" in msg:
-              major, minor, patch = major + 1, 0, 0
-          elif "[minor]" in msg:
-              minor, patch = minor + 1, 0
-          else:
-              patch += 1
-          new = f"{major}.{minor}.{patch}"
-
-          text = re.sub(r'^(version:\s*).*$', f'\\1"{new}"', text, count=1, flags=re.M)
-          open(cfg_path, "w").write(text)
-
-          man = json.load(open(man_path))
-          man["version"] = new
-          with open(man_path, "w") as f:
-              json.dump(man, f, indent=2); f.write("\n")
-
-          # Keep the add-on changelog in lockstep. Home Assistant shows this file
-          # in the Changelog tab. Derive a real note from the triggering commit's
-          # SUBJECT for user-facing work (feat/fix), so auto-minted versions get
-          # a meaningful line instead of a useless "build-only" stub; only
-          # chore/docs/ci/etc. fall back to build-only. A human can expand it.
-          import re as _re
-          subject = (os.environ.get("COMMIT_MSG", "").splitlines() or [""])[0].strip()
-          m = _re.match(r"^(feat|fix)(\([^)]*\))?!?:\s*(.+)$", subject, _re.I)
-          if m:
-              note = m.group(3).strip().rstrip(".")
-              note = note[:1].upper() + note[1:]
-              entry = f"\n## {new}\n\n- {note}.\n"
-          else:
-              entry = f"\n## {new}\n\nBuild-only republish; no user-visible change.\n"
-          ch_path = "mymeal/CHANGELOG.md"
-          ch = open(ch_path).read()
-          if f"\n## {new}\n" not in ch:
-              idx = ch.index("\n## ")
-              ch = ch[:idx] + entry + ch[idx:]
-              open(ch_path, "w").write(ch)
-
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"old_version={old}\nnew_version={new}\n")
-          print(f"Bumped {old} -> {new}")
-          PY
-      - name: Commit version bump
-        id: commit
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add mymeal/config.yaml custom_components/mymeal/manifest.json mymeal/CHANGELOG.md
-          git commit -m "chore: bump version ${{ steps.bump.outputs.old_version }} → ${{ steps.bump.outputs.new_version }}"
-          git push origin HEAD:${{ github.ref_name }}
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+          # Compute-commit-push in a RETRY LOOP, re-syncing to the real tip each
+          # time. This job used to do each once, so any push landing on main in
+          # the window between checkout and push rejected it non-fast-forward
+          # and failed the release — two of six consecutive runs. With several
+          # sessions pushing, that window is hit regularly.
+          #
+          # The recompute is the load-bearing part: after re-syncing, another
+          # bump may already have taken the version this run intended to write,
+          # so retrying the same push would mint a duplicate. Re-reading the
+          # freshly-fetched files always bumps from the true latest.
+          for attempt in 1 2 3 4 5; do
+            git fetch --quiet origin "${{ github.ref_name }}"
+            git reset --quiet --hard "origin/${{ github.ref_name }}"
+
+            BUMP_ENV_FILE=/tmp/bump.env python3 tools/bump_version.py
+            . /tmp/bump.env
+
+            git add mymeal/config.yaml custom_components/mymeal/manifest.json mymeal/CHANGELOG.md
+            git commit --quiet -m "chore: bump version ${OLD_VERSION} → ${NEW_VERSION}"
+
+            if git push --quiet origin "HEAD:${{ github.ref_name }}"; then
+              echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+              echo "pushed on attempt $attempt"
+              exit 0
+            fi
+            echo "push rejected (main moved); re-syncing and recomputing — attempt $attempt"
+            sleep $((attempt * 3))
+          done
+          echo "::error::could not push the version bump after 5 attempts"
+          exit 1
 
   # Build each architecture on a native runner (no QEMU) and push per-arch tags.
   docker-build:
