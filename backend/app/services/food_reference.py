@@ -51,6 +51,14 @@ policy is exactly the drift this module exists to prevent. They differ in the
 final gate: a weight answer is checked against the other candidates' *portion
 weights*, a nutrition answer against their *energy* (see ``_nutrition_food``).
 
+They now differ in one more way. ``grams_per`` asks **foodcore** who the food
+is first (``_reference_food``) and only falls back to that shared machinery;
+``recipe_nutrition`` does not, because the bake-off measured weights and
+nothing else. Extending it is a separate piece of work with its own evidence:
+a nutrition panel is read as a fact about health, the energy-agreement gate is
+doing real work there, and a household *convention* about which rice someone
+meant is a weaker claim when it decides calories than when it decides grams.
+
 Three rules this module exists to enforce
 -----------------------------------------
 1. **No dataset means today's behaviour, exactly.** ``MYMEAL_FOODCORE_DATASET``
@@ -778,7 +786,7 @@ def _reference_food(ds, food_text: str, canonical: str,
         return _without_unrequested_state(match.food, text_states)
     # The canonical name is only a safe substitute for the written one when
     # canonicalisation did not drop a word that changes the MASS.
-    stripped = bool(text_states - declared_states(canonical))
+    stripped = bool(text_states - _declared_states(canonical))
     if canonical and canonical != text.lower() and not stripped:
         match = ds.resolve_food(canonical)
         if match.confident:
@@ -801,7 +809,7 @@ def _without_unrequested_state(food, text_states: frozenset[str]):
     return food
 
 
-def declared_states(text: str) -> frozenset[str]:
+def _declared_states(text: str) -> frozenset[str]:
     """The ``_STATE_WORDS`` `text` declares — the states the cook asked for."""
     words = frozenset(re.split(r"[^a-z0-9-]+", (text or "").lower()))
     return frozenset(words & _STATE_WORDS)
@@ -875,7 +883,7 @@ def grams_per(unit: str, food_text: str, settings=None) -> float | None:
         # The states the LINE asked for, read before canonicalisation strips
         # them: match_key removes "dried" (right for identity, wrong for mass),
         # so without this the dried/raw distinction would be unrecoverable.
-        states = declared_states(food_text)
+        states = _declared_states(food_text)
         # foodcore's resolver and its household vocabulary first; myMeal's own
         # scorer only where they refuse. The order is the bake-off's result,
         # not a preference — see the section comment above ``_household_food``.

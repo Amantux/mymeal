@@ -330,7 +330,7 @@ def _strategy_a(dataset, unit, food):
 def _lookup_a(dataset, unit, food, canonical):
     return food_reference._lookup_grams(
         dataset, canonical, food_reference._MEASURES[unit],
-        food_reference.declared_states(food),
+        food_reference._declared_states(food),
     )
 
 
@@ -338,7 +338,7 @@ def _strategy_b(dataset, unit, food):
     """foodcore's resolver and vocabulary, then the density table."""
     grams = food_reference._lookup_reference(
         dataset, unit, food, _canonical(food),
-        food_reference.declared_states(food),
+        food_reference._declared_states(food),
     )
     return grams or _hand_table(unit, food)
 
@@ -409,7 +409,7 @@ def _strategy_a_reference_only(dataset, unit, food):
 def _strategy_b_reference_only(dataset, unit, food):
     return food_reference._lookup_reference(
         dataset, unit, food, _canonical(food),
-        food_reference.declared_states(food),
+        food_reference._declared_states(food),
     )
 
 
