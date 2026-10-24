@@ -120,6 +120,13 @@ MUST_REFUSE: list[tuple[str, str, str, str]] = [
 #: engine can tell two foods apart, and this list is only about that.
 DISTINCT_PAIRS: list[tuple[str, str, str, float, str]] = [
     ("bread flour",    "flour",  "cup", 0.09, "137 vs 125 -- protein content; INSIDE scoop tolerance"),
+    # Third food where the tolerance hid a WRONG-FOOD answer, and the tightest
+    # yet: whole wheat is 120 and plain is 125, so falling back to plain flour
+    # was 4% off -- comfortably inside tolerance while being a different grain
+    # with different hydration and gluten. The seeded row was unreachable
+    # because match_key strips "whole", so this looked like a pass for as long
+    # as nobody asked whether it was the right food.
+    ("whole wheat flour", "flour", "cup", 0.04, "120 vs 125 -- different grain, 4% apart"),
     ("brown sugar",    "sugar",  "cup", 0.09, "220 packed vs 200 granulated"),
     ("powdered sugar", "sugar",  "cup", 0.39, "120 vs 200 -- aeration"),
     ("cooked rice",    "rice",   "cup", 0.14, "158 vs 185 -- water replaces air"),

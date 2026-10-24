@@ -19,6 +19,7 @@ from __future__ import annotations
 import math
 import re
 from fractions import Fraction
+from typing import NamedTuple
 
 # --- Canonical units -> base amount. Volume base = millilitre, weight = gram --
 #
@@ -734,6 +735,30 @@ _COUNTABLE_CLASSES = frozenset({"vegetable", "fruit", "egg"})
 # so the cost of a missing entry here is bounded to foods the catalog knows.
 _MASS_NOUNS = frozenset({
     "garlic", "ginger", "celery", "lettuce", "spinach", "sweet corn", "corn",
+    # Added when SEED_FOODS grew from 135 to 398 entries: these are classified
+    # vegetable (correctly) but are mass nouns in recipe English, and became
+    # reachable -- "2 kales", "3 broccolis" -- the moment the catalog knew them.
+    "kale", "cabbage", "broccoli", "cauliflower", "rocket", "arugula",
+    "watercress", "asparagus", "rhubarb",
+})
+
+
+# Foods ending in a consonant + "o" that take a plain "-s", against the
+# "-oes" rule that is right for tomato/potato/mango/hero.
+#
+# The split is etymological: English-naturalised words take "-oes" while
+# Spanish and Italian loanwords keep "-os". No feature of the spelling
+# distinguishes them, so it has to be a list.
+#
+# Reachable and user-visible: a scaled recipe line rendered "2 ripe avocadoes".
+# It was invisible until the catalog learned the word, because an unrecognised
+# food is never conjugated at all -- so widening SEED_FOODS is what exposed it,
+# and any future produce addition can expose another. Add the word here at the
+# same time.
+_NO_OES = frozenset({
+    "avocado", "jalapeno", "taco", "burrito", "churro", "chorizo", "pistachio",
+    "espresso", "cappuccino", "risotto", "amaretto", "macchiato", "nacho",
+    "tostada", "poblano", "serrano", "habanero", "tomatillo", "guava",
 })
 
 
@@ -746,7 +771,7 @@ def _pluralize_noun(word: str) -> str:
     if len(word) > 1 and word.endswith("y") and word[-2] not in "aeiou":
         return word[:-1] + "ies"
     if len(word) > 1 and word.endswith("o") and word[-2] not in "aeiou":
-        return word + "es"
+        return word + "s" if word in _NO_OES else word + "es"
     return word + "s"
 
 
@@ -1058,8 +1083,160 @@ def annotate_weight(text: str, learned=None) -> str:
     """Append the weight in parentheses, KEEPING the original measure, when a
     conversion is possible ("1 cup flour" → "1 cup flour (125 g)"). Returns the
     line unchanged when there's no known density/weight. Non-destructive: this is
-    what the recipe view's weight toggle shows."""
+    what the recipe view's weight toggle shows.
+
+    A line ALREADY measured by weight is returned untouched. Restating it
+    ("240 grams egg whites (240 g)") is noise at best, and the paste lane
+    produced "240 grams Egg Whites(240 g) (240 g)" because the imported text
+    carried its own parenthetical. Harmless while the weight view was an
+    opt-in toggle on volume-written recipes; once weight became the DEFAULT
+    this fired on every gram-measured ingredient in the app, which is how it
+    surfaced.
+
+    Keyed on the parsed unit's DIMENSION rather than on scanning the text for
+    "g", so "1 g" and "2.5 kg" and "8 oz" are all covered and a line that
+    merely mentions grams in its prose is not."""
+    parsed = parse_line(text)
+    if dimension(parsed["unit"]) == "weight":
+        return text
+    # Spices and herbs are exempt for the same reason measures_for defaults
+    # them to a spoon: "1 tsp oregano (1 g)" is a number no cook can use and
+    # no domestic scale can hit. Deferring to the SAME policy rather than
+    # re-deciding it here is the point -- two places answering "is weight
+    # better for this food" is how they end up disagreeing.
+    affinity = measures_for(parsed["rest"])
+    if affinity is not None and affinity.dimension == "small_volume":
+        return text
     grams = to_grams(text, learned=learned)
     if grams is None:
         return text
     return f"{text.strip()} ({_format_grams(grams)})"
+
+
+# --------------------------------------------------------------------------
+# Measure affinity — which units a food is actually measured in
+# --------------------------------------------------------------------------
+#
+# Derived from the catalog's EXISTING classification rather than a new per-food
+# table, because a second per-food list is a second thing to drift: SEED_FOODS
+# already records that an orange is fruit and flour is grain, and that is very
+# nearly the whole answer. Only the classifications that genuinely mix
+# instruments need a per-food override (see _LIQUID_DAIRY).
+#
+# THE WEIGHT BIAS, and its honest limits. Weight is the better instrument
+# wherever a cup is a scoop rather than a measurement: flour packs 20% denser
+# straight from the bag, and every dry bulk good has the same problem. So
+# grain, baking, nut, legume, pulse, flour, sugar, meat and cheese all prefer
+# grams.
+#
+# It is NOT applied blanket, because weight is the WORSE instrument twice over:
+#
+#   * Spices and herbs. "2 g dried basil" is unweighable on a domestic scale
+#     (±1 g resolution on a 2 g target) and unreadable as a recipe. A teaspoon
+#     is both more precise and more usable here, which is the opposite of the
+#     flour case.
+#   * Natively liquid things. Water, milk, stock and oil have consistent
+#     density and are poured, not scooped, so a millilitre is already an
+#     accurate measure and converting it to grams buys nothing while making the
+#     line harder to follow.
+#
+# A bias that ignored those would make the app worse at the two places cooks
+# are most fluent, in the name of consistency. "Prefer weight where weight is
+# better" is the actual goal; "prefer weight everywhere" is a slogan.
+
+_WEIGHT_FIRST = frozenset({
+    "grain", "baking", "nut", "legume", "pulse", "meat", "fish", "shellfish",
+    "protein", "cheese", "spread",
+})
+_COUNT_FIRST = frozenset({"egg", "fruit", "vegetable"})
+_VOLUME_FIRST = frozenset({"liquid", "drink", "alcohol", "plant milk",
+                           "condiment", "fat"})
+_SMALL_VOLUME_FIRST = frozenset({"spice", "herb", "seasoning"})
+
+# "dairy" is the one classification that genuinely spans both instruments:
+# milk is poured and cheese is weighed. Splitting the class in the lexicon
+# would be the tidier fix, but the lexicon's classification is load-bearing for
+# the allergen and material guards, so it is not ours to re-cut from here.
+_LIQUID_DAIRY = frozenset({
+    "milk", "whole milk", "skim milk", "semi skimmed milk", "buttermilk",
+    "cream", "double cream", "single cream", "heavy cream", "whipping cream",
+    "sour cream", "creme fraiche", "yogurt", "greek yogurt", "condensed milk",
+    "evaporated milk", "kefir",
+})
+
+#: Ordered unit offers per dimension. The first entry is the default, and the
+#: rest are what a picker should show — ordered by how often a home cook
+#: reaches for them, not alphabetically.
+_OFFERS: dict[str, tuple[str, ...]] = {
+    # Volume stays on the weight list deliberately: a cook holding a recipe
+    # written in cups must be able to enter cups. The bias is about the
+    # DEFAULT, not about removing the choice.
+    "weight": ("g", "kg", "oz", "lb", "cup", "tbsp", "tsp"),
+    "volume": ("ml", "l", "cup", "tbsp", "tsp", "fl oz", "g"),
+    "small_volume": ("tsp", "tbsp", "g", "ml", "pinch"),
+    # A bare count first, then weight: you buy 3 oranges and you might weigh
+    # 500 g of them. "" is the bare count — this module represents one as
+    # unit=None, so there is no "unit" unit to name.
+    "count": ("", "g", "kg", "cup"),
+}
+
+
+class MeasureAffinity(NamedTuple):
+    """How a food is measured. ``preferred`` is "" for a bare count."""
+
+    preferred: str
+    acceptable: tuple[str, ...]
+    dimension: str
+    reason: str
+
+
+def measures_for(raw: str) -> MeasureAffinity | None:
+    """The units ``raw`` is normally measured in, or None when unknown.
+
+    None means "the catalog does not know this food", and the caller should
+    offer everything rather than guess — the same fail-open posture the rest of
+    this module takes for unrecognised foods. Prepopulating a wrong unit is
+    worse than prepopulating none, because a default is a recommendation.
+
+    >>> measures_for("flour").preferred, measures_for("flour").acceptable[:3]
+    ('g', ('g', 'kg', 'oz'))
+    >>> measures_for("oranges").preferred      # a bare count
+    ''
+    >>> measures_for("dried oregano").preferred
+    'tsp'
+    """
+    from . import food_resolve  # local: keeps this module import-light
+
+    key = food_resolve.match_key(raw)
+    if not key:
+        return None
+    classification = food_resolve.classification(raw)
+    if not classification:
+        return None
+
+    def made(dimension: str, reason: str) -> MeasureAffinity:
+        offers = _OFFERS[dimension]
+        return MeasureAffinity(offers[0], offers, dimension, reason)
+
+    if classification in _SMALL_VOLUME_FIRST:
+        return made("small_volume",
+                    f"{classification}: a domestic scale cannot resolve a gram")
+    if classification in _COUNT_FIRST:
+        # A mass noun is classified fruit/vegetable and is still not countable
+        # — you do not buy "2 spinaches". Reuse the list the pluralizer
+        # already maintains rather than keeping a second copy.
+        if key in _MASS_NOUNS:
+            return made("weight", f"{classification}, but a mass noun")
+        return made("count", f"{classification}: bought and counted whole")
+    if classification == "dairy":
+        if key in _LIQUID_DAIRY:
+            return made("volume", "liquid dairy: poured, consistent density")
+        return made("weight", "solid dairy: butter and cheese are weighed, not scooped")
+    if classification in _VOLUME_FIRST:
+        return made("volume", f"{classification}: poured, consistent density")
+    if classification in _WEIGHT_FIRST:
+        return made("weight", f"{classification}: a cup is a scoop, not a measure")
+    # A classification nobody has mapped yet. Weight is the safe default for an
+    # ingredient of unknown kind AND it is the house bias, so an unmapped class
+    # fails toward the behaviour we want rather than toward a guess.
+    return made("weight", f"unmapped classification {classification!r}")

@@ -69,7 +69,7 @@ def test_weight_view_annotates_in_parens_without_mutating(auth_client):
     assert disp[1] == "3 eggs"  # not convertible → unchanged
 
     # The stored recipe is untouched (annotation is view-only).
-    plain = auth_client.get(f"/api/v1/recipes/{rid}").get_json()
+    plain = auth_client.get(f"/api/v1/recipes/{rid}?units=as_written").get_json()
     assert plain["ingredients"][0]["display"] == "1 cup flour"
 
 
@@ -122,7 +122,7 @@ def test_ingredient_exposes_a_lossless_amount_split(auth_client):
         ],
     }).get_json()["id"]
 
-    got = auth_client.get(f"/api/v1/recipes/{rid}").get_json()["ingredients"]
+    got = auth_client.get(f"/api/v1/recipes/{rid}?units=as_written").get_json()["ingredients"]
 
     assert got[0]["amountText"] == "2/3"          # not the raw 0.6667 float
     assert got[0]["unitText"] == "cup"
@@ -143,7 +143,7 @@ def test_a_zero_quantity_beside_a_numeric_display_still_shows_its_number(auth_cl
                          "food": "flour"}],
     }).get_json()["id"]
 
-    got = auth_client.get(f"/api/v1/recipes/{rid}").get_json()["ingredients"][0]
+    got = auth_client.get(f"/api/v1/recipes/{rid}?units=as_written").get_json()["ingredients"][0]
 
     assert got["quantity"] == 0
     assert got["amountText"] == "2"
@@ -178,7 +178,7 @@ def test_scaled_view_keeps_the_amount_split_consistent(auth_client):
         ],
     }).get_json()["id"]
 
-    got = auth_client.get(f"/api/v1/recipes/{rid}?servings=3").get_json()["ingredients"]
+    got = auth_client.get(f"/api/v1/recipes/{rid}?units=as_written&servings=3").get_json()["ingredients"]
 
     assert got[0]["amountText"] == "1 1/2"        # 1.5, rendered not raw
     assert got[0]["unitText"] == "cups"           # agrees with the scaled amount
@@ -239,7 +239,7 @@ def test_a_composed_row_still_scales_its_alternative(auth_client):
     }).get_json()["id"]
 
     ing = auth_client.get(
-        f"/api/v1/recipes/{rid}?servings=3").get_json()["ingredients"][0]
+        f"/api/v1/recipes/{rid}?units=as_written&servings=3").get_json()["ingredients"][0]
 
     assert ing["display"] == "3 g Garlic Powder or 1 1/2 tsp"
     assert ing["restText"] == "Garlic Powder"

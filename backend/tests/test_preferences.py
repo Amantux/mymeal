@@ -60,7 +60,28 @@ def test_preferences_text_empty_when_nothing_set(app):
 
 def test_get_preferences_returns_defaults_for_new_group(auth_client):
     body = auth_client.get("/api/v1/preferences").get_json()
-    assert body == {"diet": "", "allergies": "", "dislikes": "", "notes": ""}
+    assert body == {
+        "diet": "", "allergies": "", "dislikes": "", "notes": "",
+        # A household that has never chosen leads with weight: a cup of flour
+        # swings ~20% with scooping, so the weight is the reproducible number.
+        "measureBias": "weight",
+        "measureBiasOptions": ["weight", "as_written"],
+    }
+
+
+def test_measure_bias_round_trips_and_rejects_an_unknown_value(auth_client):
+    assert auth_client.put(
+        "/api/v1/preferences", json={"measureBias": "as_written"}
+    ).get_json()["measureBias"] == "as_written"
+    assert auth_client.get(
+        "/api/v1/preferences").get_json()["measureBias"] == "as_written"
+
+    # Rejected rather than stored, so the read path never meets junk it wrote.
+    assert auth_client.put(
+        "/api/v1/preferences", json={"measureBias": "ounces"}
+    ).status_code == 400
+    assert auth_client.get(
+        "/api/v1/preferences").get_json()["measureBias"] == "as_written"
 
 
 def test_put_preferences_persists_and_round_trips(auth_client):
