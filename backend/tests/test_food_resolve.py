@@ -245,3 +245,293 @@ def test_an_unknown_food_is_still_unknown_whatever_its_case():
 
     for text in ("Quattro Formaggi Base", "quattro formaggi base"):
         assert not food_resolve.is_known(text)
+
+
+# --- the widened catalog ------------------------------------------------------
+# "Wegman's Avocados are Avocados. Organic Raspberries are Raspberries."
+#
+# These failed for ONE reason, and it was not the qualifier machinery: the
+# resolver anchors on a known HEAD and strips what precedes it, and neither
+# avocado nor raspberry was in the catalog. Coverage is the fix, and ADR-0001
+# already says coverage is a safety property here, not just a quality one.
+
+
+@pytest.mark.parametrize("raw,food,qualifier", [
+    ("Wegman's Avocados", "avocado", "wegman s"),     # the owner's first example
+    ("Organic Raspberries", "raspberry", "organic"),  # ...and the second
+    ("organic avocado", "avocado", "organic"),
+    ("Wegmans Raspberries", "raspberry", "wegmans"),
+    ("Trader Joe's Blueberries", "blueberry", "trader joe s"),
+    ("organic kale", "kale", "organic"),
+    ("Italian broccoli", "broccoli", "italian"),
+    ("baby spinach", "spinach", "baby"),
+    ("Spanish chorizo", "chorizo", "spanish"),
+])
+def test_a_brand_or_provenance_strips_off_a_newly_known_food(raw, food, qualifier):
+    assert split(raw) == (food, qualifier)
+    assert why(raw) == "split"
+
+
+@pytest.mark.parametrize("raw", [
+    "avocado", "raspberry", "strawberry", "blueberry", "ketchup", "mayonnaise",
+    "broccoli", "cauliflower", "cabbage", "kale", "leek", "shallot", "asparagus",
+    "beetroot", "parsnip", "pumpkin", "mango", "pineapple", "grape", "pear",
+    "peach", "cherry", "fig", "raisin", "olive", "quinoa", "couscous", "barley",
+    "polenta", "spaghetti", "tortilla", "cheddar", "mozzarella", "feta",
+    "halloumi", "ricotta", "lamb", "turkey", "duck", "sausage", "chorizo",
+    "ham", "cod", "haddock", "mackerel", "anchovy", "crab", "mussels", "squid",
+    "tempeh", "mustard", "tahini", "miso", "hummus", "pesto", "oregano", "sage",
+    "cardamom", "saffron", "cayenne", "sumac", "molasses",
+])
+def test_a_household_staple_is_in_the_catalog(raw):
+    """The seed list was 135 entries and whole aisles were missing. Each of
+    these used to come back "unknown", which costs a consolidation on every
+    shopping list that mentions it."""
+    assert fr.is_known(raw), f"{raw!r} is not in the catalog"
+    assert why(raw) == "exact"
+
+
+@pytest.mark.parametrize("raw,food", [
+    ("arugula", "rocket"),
+    ("bok choy", "pak choi"),
+    ("brinjal", "aubergine"),
+    ("capsicum", "bell pepper"),
+    ("rutabaga", "swede"),
+    ("beet", "beetroot"),
+    ("mayo", "mayonnaise"),
+    ("catsup", "ketchup"),
+    ("red pepper flakes", "chilli flake"),
+    ("apple cider vinegar", "cider vinegar"),
+    ("parmigiano reggiano", "parmesan"),
+    ("flaxseed", "flax seed"),
+])
+def test_a_regional_name_for_a_new_food_resolves_to_one_food(raw, food):
+    assert split(raw) == (food, "")
+    assert why(raw) == "alias"
+
+
+# --- the widened catalog must not cross a material boundary -------------------
+
+@pytest.mark.parametrize("raw,trap", [
+    ("cheddar cheese", "cheese"),       # a named cheese is not "any cheese"
+    ("feta cheese", "cheese"),
+    ("mozzarella cheese", "cheese"),
+    ("parmesan cheese", "cheese"),
+    ("goat cheese", "cheese"),
+    ("blue cheese", "cheese"),
+    ("rye flour", "flour"),             # both grains, both gluten
+    ("bread flour", "flour"),
+    ("cake flour", "flour"),
+    ("spelt flour", "flour"),
+    ("rice noodles", "noodle"),         # gluten-free vs wheat
+    ("egg noodles", "noodle"),
+    ("rice milk", "milk"),
+    ("cashew milk", "milk"),
+    ("coconut cream", "cream"),
+    ("green lentils", "lentils"),
+    ("red pepper", "pepper"),
+    ("cherry tomato", "tomato"),
+    ("plum tomato", "tomato"),
+])
+def test_a_new_compound_never_collapses_into_its_generic(raw, trap):
+    """The danger a bigger catalog adds is MORE chances for a substring match to
+    cross a boundary, so each of these pins the specific collapse it must not
+    make. A generic answer here is a wrong purchase: cheddar for feta, plain
+    flour for rye, wheat noodles for rice ones."""
+    food, qualifier = split(raw)
+    assert food != trap, f"{raw!r} collapsed to {trap!r} via {why(raw)}"
+    assert qualifier == ""
+
+
+@pytest.mark.parametrize("raw,head", [
+    ("halloumi cheese", "cheese"),   # the classification edge, not a seeded compound
+    ("ricotta cheese", "cheese"),
+    ("gruyere cheese", "cheese"),
+    ("lamb stock", "stock"),         # meat vs liquid
+    ("turkey stock", "stock"),
+    ("mango yoghurt", "yoghurt"),    # fruit vs dairy
+    ("raspberry yoghurt", "yoghurt"),
+])
+def test_a_new_entry_earns_its_refusal_from_the_material_edge_alone(raw, head):
+    """MUTATION GUARD for guard 2 *with the widened catalog in place*. None of
+    these phrases is a seed, so guard 1 cannot save them — the refusal comes
+    only from the new entry differing materially from the head. Disable
+    ``_differs_materially`` and every one collapses into the generic, which is
+    what makes this the test that proves a bigger catalog did not weaken the
+    boundary. It is also the evidence for the named-cheese classification
+    claim: no "<name> cheese" compound is seeded for these three."""
+    assert why(raw) == "material", f"{raw!r} was caught by {why(raw)}, not the edge"
+    assert split(raw) == (fr.normalize_text(raw), "")
+    assert split(raw)[0] != head
+
+
+def test_a_named_cheese_is_classified_apart_from_generic_cheese():
+    """How the collapse above is actually prevented, stated once: a named cheese
+    gets its own classification, so guard 2 separates it from `cheese` without a
+    compound being seeded for every variety. `parmesan` was filed under "dairy"
+    — identical to `cheese` — so "parmesan cheese" split to plain `cheese`."""
+    assert fr.SEED_FOODS["parmesan"][0] == "cheese"
+    assert fr.SEED_FOODS["cheese"][0] == "dairy"
+    assert split("grated parmesan")[0] == "parmesan"
+
+
+def test_bone_in_is_functional_so_a_seeded_cut_cannot_rewrite_it():
+    """MUTATION GUARD. Seeding "chicken thigh" gave the resolver a head it never
+    had, which made "bone-in chicken thighs" splittable for the first time — and
+    ADR-0001 protects that exact string from being rewritten, because bone-in
+    and boneless are not interchangeable. Remove "bone in" from
+    FUNCTIONAL_QUALIFIERS and this fails."""
+    for raw in ("bone-in chicken thighs", "boneless chicken thighs",
+                "skinless chicken breast"):
+        assert fr.normalize(raw)[1] == "", f"{raw!r} split off a qualifier"
+        assert why(raw) == "functional"
+    # ...while the plain cut still resolves, which is the point of seeding it.
+    assert split("chicken thighs") == ("chicken thigh", "")
+
+
+# --- deliberate OMISSIONS, and why --------------------------------------------
+
+@pytest.mark.parametrize("word,protects", [
+    ("sesame", "sesame oil"),
+    ("corn", "corn flour"),
+    ("sunflower", "sunflower oil"),
+    ("rapeseed", "rapeseed oil"),
+    ("cider", "cider vinegar"),
+    ("sherry", "sherry vinegar"),
+])
+def test_a_word_that_only_ever_qualifies_an_oil_or_vinegar_stays_unknown(word, protects):
+    """MUTATION GUARD, and the most counter-intuitive rule in this file.
+
+    ``units._density_for``'s head-noun fallback fails OPEN on an unknown
+    qualifier — ADR-0001 records that as deliberate, because failing closed
+    would refuse "sunflower oil" and "maple syrup". The corollary is that
+    TEACHING the lexicon one of these words makes the fallback start refusing:
+    measured, seeding "sesame" and "corn" cost 64 density lookups, including
+    `sesame oil` and `cornstarch`, which the ADR lists as wins.
+
+    So these words are absent on purpose and the COMPOUND is seeded instead.
+    Adding one back to SEED_FOODS silently removes a weight estimate.
+    """
+    from app.services import units
+
+    assert not fr.is_known(word), (
+        f"{word!r} was added to the catalog; it costs {protects!r} its density")
+    assert units._density_for(protects) is not None, f"{protects} lost its density"
+
+
+@pytest.mark.parametrize("word,swallows", [
+    ("beans", "organic garbanzo beans"),
+    ("syrup", "corn syrup"),
+])
+def test_a_generic_head_that_would_swallow_unseeded_varieties_stays_unknown(
+        word, swallows):
+    """A bare generic is only safe as a head when guard 2 can separate the
+    varieties beneath it. Every pulse shares one classification and no
+    allergen, so "beans" swallowed anything not individually seeded —
+    "organic garbanzo beans" resolved to plain `beans` rather than chickpeas,
+    because a prefix stops the ALIAS matching and the suffix loop only
+    considers seed foods as heads. Pulses are not substitutable."""
+    assert not fr.is_known(word)
+    assert fr.food_key(swallows) != word
+
+
+# --- catalog-wide invariants ---------------------------------------------------
+
+def test_every_entry_has_a_classification_and_an_allergen_tuple():
+    """Both are load-bearing: they are the only things guard 2 compares, so a
+    malformed row silently stops refusing."""
+    for name, entry in fr.SEED_FOODS.items():
+        assert isinstance(entry, tuple) and len(entry) == 2, name
+        classification, allergens = entry
+        assert classification and isinstance(classification, str), name
+        assert isinstance(allergens, tuple), name
+        assert all(isinstance(a, str) and a for a in allergens), name
+
+
+def test_the_allergen_vocabulary_stays_closed():
+    """A typo ("nut" for "nuts") creates a brand-new material that differs from
+    everything, so the guard starts refusing splits at random. Keeping the set
+    closed turns that typo into a failing test."""
+    assert {a for _c, al in fr.SEED_FOODS.values() for a in al} == {
+        "dairy", "egg", "gluten", "nuts", "peanut", "sesame", "soy", "fish",
+        "shellfish",
+    }
+
+
+def test_coconut_carries_no_allergen_because_this_is_the_material_lexicon():
+    """MUTATION GUARD for the trap ADR-0001 calls out. foodcore files coconut
+    under tree nuts, because its question is FDA labelling. This file's question
+    is "may a substring match cross from here to there", and coconut is a drupe
+    — it is not almond. Both are right for their own question and must stay
+    separate; `food_reference` has the seam comment.
+
+    Giving coconut the nut allergen here would make "coconut milk" and
+    "coconut oil" behave like almond's, which is a different claim entirely.
+    """
+    assert fr.SEED_FOODS["coconut"] == ("fruit", ())
+    assert fr.SEED_FOODS["coconut milk"] == ("plant milk", ())
+
+
+def test_a_compound_seed_is_never_shadowed_by_a_shorter_seed():
+    """Guard 1 must win for every multi-word entry whose tail is also a food.
+    Seeding a compound IS how you protect it (ADR-0001), so an entry that does
+    not come back whole is a silent collapse — "parmesan cheese" to `cheese`
+    was exactly this, and it shipped."""
+    collapsed = {}
+    for name in fr.SEED_FOODS:
+        food, qualifier, reason = fr.normalize(name)
+        if food != name or qualifier:
+            collapsed[name] = (food, qualifier, reason)
+    assert collapsed == {}
+
+
+def test_no_seed_name_is_also_an_alias_key():
+    """An alias for a name that is itself a food is a contradiction: one folded
+    key would have two answers, and which one wins depends on dict order."""
+    assert set(fr.SEED_ALIASES) & set(fr.SEED_FOODS) == set()
+
+
+@pytest.mark.parametrize("text,density", [
+    ("sesame oil", 0.92),
+    ("corn flour", 0.53),
+    ("cornstarch", 0.53),
+    ("olive oil", 0.92),
+    ("maple syrup", 1.37),
+    ("chicken stock", 1.0),
+    ("peanut butter", 1.09),
+    ("whole wheat flour", 0.53),
+    ("sunflower oil", 0.92),
+])
+def test_the_widened_catalog_keeps_the_density_lookups_it_had(text, density):
+    """A bigger catalog means more known qualifiers, and every newly-known
+    qualifier is a new chance for the density fallback to refuse a crossing it
+    used to allow. These are the lookups ADR-0001 names as the wins of the
+    head-noun fallback, so they are pinned against exactly that drift."""
+    from app.services import units
+
+    assert units._density_for(text) == density
+
+
+@pytest.mark.parametrize("raw,was,now", [
+    ("bread flour", "flour", "bread flour"),
+    ("green lentils", "lentils", "green lentils"),
+    ("red pepper", "pepper", "red pepper"),
+    ("green pepper", "pepper", "green pepper"),
+    ("sunflower oil", "oil", "sunflower oil"),
+    ("parmesan cheese", "cheese", "parmesan cheese"),
+    ("whole wheat flour", "flour", "wheat flour"),
+])
+def test_a_variety_that_used_to_collapse_now_keeps_its_identity(raw, was, now):
+    """The seven resolutions this change deliberately MOVES, pinned so the move
+    is a decision rather than a side effect. Each used to resolve to the generic
+    on the left, which is a wrong purchase — a recipe wanting bread flour,
+    parmesan or a red pepper is not served by plain flour, any cheese, or a
+    green one.
+
+    "whole wheat flour" is the subtlest: the compound was seeded all along, but
+    ``match_key`` strips "whole" as a preparation word, so the key became plain
+    `flour` and the seeded row was unreachable — the same class of dead row as
+    the yogurt/yoghurt key mismatch in ADR-0001.
+    """
+    assert fr.food_key(raw) != was
+    assert fr.match_key(raw) == now
