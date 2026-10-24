@@ -49,4 +49,4 @@ foodcore @ git+https://github.com/Amantux/foodcore.git@9f68f20586aec10f27ab75468
 
 # Pluggable AI providers (all optional at runtime — imported lazily).
 anthropic>=0.39.0
-openai>=2.53.0
+openai>=3.7.0
