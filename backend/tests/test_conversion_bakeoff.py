@@ -67,7 +67,7 @@ C wins on both axes, so C ships. Two things that reading the table will not
 tell you:
 
 * **Pure B is a coverage regression and was never an option.** Measured with
-  no density table at all it converts 65/122 against A's 26 — but the table is
+  no density table at all it converts 64/122 against A's 26 — but the table is
   what answers "1 cup broth", "1 cup cocoa", "1 cup almond butter" today, and
   the brief's hard constraint is that no line that converts correctly now may
   stop. So every strategy keeps it last, and "delete myMeal's scorer" means
@@ -387,6 +387,34 @@ def test_corpus_is_the_size_and_shape_the_docstring_claims():
     assert tags.count("hand") == 5
     assert tags.count("refuse") == 11
     assert tags.count("unknown") == 6
+
+
+def test_the_dataset_answers_far_more_lines_than_before(shipped):
+    """What each resolver is worth on its own, with the density table taken
+    away: this is the number that says the dataset went from decoration to
+    load-bearing, and the one that says the table cannot yet be retired."""
+    def reference_only(strategy):
+        return sum(1 for unit, food, *_ in CORPUS if strategy(shipped, unit, food))
+
+    assert reference_only(_strategy_a_reference_only) == 26
+    assert reference_only(_strategy_b_reference_only) == 64
+    assert reference_only(_strategy_c_reference_only) == 68
+
+
+def _strategy_a_reference_only(dataset, unit, food):
+    canonical = _canonical(food)
+    return _lookup_a(dataset, unit, food, canonical) if canonical else None
+
+
+def _strategy_b_reference_only(dataset, unit, food):
+    return food_reference._lookup_reference(
+        dataset, unit, food, _canonical(food),
+        food_reference.declared_states(food),
+    )
+
+
+def _strategy_c_reference_only(_dataset, unit, food):
+    return food_reference.grams_per(unit, food)
 
 
 def test_strategy_a_scores_what_it_scored_before_the_change(shipped):
