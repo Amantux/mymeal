@@ -580,6 +580,15 @@ SEED_ALIASES: dict[str, str] = {
 FUNCTIONAL_QUALIFIERS: frozenset[str] = frozenset({
     "self raising", "selfraising", "self rising", "plain", "whole wheat",
     "wholemeal", "strong", "gluten free", "unsalted", "salted", "double",
+    # "strong" and "wholemeal" were here from the start and "bread" was not,
+    # which is a UK-vocabulary gap rather than a design decision: strong flour
+    # IS bread flour. Without it "bread flour" split to plain flour, so the
+    # shopping list said flour (wrong purchase) and the conversion lane
+    # returned 125 g/cup instead of 137 (wrong by 10%, silently).
+    #
+    # The absolute-value corpus case MISSED this: 137 vs 125 is a 9.6% gap and
+    # the scoop tolerance is 12%. Only DISTINCT_PAIRS caught it.
+    "bread",
     "heavy", "single", "sour", "clotted", "condensed", "evaporated", "skimmed",
     "semi skimmed", "dark", "white", "smoked", "desiccated", "instant",
     "quick cook", "dried", "fresh", "frozen", "raw", "cooked", "toasted",
