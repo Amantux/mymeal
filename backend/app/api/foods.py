@@ -8,7 +8,7 @@ from ..extensions import db
 from ..models import Food, RecipeIngredient, ShoppingListItem, Unit
 from ..auth import login_required, current_group
 from ..schemas.serializers import food_out, unit_out
-from ..services import food_resolve
+from ..services import food_resolve, units
 
 bp = Blueprint("foods", __name__)
 
@@ -331,6 +331,45 @@ def list_units():
         .all()
     )
     return jsonify([unit_out(u) for u in units])
+
+
+@bp.get("/measures")
+@login_required
+def measures_for_food():
+    """Which units a food is normally measured in, for prepopulating a picker.
+
+    ``?food=flour`` -> ``{"food": "flour", "preferred": "g",
+    "acceptable": ["g", "kg", ...], "dimension": "weight", "reason": "..."}``
+
+    ``known: false`` with an EMPTY acceptable list when the catalog does not
+    recognise the food. The client then offers its full unit list, because a
+    prepopulated unit is a recommendation and a confident wrong one is worse
+    than none — the same fail-open posture the resolver takes.
+
+    ``reason`` is returned so the UI can explain the default rather than
+    just imposing it ("grain: a cup is a scoop, not a measure"). A default a
+    cook cannot interrogate is one they will fight.
+    """
+    food = (request.args.get("food") or "").strip()
+    if not food:
+        abort(400, description="food is required")
+    affinity = units.measures_for(food)
+    if affinity is None:
+        return jsonify({
+            "food": food, "known": False, "preferred": None,
+            "acceptable": [], "dimension": None, "reason": "",
+        })
+    return jsonify({
+        "food": food,
+        "known": True,
+        # "" is this module's bare count; JSON-wise null reads better for a
+        # client populating a <select>, and keeps "" from looking like a unit
+        # whose name happens to be empty.
+        "preferred": affinity.preferred or None,
+        "acceptable": [u or None for u in affinity.acceptable],
+        "dimension": affinity.dimension,
+        "reason": affinity.reason,
+    })
 
 
 @bp.post("/units")

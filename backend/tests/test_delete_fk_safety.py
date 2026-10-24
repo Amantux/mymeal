@@ -37,5 +37,9 @@ def test_deleting_an_in_use_unit_no_longer_500s(auth_client):
     assert cup, "no unit was created"
     assert auth_client.delete(f"/api/v1/units/{cup[0]['id']}").status_code == 204
     # the recipe line survives; its unit is just cleared
-    body = auth_client.get(f"/api/v1/recipes/{r['id']}").get_json()
+    # units=as_written: this test is about FK safety on unit deletion, not
+    # about the weight view, so it pins the rendering rather than inheriting
+    # whichever default is current.
+    body = auth_client.get(
+        f"/api/v1/recipes/{r['id']}?units=as_written").get_json()
     assert body["ingredients"][0]["display"] == "2 cups flour"

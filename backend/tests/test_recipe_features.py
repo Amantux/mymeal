@@ -121,10 +121,10 @@ def test_recipe_scaling_and_weight_view(auth_client):
         "ingredients": [{"display": "2 cups flour"}, {"display": "2 eggs"}],
     }).get_json()["id"]
 
-    base = auth_client.get(f"/api/v1/recipes/{rid}").get_json()
+    base = auth_client.get(f"/api/v1/recipes/{rid}?units=as_written").get_json()
     assert [i["display"] for i in base["ingredients"]] == ["2 cups flour", "2 eggs"]
 
-    scaled = auth_client.get(f"/api/v1/recipes/{rid}?servings=4").get_json()
+    scaled = auth_client.get(f"/api/v1/recipes/{rid}?units=as_written&servings=4").get_json()
     assert scaled["scaledServings"] == 4
     # The unit agrees with the scaled quantity: this asserted "4 cup flour" for
     # as long as scale_line emitted the singular canonical unit.
@@ -167,7 +167,7 @@ def test_a_line_with_no_amount_says_so_rather_than_leaving_a_blank_column(auth_c
                         {"display": "240 g egg whites"}],
     }).get_json()["id"]
 
-    got = auth_client.get(f"/api/v1/recipes/{rid}?servings=4").get_json()["ingredients"]
+    got = auth_client.get(f"/api/v1/recipes/{rid}?units=as_written&servings=4").get_json()["ingredients"]
 
     assert [i["unmeasured"] for i in got] == [True, False, False]
     # The word is still inside the rendered text on the first row, so the flag

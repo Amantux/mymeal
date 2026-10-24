@@ -636,7 +636,17 @@ def _apply_view(out: dict, recipe: Recipe, args):
         target = int(args.get("servings") or 0)
     except (TypeError, ValueError):
         target = 0
-    to_weight = str(args.get("units") or "").lower() == "weight"
+    # An explicit ?units= always wins; otherwise the household's standing
+    # preference decides, which now defaults to weight. Weight is the more
+    # reproducible number for dry bulk goods (a cup of flour swings ~20% with
+    # scooping) and annotate_weight only APPENDS it, so the written measure is
+    # never lost and the default is safe to flip.
+    requested = str(args.get("units") or "").lower()
+    if requested:
+        to_weight = requested == "weight"
+    else:
+        from ..services.preferences import measure_bias
+        to_weight = measure_bias(recipe.group_id) == "weight"
     factor = (target / recipe.servings) if target > 0 and recipe.servings else 1.0
     if factor == 1.0 and not to_weight:
         return
