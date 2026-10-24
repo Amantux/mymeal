@@ -44,20 +44,29 @@ Two questions, one seam
 -----------------------
 ``grams_per`` answers "what does one cup of this weigh?" (Stage 1).
 ``recipe_nutrition`` answers "what is this recipe's per-serving nutrition?"
-(Stage 2). They share the identity machinery below — the scoring tiers, the
-plural forms, the unrequested-state filter — because getting the *food* wrong
-produces a confidently wrong number in both cases, and a second copy of that
-policy is exactly the drift this module exists to prevent. They differ in the
-final gate: a weight answer is checked against the other candidates' *portion
-weights*, a nutrition answer against their *energy* (see ``_nutrition_food``).
+(Stage 2).
 
-They now differ in one more way. ``grams_per`` asks **foodcore** who the food
-is first (``_reference_food``) and only falls back to that shared machinery;
-``recipe_nutrition`` does not, because the bake-off measured weights and
-nothing else. Extending it is a separate piece of work with its own evidence:
-a nutrition panel is read as a fact about health, the energy-agreement gate is
-doing real work there, and a household *convention* about which rice someone
-meant is a weaker claim when it decides calories than when it decides grams.
+**They no longer agree about who decides the food, and that is a known debt
+rather than a design.** ``grams_per`` asks foodcore first
+(``_reference_food``); ``recipe_nutrition`` still uses ``_nutrition_food``,
+this module's own scorer. So one line can be WEIGHED as the household
+vocabulary's food and have its calories computed from a different row. Today
+that cannot produce a wrong panel — on every line where the two identities
+differ, the nutrition path refuses outright and the recipe falls back to an AI
+estimate that is labelled a guess — but nothing asserts that, and the next
+vocabulary word the scorer also resolves closes the gap silently.
+
+It was left this way on purpose: the bake-off measured *weights*, and a
+convention about which rice someone meant is a weaker claim when it decides
+calories than when it decides grams. Extending it needs its own corpus scored
+against published nutrition, not an argument by analogy from this one.
+
+Below that difference they still share the identity machinery — the scoring
+tiers, the plural forms, the unrequested-state filter — because getting the
+*food* wrong produces a confidently wrong number either way, and a second copy
+of that policy is exactly the drift this module exists to prevent. They differ
+in the final gate: a weight answer is checked against the other candidates'
+*portion weights*, a nutrition answer against their *energy*.
 
 Three rules this module exists to enforce
 -----------------------------------------
@@ -217,7 +226,7 @@ def reset_cache() -> None:
         _ambient_path = None
         _warned = False
         _lookup_grams.cache_clear()
-        _lookup_reference.cache_clear()
+        _lookup_reference_food.cache_clear()
         _lookup_composition.cache_clear()
 
 
@@ -777,20 +786,39 @@ def _reference_food(ds, food_text: str, canonical: str,
     Both are asserted, and both fail when removed — see
     ``test_canonical_fallback_refuses_when_a_state_word_was_stripped`` and
     ``test_asking_for_the_preparation_does_use_it``.
+
+    **What the vocabulary route does NOT get, said plainly:** a word it
+    answers skips the agreement gate too (``_AGREEMENT``), because that gate
+    compares rival candidates and a cited id has no rivals. The remaining
+    protection for those ~60 words is foodcore's qualifier refusal, which is
+    why ``_reference_grams`` goes out of its way to honour it. And two state
+    words that matter are not in ``_STATE_WORDS`` at all — "whipped" and
+    "sifted" — so "1 cup whipped cream" takes the fluid-cream convention and
+    answers ~240 g where the measured whipped row is 120 g. That is not a
+    regression (the density table said 230 g) and it is not fixed here:
+    adding words to that list changes what myMeal's own scorer refuses too,
+    which moves the bake-off's baseline, so it needs its own measurement.
     """
     text = " ".join((food_text or "").split())
     if not text:
         return None
-    match = ds.resolve_food(text)
-    if match.confident:
-        return _without_unrequested_state(match.food, text_states)
+    # A free-text field reaches this function, and ``resolve_food`` binds one
+    # SQL parameter per distinct token — so a pathological line can raise
+    # instead of refusing. ``grams_per`` would catch it, but catching it there
+    # latches ``_warned`` and silences every LATER genuine warning for the
+    # life of the process. No food has sixty-four words in its name.
+    if len(set(text.split())) > 64:
+        return None
+    food = _matched_food(ds, text)
+    if food is not None:
+        return _without_unrequested_state(food, text_states)
     # The canonical name is only a safe substitute for the written one when
     # canonicalisation did not drop a word that changes the MASS.
     stripped = bool(text_states - _declared_states(canonical))
     if canonical and canonical != text.lower() and not stripped:
-        match = ds.resolve_food(canonical)
-        if match.confident:
-            return _without_unrequested_state(match.food, text_states)
+        food = _matched_food(ds, canonical)
+        if food is not None:
+            return _without_unrequested_state(food, text_states)
     # The vocabulary is keyed on exact phrases, so asking it about the text as
     # written is safe even when a state word was stripped: "cooked rice" is
     # itself one of its keys, and "dried onions" is not a key at all.
@@ -798,6 +826,48 @@ def _reference_food(ds, food_text: str, canonical: str,
     if food is None and canonical and not stripped:
         food = _household_food(ds, canonical)
     return food
+
+
+def _matched_food(ds, query: str):
+    """foodcore's confident match for `query`, or None — with an evidence floor.
+
+    ``resolve_food`` calls a LONE candidate confident whatever it scored, and
+    its score 50 means only "the query's tokens appear somewhere in the full
+    description". That is the one case where its own rule does not apply: with
+    two or more candidates it already requires ``top >= 70``. The consequence
+    is not theoretical and not small. Against the shipped 7,793-food dataset:
+
+        1 cup whole oats    -> "Cereals ready-to-eat, QUAKER WHOLE HEARTS oat
+                               cereal"                     37 g, was 97 g
+        1 cup raw flour     -> "Soy flour, full-fat, raw"  83 g, was 125 g
+        1 cup canned lentils-> "Soup, lentil with ham"     248 g
+        1 cup fresh cabbage -> "Cabbage, japanese style, fresh, pickled" 150 g
+
+    Each is a lone score-50 row, and each produces a plausible-looking number
+    for a food nobody asked for — "a wrong identity is worse than no answer",
+    rule 3 in this module's docstring, and a 2.6x regression on a line any
+    porridge recipe writes.
+
+    So the same floor this file already states for its own tiers is required of
+    foodcore's published one. **This is not a second scorer**: it is one
+    comparison against the score foodcore returns in ``candidates``, and the
+    two scales are the same three tiers with the same meanings (100 the head
+    noun, 70 inside the head, 50 anywhere) — asserted by
+    ``test_the_two_score_scales_still_mean_the_same_thing`` so a library change
+    to either scale fails a test instead of silently moving the floor.
+
+    What it costs, measured: three conversions this seam could otherwise make
+    (garlic powder 3.1 g/tsp, powdered sugar 120 g/cup, cream of tartar
+    144 g/cup), each of which is a lone score-50 row that happens to be right.
+    None of them is a regression — all three fall back to exactly what shipped
+    before — and all three are words foodcore's household vocabulary should
+    cover, which is the same ask the eight missing ones make.
+    """
+    match = ds.resolve_food(query)
+    if not match.confident or not match.candidates:
+        return None
+    food, score = match.candidates[0]
+    return food if score >= _MIN_SCORE else None
 
 
 def _without_unrequested_state(food, text_states: frozenset[str]):
@@ -815,16 +885,24 @@ def _declared_states(text: str) -> frozenset[str]:
     return frozenset(words & _STATE_WORDS)
 
 
-def _reference_grams(ds, unit: str, food_text: str, canonical: str,
-                     text_states: frozenset[str]) -> float | None:
-    """Grams for ONE `unit` of `food_text` via foodcore, or None.
+def _reference_grams(ds, food, unit: str) -> float | None:
+    """Grams for ONE `unit` of an already-identified `food`, or None.
 
     ``foodcore.convert.convert`` rather than ``Dataset.portion_grams``, because
     a USDA food usually publishes a weight for ONE household measure and the
     others have to come from its density: "1 tbsp flour" has no row of its own,
-    and tahini publishes a tablespoon but no cup. ``convert`` derives that,
-    refuses where the food publishes only materially-different qualified rows
-    ("1 cup onion" — chopped 160 g, sliced 115 g), and carries the provenance.
+    and tahini publishes a tablespoon but no cup. ``convert`` derives that and
+    carries the provenance.
+
+    **But it is asked about the qualified rows first.** ``convert`` prefers an
+    unqualified portion in ANY volume unit over the requested unit's qualified
+    rows, which quietly reverses this app's ambiguity rule: celery publishes
+    "cup, chopped" 101 g and an unqualified tablespoon, so a cup of celery
+    comes back as 120 g — 19% away from the dataset's own cup measurement,
+    where the refusal it replaced was right. ``portion_grams`` says
+    ``qualifier_required`` for exactly that shape, so it is consulted and its
+    refusal is honoured. Measured: this costs one conversion over the bake-off
+    corpus and takes the overclaims from one to none.
 
     The provenance is read and then dropped, because ``to_grams`` returns
     ``float | None`` and has nowhere to put it. That is a real loss and it is
@@ -832,10 +910,10 @@ def _reference_grams(ds, unit: str, food_text: str, canonical: str,
     lines is not silence, it is the hand-written density table, which has no
     provenance whatsoever. See the module docstring on ``inferred``.
     """
+    import foodcore
     from foodcore.convert import convert
 
-    food = _reference_food(ds, food_text, canonical, text_states)
-    if food is None:
+    if _only_qualified(ds, food, unit, foodcore.rule_version("convert")):
         return None
     outcome = convert(1.0, unit, "g", food=food, dataset=ds)
     if not getattr(outcome, "resolved", False):
@@ -845,13 +923,29 @@ def _reference_grams(ds, unit: str, food_text: str, canonical: str,
     return grams if grams > 0 else None
 
 
+def _only_qualified(ds, food, unit: str, version: str) -> bool:
+    """True when every spelling of `unit` is published ONLY as qualified rows
+    that differ materially — the one refusal ``convert`` would talk us out of."""
+    reasons = []
+    for measure in _MEASURES.get(unit, ()):
+        outcome = ds.portion_grams(food.key, measure, version=version)
+        if outcome.resolved:
+            return False
+        reasons.append(outcome.reason)
+    return bool(reasons) and all(r == "qualifier_required" for r in reasons)
+
+
 @lru_cache(maxsize=2048)
-def _lookup_reference(ds, unit: str, food_text: str, canonical: str,
-                      text_states: frozenset[str]) -> float | None:
+def _lookup_reference_food(ds, food_text: str, canonical: str,
+                           text_states: frozenset[str]):
     """Memoised, for the reason ``_lookup_grams`` is: ``resolve_food``
     prefilters with a leading-wildcard LIKE, which is a full scan of 7,793
-    rows, and a recipe render asks for the same handful of foods repeatedly."""
-    return _reference_grams(ds, unit, food_text, canonical, text_states)
+    rows, and a recipe render asks for the same handful of foods repeatedly.
+
+    The UNIT is deliberately not part of the key: identity is the expensive
+    half and does not depend on it, so a recipe using the same food in two
+    measures pays for one scan rather than two."""
+    return _reference_food(ds, food_text, canonical, text_states)
 
 
 def grams_per(unit: str, food_text: str, settings=None) -> float | None:
@@ -887,10 +981,15 @@ def grams_per(unit: str, food_text: str, settings=None) -> float | None:
         # foodcore's resolver and its household vocabulary first; myMeal's own
         # scorer only where they refuse. The order is the bake-off's result,
         # not a preference — see the section comment above ``_household_food``.
-        grams = _lookup_reference(ds, unit, " ".join((food_text or "").split()),
-                                  canonical, states)
-        if grams:
-            return grams
+        #
+        # Once foodcore has established WHICH food this is, its answer stands —
+        # including its refusal. Falling through to myMeal's scorer there would
+        # let a different food answer a question the dataset has already said
+        # is ambiguous for this one, which is the refusal defeating itself.
+        food = _lookup_reference_food(ds, " ".join((food_text or "").split()),
+                                      canonical, states)
+        if food is not None:
+            return _reference_grams(ds, food, unit)
         return _lookup_grams(ds, canonical, measures, states)
     except Exception as exc:  # noqa: BLE001 - a lookup must never break a render
         if not _warned:

@@ -88,8 +88,8 @@ convenience on top. A host with unusual needs is not forced through it.
 > ```
 > strategy                        converts   correct   wrong   overclaims
 > A  myMeal's scorer -> table       85/122    77/105       7        0/11
-> B  foodcore -> table              91/122    85/105       4        1/11
-> C  foodcore -> myMeal -> table    94/122    88/105       4        1/11
+> B  foodcore -> table              89/122    82/105       6        0/11
+> C  foodcore -> myMeal -> table    92/122    85/105       6        0/11
 > ```
 >
 > Neither (a) nor a clean (b) survived contact with the numbers. (a) is out:
@@ -101,12 +101,23 @@ convenience on top. A host with unusual needs is not forced through it.
 > is not removed, it is **ordered** — and the order is now a number in a test
 > instead of whichever file you happened to read.
 >
-> Two things the decision surfaced that belong to foodcore, not here:
-> `resolve_food` calls a lone candidate confident (so a small custom dataset
-> answers "onions" with onion rings), and it is confident whenever one row
-> uniquely contains every query token (so "dried onions" resolves to
-> sour-cream-and-onion crisps). myMeal keeps its own state-word reject on
-> matcher results for exactly that reason.
+> An earlier cut of this scored 94/88 by also accepting foodcore's lone *weak*
+> matches, and adversarial review proved what that bought: "1 cup whole oats"
+> answering 37 g from a breakfast-cereal brand where 97 g shipped. Killing that
+> class gave back one conversion and three correct answers (garlic powder,
+> powdered sugar, cream of tartar — all words the vocabulary should cover), and
+> honouring the dataset's own ambiguity refusal gave back one more
+> conversion. **The lesson is
+> about the corpus, not the resolver:** a corpus harvested from the two
+> vocabularies cannot contain an out-of-vocabulary phrase, which is exactly
+> where a name matcher fails worst, so the test file now carries a second
+> table of modifier-bearing lines ("whole oats", "canned lentils", "fresh
+> cabbage") built by sweeping modifiers across the corpus foods.
+>
+> myMeal therefore keeps three of its own gates as rejects on foodcore's
+> answers — an evidence floor on the published match score, the state-word
+> filter on matcher results, and honouring `portion_grams`'s
+> `qualifier_required` before letting `convert` derive a density past it.
 
 ### The original assessment
 
@@ -139,8 +150,10 @@ lines, scored against what a cook would say — not an opinion.
 
 ### What the bake-off asks foodcore for
 
-Three findings came out of running it; all three are library-side and none can
-be fixed in a consumer without re-growing the second scorer:
+Three findings came out of running it. All three are library-side; the second
+and third have host-side *mitigations* in myMeal now (an evidence floor, and
+honouring `portion_grams` before `convert`), which is a plaster over a
+contract, not a fix:
 
 1. **The household vocabulary is eight words short of the common case.**
    "breadcrumbs", "lentils", "chickpeas", "cornmeal", "cream cheese", "tahini",
@@ -149,12 +162,16 @@ be fixed in a consumer without re-growing the second scorer:
    USDA writes "Bread, crumbs, dry, grated, plain" and "Seeds, sesame butter,
    tahini, …". These are the ten lines the brief measured as dead; two of them
    (almonds, walnuts) are qualified-only and correctly refuse.
-2. **`resolve_food` is confident too easily.** A lone candidate is called
-   confident regardless of how weakly it matches, and so is any single row that
-   contains every query token — which makes "dried onions" resolve, with
-   confidence, to "Snacks, potato chips, made from dried potatoes, sour-cream
-   and onion-flavor". A "unique full-token coverage" rule needs a floor on
-   WHERE the tokens appear.
+2. **`resolve_food` is confident too easily — and inconsistently with
+   itself.** With two or more candidates it requires `top >= 70` and a 30-point
+   gap; with exactly one it returns `confident=True` at any score, including
+   50 ("the tokens appear somewhere in the description"). So "dried onions"
+   resolves, confidently, to "Snacks, potato chips, made from dried potatoes,
+   sour-cream and onion-flavor", and "whole oats" to a branded breakfast
+   cereal. Measured on the shipped dataset, 45 such lone-score-50 matches
+   produce a weight. The one-line consumer-side floor is in `_matched_food`;
+   the real fix is for the lone-candidate shortcut to apply the same floor
+   every other path in that function already does.
 3. **`convert` and `portion_grams` disagree, and `convert` derives too
    eagerly.** `portion_grams` refuses "Sugars, powdered" for a cup
    (`qualifier_required`: sifted 100 g, unsifted 120 g) while `convert`
