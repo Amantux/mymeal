@@ -1,0 +1,32 @@
+{
+  "normalisation": {
+    "passed": 9,
+    "total": 13,
+    "right_reason": 9
+  },
+  "boundaries": {
+    "passed": 20,
+    "total": 20,
+    "right_reason": 20
+  },
+  "catalog": {
+    "passed": 19,
+    "total": 26
+  },
+  "conversion": {
+    "passed": 21,
+    "total": 31
+  },
+  "declines": {
+    "passed": 2,
+    "total": 2
+  },
+  "equivalence": {
+    "passed": 2,
+    "total": 3
+  },
+  "discrimination": {
+    "passed": 3,
+    "total": 5
+  }
+}
