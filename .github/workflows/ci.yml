@@ -170,9 +170,27 @@ jobs:
               git checkout --quiet - && sleep $((attempt * 3)); continue
             fi
 
-            gh pr create --base "${{ github.ref_name }}" --head "$BRANCH" \
-              --title "chore: bump version ${OLD_VERSION} → ${NEW_VERSION}" \
-              --body "Automated add-on version bump so the Supervisor sees an update. Opened as a PR because main requires one and bypass allowances are not available on a personal repository."
+            if ! gh pr create --base "${{ github.ref_name }}" --head "$BRANCH" \
+                 --title "chore: bump version ${OLD_VERSION} → ${NEW_VERSION}" \
+                 --body "Automated add-on version bump so the Supervisor sees an update. Opened as a PR because main requires one and bypass allowances are org-only." \
+                 2>/tmp/pr.err; then
+              cat /tmp/pr.err
+              if grep -q "not permitted to create or approve pull requests" /tmp/pr.err; then
+                echo "::error::The release bot cannot land the version bump, and no"\
+                     "workflow change can fix it — all three routes are repository"\
+                     "SETTINGS. (1) main requires a pull request. (2) Bypass"\
+                     "allowances are organisation-only, and this is a personal"\
+                     "repo. (3) Actions may not open PRs. Fix ONE of: tick"\
+                     "Settings > Actions > General > Workflow permissions >"\
+                     "'Allow GitHub Actions to create and approve pull requests'"\
+                     "(this workflow then works as written), or drop the"\
+                     "pull-request requirement on main and restore a direct push."\
+                     "Until then no add-on image is published: Build & push,"\
+                     "GitHub release and Merge manifest all skip."
+                exit 1
+              fi
+              git checkout --quiet - && sleep $((attempt * 3)); continue
+            fi
 
             # --merge, not --squash: the add-on release jobs key off this commit,
             # and --admin is NOT used, so a future tightening of the rule will
