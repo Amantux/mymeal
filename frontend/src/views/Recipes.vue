@@ -11,11 +11,15 @@ const recipes = ref([])
 const categories = ref([])
 const q = ref('')
 const category = ref('')   // selected category slug ('' = all)
+const sort = ref('name')   // name, rating, newest, prep_time
+const minRating = ref(0)   // 0 = any rating
 
 async function load() {
   const params = new URLSearchParams()
   if (q.value) params.set('q', q.value)
   if (category.value) params.set('category', category.value)
+  if (sort.value !== 'name') params.set('sort', sort.value)
+  if (minRating.value > 0) params.set('minRating', minRating.value)
   const qs = params.toString()
   const [res] = await Promise.all([
     api.get('/recipes' + (qs ? `?${qs}` : '')),
@@ -35,6 +39,8 @@ watch(q, () => {
   t = setTimeout(reload, 200)
 })
 watch(category, reload)
+watch(sort, reload)
+watch(minRating, reload)
 </script>
 
 <template>
@@ -50,6 +56,17 @@ watch(category, reload)
       style="max-width:240px">
       <option value="">All categories</option>
       <option v-for="c in categories" :key="c.id" :value="c.slug">{{ c.name }}</option>
+    </select>
+    <select v-model="sort" aria-label="Sort recipes">
+      <option value="name">Name</option>
+      <option value="rating">Rating</option>
+      <option value="newest">Newest</option>
+      <option value="prep_time">Prep time</option>
+    </select>
+    <select v-model="minRating" aria-label="Minimum rating">
+      <option value="0">Any rating</option>
+      <option value="4">4+ stars</option>
+      <option value="5">5 stars</option>
     </select>
   </div>
 
