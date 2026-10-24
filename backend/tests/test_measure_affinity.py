@@ -64,7 +64,13 @@ def test_an_unknown_food_returns_none_rather_than_guessing_a_unit():
     A prepopulated unit is a recommendation, so a wrong one is worse than
     none — the caller offers the full list instead.
     """
-    assert units.measures_for("unicorn steak") is None
+    # The sentinel must be a word the catalog can never legitimately learn.
+    # "unicorn steak" was the first choice and stopped working within the hour:
+    # widening SEED_FOODS added "steak", so it split to steak/meat -- the
+    # resolver behaving correctly and the test asserting an absence that had
+    # expired. Any sentinel that relies on the catalog LACKING a food word is
+    # fragile by construction, because the catalog grows.
+    assert units.measures_for("qwertyuiop zxcvbnm") is None
     assert units.measures_for("") is None
 
 
@@ -164,7 +170,8 @@ def test_the_measures_endpoint_prepopulates_and_fails_open(auth_client):
     assert counted["preferred"] is None
     assert counted["dimension"] == "count"
 
-    unknown = auth_client.get("/api/v1/measures?food=unicorn+steak").get_json()
+    unknown = auth_client.get(
+        "/api/v1/measures?food=qwertyuiop+zxcvbnm").get_json()
     assert unknown["known"] is False
     assert unknown["acceptable"] == []
 
