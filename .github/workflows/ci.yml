@@ -117,7 +117,8 @@ jobs:
     name: Auto-bump patch version
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # pushes the version-bump commit
+      contents: write        # pushes the bump branch and merges the PR
+      pull-requests: write   # main is protected, so the bump arrives as a PR
     if: >
       github.event_name == 'push' &&
       !startsWith(github.event.head_commit.message, 'chore: bump version')
@@ -130,46 +131,65 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-      - name: Bump version, commit and push (retrying on a concurrent push)
+      - name: Bump version and land it (via PR — main is protected)
         id: bump
         env:
-          # The triggering commit's SUBJECT decides the bump level: [major] or
-          # [minor] bump that component, otherwise patch. See tools/bump_version.py
-          # for why only the subject is scanned.
           COMMIT_MSG: ${{ github.event.head_commit.message }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Compute-commit-push in a RETRY LOOP, re-syncing to the real tip each
-          # time. This job used to do each once, so any push landing on main in
-          # the window between checkout and push rejected it non-fast-forward
-          # and failed the release — two of six consecutive runs. With several
-          # sessions pushing, that window is hit regularly.
+          # main requires changes to arrive through a pull request, and this is
+          # a PERSONAL repository, where GitHub does not offer bypass
+          # allowances — those are org-only ("Only organization repositories can
+          # have users and team restrictions"). So the bot cannot be let through
+          # the rule; it has to satisfy it.
           #
-          # The recompute is the load-bearing part: after re-syncing, another
-          # bump may already have taken the version this run intended to write,
-          # so retrying the same push would mint a duplicate. Re-reading the
-          # freshly-fetched files always bumps from the true latest.
-          for attempt in 1 2 3 4 5; do
+          # It therefore opens a one-commit PR and merges it. With
+          # required_approving_review_count = 0 nothing is waiting on a human,
+          # so this is the same outcome as the old direct push, just legal.
+          #
+          # The loop still re-syncs and RECOMPUTES each attempt: another push
+          # landing first means the version this run intended may already be
+          # taken, and retrying it would mint a duplicate.
+          for attempt in 1 2 3; do
             git fetch --quiet origin "${{ github.ref_name }}"
             git reset --quiet --hard "origin/${{ github.ref_name }}"
 
             BUMP_ENV_FILE=/tmp/bump.env python3 tools/bump_version.py
             . /tmp/bump.env
 
+            BRANCH="chore/bump-${NEW_VERSION}-${GITHUB_RUN_ID}"
+            git checkout --quiet -b "$BRANCH"
             git add mymeal/config.yaml custom_components/mymeal/manifest.json mymeal/CHANGELOG.md
             git commit --quiet -m "chore: bump version ${OLD_VERSION} → ${NEW_VERSION}"
 
-            if git push --quiet origin "HEAD:${{ github.ref_name }}"; then
-              echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-              echo "pushed on attempt $attempt"
+            if ! git push --quiet origin "$BRANCH"; then
+              echo "could not push the bump branch; retrying"
+              git checkout --quiet - && sleep $((attempt * 3)); continue
+            fi
+
+            gh pr create --base "${{ github.ref_name }}" --head "$BRANCH" \
+              --title "chore: bump version ${OLD_VERSION} → ${NEW_VERSION}" \
+              --body "Automated add-on version bump so the Supervisor sees an update. Opened as a PR because main requires one and bypass allowances are not available on a personal repository."
+
+            # --merge, not --squash: the add-on release jobs key off this commit,
+            # and --admin is NOT used, so a future tightening of the rule will
+            # fail loudly here rather than being quietly overridden.
+            if gh pr merge "$BRANCH" --merge --delete-branch; then
+              git fetch --quiet origin "${{ github.ref_name }}"
+              echo "sha=$(git rev-parse origin/${{ github.ref_name }})" >> "$GITHUB_OUTPUT"
+              echo "landed ${NEW_VERSION} on attempt $attempt"
               exit 0
             fi
-            echo "push rejected (main moved); re-syncing and recomputing — attempt $attempt"
+
+            echo "merge rejected (main likely moved); recomputing — attempt $attempt"
+            gh pr close "$BRANCH" --delete-branch || true
+            git checkout --quiet -
             sleep $((attempt * 3))
           done
-          echo "::error::could not push the version bump after 5 attempts"
+          echo "::error::could not land the version bump after 3 attempts"
           exit 1
 
   # Build each architecture on a native runner (no QEMU) and push per-arch tags.

@@ -39,13 +39,20 @@ uvicorn>=0.29.0
 # mechanism rather than a convention: upgrading becomes a visible, reviewable,
 # bisectable commit in each repo.
 #
-# Bumping: change the SHA here and in Edibl's requirements.txt in the same
-# session, and check foodcore's own CI is green on that SHA first — it is the
-# only signal either consumer has.
+# Pinned to a TAG rather than a raw SHA: "v0.2.0" tells a reader at a glance
+# what two apps are sharing, where forty hex characters tell them nothing. The
+# tag is immutable in practice because releases are cut, never moved.
+#
+# Bumping: move the tag here and in Edibl's requirements.txt in the same
+# session, and check foodcore's own CI is green on that release first — it is
+# the only signal either consumer has. v0.2.0 renamed the nutrient ids
+# (energy -> calories, carbohydrate -> carbs, fat_total -> fat,
+# fat_saturated -> saturated_fat, sugars -> sugar); anything mapping the old
+# names must be deleted rather than re-pointed.
 #
 # Imported lazily, so the backend still runs (on its built-in densities) if the
 # package is somehow absent.
-foodcore @ git+https://github.com/Amantux/foodcore.git@9f68f20586aec10f27ab75468fd516f6ce2d0df2
+foodcore @ git+https://github.com/Amantux/foodcore.git@v0.2.0
 
 # Pluggable AI providers (all optional at runtime — imported lazily).
 anthropic>=0.39.0

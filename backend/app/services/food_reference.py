@@ -101,28 +101,28 @@ _MEASURES: dict[str, tuple[str, ...]] = {
 #: either side fails a test instead of emptying a nutrition panel.
 #:
 #: Units are stated because they are a claim, not a convention: energy is kcal
-#: (FDC also publishes kJ rows, which the adapter does not map), the macros are
-#: grams and the minerals are milligrams. foodcore converts each value from the
-#: unit the dataset row carries into the registry entry's unit, so a dataset
-#: that changed units would convert rather than mislabel — but only if these
-#: ids line up.
-_DATASET_NUTRIENTS: dict[str, tuple[str, str]] = {
-    "energy": ("calories", "kcal"),
-    "protein": ("protein", "g"),
-    "fat_total": ("fat", "g"),
-    "fat_saturated": ("saturated_fat", "g"),
-    "carbohydrate": ("carbs", "g"),
-    "fiber": ("fiber", "g"),
-    "sugars": ("sugar", "g"),
-    "sodium": ("sodium", "mg"),
-    "calcium": ("calcium", "mg"),
-    "iron": ("iron", "mg"),
-}
+#: foodcore >= 0.2.0 emits the ids its own registry declares, so this app no
+#: longer translates between two vocabularies — it just asks for every nutrient
+#: the engine knows about.
+#:
+#: The table that used to live here mapped ten dataset keys onto registry ids
+#: ("energy" -> "calories", "carbohydrate" -> "carbs", ...). It existed because
+#: the library disagreed with itself: nutrition.py declared 26 nutrients, the
+#: USDA importer wrote 11, and only 5 ids matched. A silent miss looked exactly
+#: like "this food has no data", which is why the mapping had to be asserted
+#: against both sides in a test.
+#:
+#: foodcore 0.2.0 fixed that at the source and now covers 31 nutrients, so the
+#: mapping is the identity and keeping it would be a second vocabulary waiting
+#: to drift. Units are no longer restated here either: the engine converts each
+#: value from the unit the dataset row carries into the one its registry
+#: declares, and duplicating that here is how the two get to disagree.
+
 
 #: The dataset key whose values gate an ambiguous identity (see
 #: ``_nutrition_food``). Energy, because every composition record in a USDA
 #: import carries it and because it is the figure a cook actually reads.
-_GATE_NUTRIENT = "energy"
+_GATE_NUTRIENT = "calories"
 
 #: Mass units, where grams are definitional physics rather than a lookup.
 #: Mirrors ``units._WEIGHT_G``'s keys; named here rather than imported because
@@ -221,7 +221,55 @@ def _path_from(cfg) -> str:
 #: DATA_DIR remains the FALLBACK, for a deployment whose temp dir is unusable
 #: (read-only, noexec, tiny tmpfs). There the durability is incidental; the
 #: point is simply having somewhere to write.
-_SHIPPED_NAME = "foodcore-usda-sr-legacy-2018-04.sqlite"
+#: The expanded file is named after the CONTENT of the asset, not the USDA
+#: release it came from.
+#:
+#: It used to be a fixed "…-sr-legacy-2018-04.sqlite", which is the release and
+#: not the build. foodcore 0.2.0 rebuilt that same release with different
+#: nutrient ids, so the stale expansion from 0.1.0 was still sitting in the
+#: cache, still non-empty, still "usable" — and every nutrient silently
+#: resolved to nothing, because the ids no longer matched. Found by running the
+#: upgrade rather than reasoning about it; it would have hit every user.
+#:
+#: A content hash is the only key that changes exactly when the data changes.
+#: The digest costs ~15 ms on the 6 MB asset and is computed once per process.
+#: Superseded expansions are swept on the way past, so the cache cannot grow a
+#: new 10 MB file per release forever.
+_SHIPPED_STEM = "foodcore-usda"
+
+
+def _asset_digest(source: str) -> str:
+    """Short content hash of the shipped asset, memoised per path."""
+    import hashlib
+
+    cached = _DIGESTS.get(source)
+    if cached:
+        return cached
+    h = hashlib.sha256()
+    with open(source, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    digest = h.hexdigest()[:12]
+    _DIGESTS[source] = digest
+    return digest
+
+
+_DIGESTS: dict[str, str] = {}
+
+
+def _sweep_superseded(directory: str, keep: str) -> None:
+    """Delete expansions of OTHER builds. Never raises; best effort."""
+    import os as _os
+
+    try:
+        for name in _os.listdir(directory):
+            if name.startswith(f"{_SHIPPED_STEM}-") and name != keep:
+                try:
+                    _os.unlink(_os.path.join(directory, name))
+                except OSError:
+                    pass
+    except OSError:
+        pass
 
 #: The expansion lives in a PRIVATE per-euid directory, never directly in the
 #: temp dir. A predictable name in a world-writable directory is somewhere any
@@ -267,11 +315,13 @@ def shipped_dataset_path(cfg=None) -> str:
     if not os.path.isfile(source):
         return ""
 
+    name = f"{_SHIPPED_STEM}-{_asset_digest(source)}.sqlite"
     for base in _expand_targets(cfg):
         directory = _private_dir(base)
         if not directory:
             continue
-        target = os.path.join(directory, _SHIPPED_NAME)
+        _sweep_superseded(directory, name)
+        target = os.path.join(directory, name)
         existing = _usable_existing(target)
         if existing:
             return existing
@@ -281,7 +331,7 @@ def shipped_dataset_path(cfg=None) -> str:
 
 
 def _expand_targets(cfg) -> list[str]:
-    """Temp first, data dir second — see the note on _SHIPPED_NAME."""
+    """Temp first, data dir second — see the note on _SHIPPED_STEM."""
     import tempfile
 
     out = [tempfile.gettempdir()]
@@ -784,13 +834,17 @@ def _composition(ds, record, version: str):
     per_100g: dict = {}
     methods: list[str] = []
     confidences: list[float] = []
-    for ds_key, (registry_id, _unit) in _DATASET_NUTRIENTS.items():
-        if ds_key not in record.nutrients:
+    # Ask for everything the engine declares. A nutrient the dataset lacks for
+    # this food simply does not resolve, which is already the "absent, not
+    # zero" path — so widening the registry upstream widens coverage here with
+    # no change needed, which is the point of sharing one vocabulary.
+    for nutrient_id in fcn.NUTRIENTS:
+        if nutrient_id not in record.nutrients:
             continue
-        outcome = ds.nutrient_per_100g(record.key, ds_key, version=version)
+        outcome = ds.nutrient_per_100g(record.key, nutrient_id, version=version)
         if not outcome.resolved:
             continue
-        per_100g[registry_id] = fcn.NutrientAmount(
+        per_100g[nutrient_id] = fcn.NutrientAmount(
             amount=float(outcome.value), unit=outcome.unit
         )
         methods.append(outcome.provenance.method)

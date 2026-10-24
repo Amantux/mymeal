@@ -625,7 +625,13 @@ def test_a_hostile_symlink_is_never_opened_as_the_dataset(isolated_expand,
 
     private = fr._private_dir(str(tmp_path))
     assert private, "the private directory should have been created"
-    planted = os.path.join(private, fr._SHIPPED_NAME)
+    # Name derives from the asset's content hash now, so the test has to ask
+    # for the same name the code will use rather than hardcode a release.
+    import foodcore
+    source = os.path.join(os.path.dirname(os.path.abspath(foodcore.__file__)),
+                          "data", "usda-sr-legacy-2018-04.sqlite.gz")
+    planted = os.path.join(
+        private, f"{fr._SHIPPED_STEM}-{fr._asset_digest(source)}.sqlite")
     os.symlink(hostile, planted)
 
     got = fr.shipped_dataset_path(_cfg(tmp_path))
