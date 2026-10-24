@@ -77,7 +77,38 @@ selling point is purity. The mitigation is that it stays *optional* —
 `load_dataset(path)` keeps working untouched, and `ensure_dataset` is a
 convenience on top. A host with unusual needs is not forced through it.
 
-## Recommendation 2 — one resolver, not two
+## Recommendation 2 — one resolver, not two — **DECIDED 2026-10-24**
+
+> **Outcome: (b) with a measured exception.** foodcore's resolver plus the
+> household vocabulary now answers first in myMeal; its own scorer is kept as a
+> documented fallback for the tail, and the density table stays last. The
+> bake-off is `backend/tests/test_conversion_bakeoff.py` — 122 harvested recipe
+> lines, scored for coverage and for distance from the weight a cook expects:
+>
+> ```
+> strategy                        converts   correct   wrong   overclaims
+> A  myMeal's scorer -> table       85/122    77/105       7        0/11
+> B  foodcore -> table              91/122    85/105       4        1/11
+> C  foodcore -> myMeal -> table    94/122    88/105       4        1/11
+> ```
+>
+> Neither (a) nor a clean (b) survived contact with the numbers. (a) is out:
+> A's scorer cannot answer a bare cooking word at all, and six of its answers
+> that *look* like hits are the density table rather than the dataset. A clean
+> (b) is out too: deleting myMeal's scorer costs three correct conversions that
+> the 60-word vocabulary does not cover ("quinoa", "parsley", "vinegar"), and
+> the constraint was that nothing working may stop working. So the duplication
+> is not removed, it is **ordered** — and the order is now a number in a test
+> instead of whichever file you happened to read.
+>
+> Two things the decision surfaced that belong to foodcore, not here:
+> `resolve_food` calls a lone candidate confident (so a small custom dataset
+> answers "onions" with onion rings), and it is confident whenever one row
+> uniquely contains every query token (so "dried onions" resolves to
+> sour-cream-and-onion crisps). myMeal keeps its own state-word reject on
+> matcher results for exactly that reason.
+
+### The original assessment
 
 **The problem, measured today:**
 
@@ -105,6 +136,32 @@ adopts it and deletes its scorer.
 
 What must not continue is both. The decision needs a bake-off on real recipe
 lines, scored against what a cook would say — not an opinion.
+
+### What the bake-off asks foodcore for
+
+Three findings came out of running it; all three are library-side and none can
+be fixed in a consumer without re-growing the second scorer:
+
+1. **The household vocabulary is eight words short of the common case.**
+   "breadcrumbs", "lentils", "chickpeas", "cornmeal", "cream cheese", "tahini",
+   "polenta" and "shredded cheddar" each have a usable SR Legacy row with a
+   published cup or tablespoon weight, and neither resolver can reach it —
+   USDA writes "Bread, crumbs, dry, grated, plain" and "Seeds, sesame butter,
+   tahini, …". These are the ten lines the brief measured as dead; two of them
+   (almonds, walnuts) are qualified-only and correctly refuse.
+2. **`resolve_food` is confident too easily.** A lone candidate is called
+   confident regardless of how weakly it matches, and so is any single row that
+   contains every query token — which makes "dried onions" resolve, with
+   confidence, to "Snacks, potato chips, made from dried potatoes, sour-cream
+   and onion-flavor". A "unique full-token coverage" rule needs a floor on
+   WHERE the tokens appear.
+3. **`convert` and `portion_grams` disagree, and `convert` derives too
+   eagerly.** `portion_grams` refuses "Sugars, powdered" for a cup
+   (`qualifier_required`: sifted 100 g, unsifted 120 g) while `convert`
+   returns 120 g for the same food and measure. And `_grams_per_ml` takes
+   whichever volume portion it finds first rather than the nearest measure, so
+   a teaspoon of grated parmesan comes back as 2.1 g derived from the cup row
+   when the food publishes a tablespoon implying 1.67 g.
 
 ## Recommendation 3 — version it like a dependency, because it is one
 
