@@ -20,7 +20,12 @@ gunicorn==26.2.0
 httpx>=0.27.0
 beautifulsoup4>=4.15.0
 # MCP server exposed to Home Assistant (runs alongside the app in the same container)
-mcp==1.29.1  # pin: newer mcp dropped mcp.server.fastmcp (breaks the MCP server + CI)
+# Exact pin: mcp_server.py imports mcp.server.fastmcp, which an mcp release in
+# mid-2026 briefly dropped (see fbb6792 "pin mcp==1.27.0"). Verified present and
+# NOT deprecated in 1.30.0 - FastMCP, @mcp.tool(), mcp.sse_app() and
+# mcp.server.transport_security.TransportSecuritySettings all import and work.
+# The pin is now for reproducibility; re-verify that import before bumping again.
+mcp==1.30.0
 uvicorn>=0.29.0
 # foodcore — the shared food-reference engine (unit conversion, USDA portion
 # weights, deterministic nutrition, allergen + dietary screening). It lives in
