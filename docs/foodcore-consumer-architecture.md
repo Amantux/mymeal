@@ -77,7 +77,49 @@ selling point is purity. The mitigation is that it stays *optional* —
 `load_dataset(path)` keeps working untouched, and `ensure_dataset` is a
 convenience on top. A host with unusual needs is not forced through it.
 
-## Recommendation 2 — one resolver, not two
+## Recommendation 2 — one resolver, not two — **DECIDED 2026-10-24**
+
+> **Outcome: (b) with a measured exception.** foodcore's resolver plus the
+> household vocabulary now answers first in myMeal; its own scorer is kept as a
+> documented fallback for the tail, and the density table stays last. The
+> bake-off is `backend/tests/test_conversion_bakeoff.py` — 122 harvested recipe
+> lines, scored for coverage and for distance from the weight a cook expects:
+>
+> ```
+> strategy                        converts   correct   wrong   overclaims
+> A  myMeal's scorer -> table       85/122    77/105       7        0/11
+> B  foodcore -> table              89/122    82/105       6        0/11
+> C  foodcore -> myMeal -> table    92/122    85/105       6        0/11
+> ```
+>
+> Neither (a) nor a clean (b) survived contact with the numbers. (a) is out:
+> A's scorer cannot answer a bare cooking word at all, and six of its answers
+> that *look* like hits are the density table rather than the dataset. A clean
+> (b) is out too: deleting myMeal's scorer costs three correct conversions that
+> the 60-word vocabulary does not cover ("quinoa", "parsley", "vinegar"), and
+> the constraint was that nothing working may stop working. So the duplication
+> is not removed, it is **ordered** — and the order is now a number in a test
+> instead of whichever file you happened to read.
+>
+> An earlier cut of this scored 94/88 by also accepting foodcore's lone *weak*
+> matches, and adversarial review proved what that bought: "1 cup whole oats"
+> answering 37 g from a breakfast-cereal brand where 97 g shipped. Killing that
+> class gave back one conversion and three correct answers (garlic powder,
+> powdered sugar, cream of tartar — all words the vocabulary should cover), and
+> honouring the dataset's own ambiguity refusal gave back one more
+> conversion. **The lesson is
+> about the corpus, not the resolver:** a corpus harvested from the two
+> vocabularies cannot contain an out-of-vocabulary phrase, which is exactly
+> where a name matcher fails worst, so the test file now carries a second
+> table of modifier-bearing lines ("whole oats", "canned lentils", "fresh
+> cabbage") built by sweeping modifiers across the corpus foods.
+>
+> myMeal therefore keeps three of its own gates as rejects on foodcore's
+> answers — an evidence floor on the published match score, the state-word
+> filter on matcher results, and honouring `portion_grams`'s
+> `qualifier_required` before letting `convert` derive a density past it.
+
+### The original assessment
 
 **The problem, measured today:**
 
@@ -105,6 +147,38 @@ adopts it and deletes its scorer.
 
 What must not continue is both. The decision needs a bake-off on real recipe
 lines, scored against what a cook would say — not an opinion.
+
+### What the bake-off asks foodcore for
+
+Three findings came out of running it. All three are library-side; the second
+and third have host-side *mitigations* in myMeal now (an evidence floor, and
+honouring `portion_grams` before `convert`), which is a plaster over a
+contract, not a fix:
+
+1. **The household vocabulary is eight words short of the common case.**
+   "breadcrumbs", "lentils", "chickpeas", "cornmeal", "cream cheese", "tahini",
+   "polenta" and "shredded cheddar" each have a usable SR Legacy row with a
+   published cup or tablespoon weight, and neither resolver can reach it —
+   USDA writes "Bread, crumbs, dry, grated, plain" and "Seeds, sesame butter,
+   tahini, …". These are the ten lines the brief measured as dead; two of them
+   (almonds, walnuts) are qualified-only and correctly refuse.
+2. **`resolve_food` is confident too easily — and inconsistently with
+   itself.** With two or more candidates it requires `top >= 70` and a 30-point
+   gap; with exactly one it returns `confident=True` at any score, including
+   50 ("the tokens appear somewhere in the description"). So "dried onions"
+   resolves, confidently, to "Snacks, potato chips, made from dried potatoes,
+   sour-cream and onion-flavor", and "whole oats" to a branded breakfast
+   cereal. Measured on the shipped dataset, 45 such lone-score-50 matches
+   produce a weight. The one-line consumer-side floor is in `_matched_food`;
+   the real fix is for the lone-candidate shortcut to apply the same floor
+   every other path in that function already does.
+3. **`convert` and `portion_grams` disagree, and `convert` derives too
+   eagerly.** `portion_grams` refuses "Sugars, powdered" for a cup
+   (`qualifier_required`: sifted 100 g, unsifted 120 g) while `convert`
+   returns 120 g for the same food and measure. And `_grams_per_ml` takes
+   whichever volume portion it finds first rather than the nearest measure, so
+   a teaspoon of grated parmesan comes back as 2.1 g derived from the cup row
+   when the food publishes a tablespoon implying 1.67 g.
 
 ## Recommendation 3 — version it like a dependency, because it is one
 

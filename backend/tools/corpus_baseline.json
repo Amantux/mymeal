@@ -14,7 +14,7 @@
     "total": 26
   },
   "conversion": {
-    "passed": 7,
+    "passed": 19,
     "total": 31
   },
   "declines": {
@@ -22,11 +22,11 @@
     "total": 2
   },
   "equivalence": {
-    "passed": 0,
+    "passed": 2,
     "total": 3
   },
   "discrimination": {
-    "passed": 1,
+    "passed": 2,
     "total": 6
   }
 }

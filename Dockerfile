@@ -50,11 +50,18 @@ RUN apt-get update \
 # can silently drop. Both failures present identically at runtime — the feature
 # quietly does nothing — and neither is visible from a source checkout, where
 # the files are simply there on disk.
+#
+# `household_v1` is checked by CALLING it, not merely importing it: it is now
+# the single most load-bearing thing this app asks of the library (it is what
+# answers "2 cups flour"), it degrades silently to the hand-written density
+# table, and it is a dict whose contents are the contract — an import proves
+# the module exists, not that "flour" is still in it.
 RUN python3 -c "import foodcore, os, gzip; \
 p = os.path.join(os.path.dirname(foodcore.__file__), 'data', 'usda-sr-legacy-2018-04.sqlite.gz'); \
 assert os.path.isfile(p), 'the shipped reference dataset is missing from the installed wheel'; \
 assert len(gzip.open(p, 'rb').read(64)) == 64, 'the shipped reference dataset is not readable gzip'; \
 __import__('foodcore.rules.rulesets', fromlist=['x']).allergen_ruleset(); \
+assert __import__('foodcore.rules.household_v1', fromlist=['x']).household_source_id('flour'); \
 print('foodcore', foodcore.__version__, '+ dataset', round(os.path.getsize(p) / 1e6, 1), 'MB')"
 
 COPY backend/ ./backend/
