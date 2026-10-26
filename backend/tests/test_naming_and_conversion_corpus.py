@@ -123,10 +123,24 @@ def test_an_answered_conversion_is_the_cross_validated_weight(food, unit, grams,
 
 # -------------------------------------------------------------- the ratchet
 def _coverage() -> dict[str, int]:
+    """Must measure the SAME seams as tools/validate_corpora.py.
+
+    These drifted once: the validator moved `conversion` to the end-to-end
+    path while this still read the reference stage, so the ratchet compared
+    one seam's count against the other's baseline and failed on a change that
+    improved both. Two measurements of one metric is the same mistake as two
+    declarations of one version.
+    """
+    from app.services import units as u
+
     return {
         "catalog": sum(bool(fr.is_known(t)) for t in nc.MUST_BE_KNOWN),
-        "conversion": sum(ref.grams_per(u, f) is not None
-                          for f, u, _g, _i, _n in vw.RESOLVED),
+        # End to end -- what a cook gets, matching the headline number.
+        "conversion": sum(u.to_grams(f"1 {unit} {food}") is not None
+                          for food, unit, _g, _i, _n in vw.RESOLVED),
+        # The dataset stage alone, which is what carries provenance.
+        "reference": sum(ref.grams_per(unit, food) is not None
+                         for food, unit, _g, _i, _n in vw.RESOLVED),
         "normalisation": sum(
             _fold(fr.normalize(raw)[0]) == _fold(want) for raw, want, _r, _n in nc.STRIP),
     }

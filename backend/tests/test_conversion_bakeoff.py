@@ -421,8 +421,12 @@ def test_the_dataset_answers_far_more_lines_than_before(shipped):
     # the case for C stronger rather than weaker. Re-measured on main at
     # 706f2ed rather than assumed.
     assert reference_only(_strategy_a_reference_only) == 25
-    assert reference_only(_strategy_b_reference_only) == 55
-    assert reference_only(_strategy_c_reference_only) == 59
+    # 55 and 59 on foodcore v0.2.3. v0.2.4 grew the household vocabulary from
+    # 48 words to 73, which is a dataset-stage change, so both move to 67 --
+    # and move TOGETHER, because what the vocabulary now covers is exactly what
+    # myMeal's scorer was contributing on top.
+    assert reference_only(_strategy_b_reference_only) == 67
+    assert reference_only(_strategy_c_reference_only) == 67
 
 
 def _strategy_a_reference_only(dataset, unit, food):
@@ -454,24 +458,46 @@ def test_strategy_a_scores_what_it_scored_before_the_change(shipped):
     }
 
 
-def test_strategy_b_beats_a_but_loses_to_the_hybrid(shipped):
-    """Pure foodcore: +6 conversions and +8 correct over A, and the reason
-    myMeal's scorer is no longer consulted first."""
+def test_strategy_b_now_matches_the_hybrid_exactly(shipped):
+    """⚠️ THE RESULT THAT CHOSE C HAS EXPIRED, and this is where it shows.
+
+    On foodcore v0.2.3 B scored 89/82/6 against C's 92/85/6, and those three
+    conversions -- quinoa, parsley, vinegar -- are the entire reason the
+    duplication was kept ORDERED rather than removed. v0.2.4 added exactly
+    those three words to the household vocabulary, so B and C are now
+    identical on every axis: 97 converts, 92 correct, 4 wrong, 0 overclaims.
+
+    **That is not yet a licence to delete myMeal's scorer.** This corpus was
+    harvested from the two vocabularies, so by construction it cannot contain
+    an out-of-vocabulary phrase -- which is where a matcher fails worst, and
+    the blind spot MODIFIER_LINES was added to cover. Concluding "the scorer is
+    redundant" from a corpus that cannot test the gap would repeat precisely
+    the mistake that let a 2.6x regression through the first time.
+
+    What this test says is narrower and still useful: the scorer's measurable
+    contribution on this corpus is now ZERO, so removing it needs its own
+    out-of-vocabulary evidence rather than a re-run of this file.
+    """
     score = _score(shipped, _strategy_b)
-    assert score["converts"] == 89
-    assert score["correct"] == 82
-    assert score["wrong"] == 6
+    hybrid = _score(shipped, _strategy_c)
+
+    assert score["converts"] == 97
+    assert score["correct"] == 92
+    assert score["wrong"] == 4
     assert score["overclaims"] == 0
+    assert score == hybrid, "B and C have diverged again -- re-read the docstring"
 
 
 def test_strategy_c_wins_on_coverage_and_on_correctness(shipped):
     """The shipped strategy, and the whole justification for the change:
     +9 conversions and +11 correct against A, with three fewer wrong."""
     score = _score(shipped, _strategy_c)
-    assert score["converts"] == 92
-    assert score["correct"] == 85
-    assert score["wrong"] == 6
-    assert score["missing"] == 14
+    # Re-measured on foodcore v0.2.4 (was 92/85/6/14 on v0.2.3). +12 converts
+    # and +15 correct against A, with three fewer wrong.
+    assert score["converts"] == 97
+    assert score["correct"] == 92
+    assert score["wrong"] == 4
+    assert score["missing"] == 9
     # Zero, and that is the axis A was already perfect on: every one of the
     # eleven qualifier-ambiguous lines still refuses.
     assert score["overclaims"] == 0
@@ -517,27 +543,54 @@ def test_the_lines_this_change_moves_are_pinned(shipped, unit, food, before, aft
     assert _strategy_c(shipped, unit, food) == pytest.approx(after, abs=0.01)
 
 
-def test_the_brief_ten_are_still_dead_and_the_gap_is_the_vocabulary(shipped):
-    """The negative result, pinned so it changes visibly when foodcore's
-    household vocabulary grows the eight words it is missing."""
-    dead = [("cup", "breadcrumbs"), ("cup", "lentils"), ("cup", "chickpeas"),
-            ("cup", "polenta"), ("cup", "almonds"), ("cup", "walnuts"),
-            ("cup", "cream cheese"), ("tbsp", "tahini"), ("cup", "cornmeal"),
-            ("cup", "shredded cheddar")]
-    for unit, food in dead:
-        assert _strategy_a(shipped, unit, food) is None, food
+def test_four_of_the_brief_ten_are_alive_and_the_rest_are_dead_for_three_reasons(shipped):
+    """This test was pinned so it would change visibly when the vocabulary
+    grew. It grew (foodcore v0.2.4, 48 -> 73 words) and it changed.
+
+    The six that remain unanswered are NOT one problem, and lumping them
+    together as "coverage" is what made them look like one:
+    """
+    # 1. FIXED by the vocabulary -- the row always existed, the step from the
+    #    cook's word to it did not.
+    for unit, food, grams in (("cup", "breadcrumbs", 108.0),
+                              ("cup", "lentils", 192.0),
+                              ("cup", "cream cheese", 232.0),
+                              ("cup", "cornmeal", 122.0)):
+        assert _strategy_c(shipped, unit, food) == grams, food
+
+    # 2. CORRECTLY refusing: the dataset publishes several qualified cup rows
+    #    and no unqualified one, so the bare word is not a measurement.
+    #    almonds spans 55% (whole 143 to sliced 92); walnuts spans 329%
+    #    (pieces 120 to in-shell yield 28); chickpeas 58%. A number here would
+    #    be an overclaim, which is the axis every strategy scores 0 on.
+    for unit, food in (("cup", "almonds"), ("cup", "walnuts"),
+                       ("cup", "chickpeas")):
         assert _strategy_c(shipped, unit, food) is None, food
 
-    # Not for want of data: the rows exist and publish exactly the weight the
-    # line wants. What is missing is the step from the cook's word to the row.
-    version = foodcore.rule_version("convert")
-    for description, grams in (("Bread, crumbs, dry, grated, plain", 108.0),
-                               ("Lentils, raw", 192.0),
-                               ("Cheese, cream", 232.0)):
-        rows = shipped.search_foods(description, 1)
-        assert rows, description
-        outcome = shipped.portion_grams(rows[0].key, "cup", version=version)
-        assert outcome.resolved and outcome.value == grams, description
+    # 3. GENUINELY ABSENT from SR Legacy: no polenta row at all, and tahini has
+    #    four entries and not one cup or tablespoon portion. No vocabulary entry
+    #    can fix a weight the publisher never measured.
+    for unit, food in (("cup", "polenta"), ("tbsp", "tahini")):
+        assert _strategy_c(shipped, unit, food) is None, food
+
+    # 4. THE ONE REAL REMAINING DEFECT. The line NAMES its form -- "shredded"
+    #    -- so 113 g is not ambiguous, it is the answer. The engine still
+    #    refuses because a qualified portion row is not reachable from the
+    #    words a cook wrote. Distinct from (2): there the text is silent and
+    #    refusing is right; here the text is explicit and refusing is a miss.
+    assert _strategy_c(shipped, "cup", "shredded cheddar") is None
+    # By id, not by search: search_foods("Cheese, cheddar") returns 170899
+    # (sharp, SLICED), which has no cup portion at all and so reports
+    # "no_portion_data" -- a different and misleading reason. 173414 is the
+    # food that carries the three qualified cup rows.
+    record = shipped.food_by_source_id("173414")
+    outcome = shipped.portion_grams(record.key, "cup",
+                                    version=foodcore.rule_version("convert"))
+    assert not outcome.resolved and outcome.reason == "qualifier_required", (
+        f"the row is there and the qualifier is the only thing in the way, "
+        f"got {outcome.reason!r}")
+    assert {p.qualifier for p in record.portions if p.measure == "cup"} == {
+        "shredded", "diced", "melted"}
 
 
 def test_the_household_vocabulary_is_consulted_only_after_the_matcher(shipped):
@@ -621,7 +674,11 @@ MODIFIER_LINES = (
     ("cup", "rolled oats", 81.0),
     ("cup", "roasted oats", 97.0),
     ("cup", "raw flour", 125.0),
-    ("cup", "whole wheat flour", 125.0),
+    # 125.0 on v0.2.3 -- which was plain flour's weight for a DIFFERENT grain,
+    # so this row pinned the bug as expected behaviour. Whole wheat is 120
+    # (FDC 168893) and the 4% gap sat inside every tolerance in the suite,
+    # which is how it survived being measured. foodcore v0.2.4 names the row.
+    ("cup", "whole wheat flour", 120.0),
     ("cup", "raw sugar", 200.0),
     ("cup", "melted butter", 227.0),
     ("cup", "grated parmesan", 100.0),

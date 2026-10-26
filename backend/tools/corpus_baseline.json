@@ -14,19 +14,23 @@
     "total": 26
   },
   "conversion": {
-    "passed": 19,
-    "total": 31
+    "passed": 28,
+    "total": 29
+  },
+  "reference": {
+    "passed": 26,
+    "total": 29
   },
   "declines": {
-    "passed": 2,
-    "total": 2
+    "passed": 4,
+    "total": 4
   },
   "equivalence": {
-    "passed": 2,
-    "total": 3
+    "passed": 4,
+    "total": 4
   },
   "discrimination": {
-    "passed": 2,
+    "passed": 6,
     "total": 6
   }
 }

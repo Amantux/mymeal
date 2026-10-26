@@ -140,15 +140,36 @@ def score() -> dict:
     # -- catalog coverage -----------------------------------------------
     out["catalog"] = [dict(term=t, ok=bool(fr.is_known(t))) for t in nc.MUST_BE_KNOWN]
 
-    # -- conversion ------------------------------------------------------
+    # -- conversion, measured at BOTH seams ------------------------------
+    #
+    # `conversion` is END TO END -- units.to_grams on the line a cook writes,
+    # which is what a user actually gets and therefore the headline number.
+    # `reference` is the dataset stage alone, which is what carries provenance.
+    #
+    # Reporting only the reference stage understated coverage badly and, worse,
+    # understated it in a MISLEADING direction: "1 cup brown sugar" refuses
+    # there (USDA publishes packed 220 and unpacked 145 and no unqualified row,
+    # so declining is correct) while the density table answers 212.9 g, which
+    # is right. Scored on the reference seam that reads as a failure; scored on
+    # what ships, it is a pass. Both are true and they mean different things,
+    # so both get a number.
     from app.services import food_reference as ref
-    rows = []
+    from app.services import units as u
+
+    rows, refrows = [], []
     for food, unit, grams, fdc, note in vw.RESOLVED:
-        got = ref.grams_per(unit, food)
-        ok = got is not None and abs(got - grams) / grams <= TOL
+        end = u.to_grams(f"1 {unit} {food}")
+        ok = end is not None and abs(end - grams) / grams <= TOL
         rows.append(dict(food=food, unit=unit, want=grams,
-                         got=(round(got, 1) if got else None), ok=ok, note=note))
+                         got=(round(end, 1) if end else None), ok=ok, note=note))
+
+        direct = ref.grams_per(unit, food)
+        refrows.append(dict(food=food, unit=unit, want=grams,
+                            got=(round(direct, 1) if direct else None),
+                            ok=direct is not None
+                            and abs(direct - grams) / grams <= TOL, note=note))
     out["conversion"] = rows
+    out["reference"] = refrows
 
     # -- declines: unresolvable and ambiguous must NOT return a number --
     rows = []
@@ -179,7 +200,12 @@ def score() -> dict:
     # -- discrimination between near neighbours -------------------------
     rows = []
     for variant, base, unit, gap, note in vw.DISTINCT_PAIRS:
-        gv, gb = ref.grams_per(unit, variant), ref.grams_per(unit, base)
+        # End to end, because a near-neighbour collapse reaches the user
+        # through whichever stage answers -- and bread flour's wrong 125 g came
+        # from the stage BEHIND the reference lookup. Measuring only the
+        # reference seam would have declared that bug fixed while it shipped.
+        gv = u.to_grams(f"1 {unit} {variant}")
+        gb = u.to_grams(f"1 {unit} {base}")
         if gv is None or gb is None:
             ok, why = False, ("variant unresolved" if gv is None else "base unresolved")
         elif gb == 0:
@@ -218,7 +244,8 @@ def summarise(res: dict) -> dict:
         rows = res[key]
         s[key] = dict(passed=sum(r["ok"] for r in rows), total=len(rows),
                       right_reason=sum(r["ok"] and r["reason_ok"] for r in rows))
-    for key in ("catalog", "conversion", "declines", "equivalence", "discrimination"):
+    for key in ("catalog", "conversion", "reference", "declines", "equivalence",
+                "discrimination"):
         rows = res[key]
         s[key] = dict(passed=sum(r["ok"] for r in rows), total=len(rows))
     return s
@@ -274,10 +301,16 @@ def main() -> int:
         print("    unknown: " + ", ".join(miss))
 
     d = s["conversion"]
-    print(f"\n{'conversion':14s} {d['passed']}/{d['total']}")
+    print(f"\n{'conversion':14s} {d['passed']}/{d['total']}  (END TO END -- what a cook gets)")
     for r in res["conversion"]:
         if not r["ok"]:
             print(f"    FAIL {r['food']:18s} want {r['want']:>6}g got {r['got']!r:>8}  {r['note']}")
+
+    d = s["reference"]
+    print(f"\n{'reference':14s} {d['passed']}/{d['total']}  (dataset stage alone -- carries provenance)")
+    for r in res["reference"]:
+        if not r["ok"]:
+            print(f"    none {r['food']:18s} want {r['want']:>6}g got {r['got']!r:>8}")
 
     d = s["declines"]
     print(f"\n{'declines':14s} {d['passed']}/{d['total']}  (must return None)")
