@@ -110,5 +110,15 @@ MUST_BE_KNOWN: list[str] = [
 WEIGHT_EQUIVALENT: list[tuple[str, str, str]] = [
     ("unsalted butter", "butter",  "salt is ~1.5% of mass and not a density change"),
     ("salted butter",   "butter",  "same"),
-    ("chopped walnuts", "walnuts", "USDA's cup row IS the chopped one"),
+    # ("chopped walnuts", "walnuts") was here and is gone: bare "walnuts" has
+    # five qualified cup rows spanning 329% and no unqualified one, so it MUST
+    # refuse (see AMBIGUOUS in the volume-weight corpus). A pair whose base is
+    # required to decline cannot test equivalence -- it would have asserted
+    # that a correct refusal equals a correct answer.
+    # Base must RESOLVE for an equivalence pair to mean anything. "chopped
+    # onion" was the first replacement and was no better than what it replaced
+    # -- onion does not convert by cup either, so the pair compared None with
+    # None, which the vacuity guard correctly refuses to call a pass.
+    ("plain flour", "flour", "British name for all-purpose; one food, one weight"),
+    ("whole milk", "milk", "unqualified milk IS whole milk"),
 ]

@@ -55,16 +55,22 @@ RESOLVED: list[tuple[str, str, float, str, str]] = [
     ("quinoa",           "cup", 170.0, "168874", "UNCOOKED -- 168917 is the COOKED row at 185"),
     ("barley",           "cup", 200.0, "170284", "pearled, raw"),
     ("lentils",          "cup", 192.0, "172420", "raw"),
-    ("breadcrumbs",      "cup", 120.0, "172806", "USDA only has SEASONED dry crumbs; 11% off plain"),
-    ("almonds",          "cup", 143.0, "170567", "whole"),
-    ("walnuts",          "cup", 117.0, "170187", "chopped"),
+    ("breadcrumbs",      "cup", 108.0, "174928", "the PLAIN row; 172806 is the SEASONED one at 120"),
     ("peanut butter",    "cup", 258.0, "172470", "smooth"),
     ("cocoa powder",     "cup",  86.0, "169593", "unsweetened"),
     ("raisins",          "cup", 145.0, "168165", ""),
     ("cream cheese",     "cup", 232.0, "173418", ""),
     ("sour cream",       "cup", 230.0, "171257", ""),
     ("yogurt",           "cup", 245.0, "171284", "plain whole milk"),
-    ("shredded cheddar", "cup", 113.0, "173414", "one food, 3 cup weights: shredded 113 / diced 132 / melted 244"),
+    # ⚠️ KNOWN GAP, kept deliberately red rather than reclassified. Unlike
+    # almonds and walnuts above, the line NAMES its form -- "shredded" -- so
+    # the answer is not ambiguous, it is 113 g. The engine still refuses,
+    # because a qualified portion row is not reachable from the words a cook
+    # wrote (foodcore's `convert` and `portion_grams` disagree about qualified
+    # portions). Reclassifying this as ambiguous would hide a real defect
+    # behind a correct-sounding label, which is the one thing this corpus is
+    # for. 3 cup weights on one food: shredded 113 / diced 132 / melted 244.
+    ("shredded cheddar", "cup", 113.0, "173414", "the text pins the form; the engine cannot use it"),
     ("parmesan",         "cup", 100.0, "171247", "grated"),
 ]
 
@@ -79,6 +85,16 @@ RESOLVED: list[tuple[str, str, float, str, str]] = [
 AMBIGUOUS: list[tuple[str, str, list[float], str]] = [
     ("chickpeas", "cup", [152.0, 164.0, 200.0, 240.0],
      "raw 200 / cooked 164 / canned+liquid 240 / drained+rinsed 152"),
+    # Moved here from RESOLVED on the evidence. Both were asserted at their
+    # WHOLE/CHOPPED weight because that is what King Arthur tabulates, but USDA
+    # publishes no unqualified cup row for either -- every row names a form,
+    # and the forms are not close:
+    ("almonds", "cup", [92.0, 95.0, 108.0, 143.0],
+     "whole 143 / slivered 108 / ground 95 / sliced 92 -- 55% spread, no "
+     "unqualified row. 'A cup of almonds' is not a measurement"),
+    ("walnuts", "cup", [28.0, 80.0, 100.0, 117.0, 120.0],
+     "pieces 120 / chopped 117 / shelled 100 / ground 80 / in-shell yield 28 "
+     "-- a 329% spread, the widest in the dataset"),
 ]
 
 #: USDA has the FOOD but publishes no cup portion for it, so volume->weight is
