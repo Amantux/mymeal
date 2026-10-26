@@ -347,12 +347,20 @@ def test_candidates_that_disagree_about_the_weight_refuse(tmp_path, monkeypatch)
     onion depend on the preparation — 160 g chopped, 115 g sliced, a 39%
     spread. Two equally-matched foods that disagree by that much are a choice,
     not a reading, so the conversion is refused and myMeal's own table (which
-    has no onion) leaves the line unconverted exactly as it does today."""
+    has no onion) leaves the line unconverted exactly as it does today.
+
+    The source ids here are deliberately NOT real FDC numbers. foodcore's
+    household vocabulary resolves a bare cooking word by citing an id
+    (``"onion" -> 170000``), and it is consulted before this gate — so a
+    fixture that reuses the cited id would be testing the convention rather
+    than the agreement gate. ``test_a_cited_convention_outranks_the_agreement
+    _gate`` covers the other side.
+    """
     _dataset(tmp_path, monkeypatch,
-             foods=[_food("usda:170000", "Onions, raw"),
-                    _food("usda:170001", "Onions, sliced, raw")],
-             portions=[_portion("usda:170000", "cup", 160.0),
-                       _portion("usda:170001", "cup", 115.0)])
+             foods=[_food("usda:990000", "Onions, raw"),
+                    _food("usda:990001", "Onions, sliced, raw")],
+             portions=[_portion("usda:990000", "cup", 160.0),
+                       _portion("usda:990001", "cup", 115.0)])
     # Both score in the same (strong) tier — note the plural, which is how USDA
     # names them — so neither identity wins and their weights disagree by 39%.
     assert food_reference._score(food_reference._forms("onion"), "Onions, raw") == \
@@ -361,6 +369,23 @@ def test_candidates_that_disagree_about_the_weight_refuse(tmp_path, monkeypatch)
     assert units.to_grams("1 cup onions") is None
     assert units.to_weight_line("1 cup onions") == "1 cup onions"
     assert units.annotate_weight("1 cup onions") == "1 cup onions"
+
+
+def test_a_cited_convention_outranks_the_agreement_gate(tmp_path, monkeypatch):
+    """The same two onion rows, under the id foodcore's household vocabulary
+    actually cites. Then the choice is no longer a coin-flip between equally
+    matched rows: the vocabulary names FDC 170000 for a bare "onion", with a
+    rule version and a reason, and that is evidence the agreement gate does
+    not have. So it answers, and it answers with the raw row.
+
+    This is the one behaviour the resolver change deliberately reverses, and
+    it is why the gate above had to stop relying on a real id."""
+    _dataset(tmp_path, monkeypatch,
+             foods=[_food("usda:170000", "Onions, raw"),
+                    _food("usda:170001", "Onions, sliced, raw")],
+             portions=[_portion("usda:170000", "cup", 160.0),
+                       _portion("usda:170001", "cup", 115.0)])
+    assert units.to_grams("1 cup onions") == pytest.approx(160.0)
 
 
 def test_a_single_unambiguous_candidate_resolves_despite_the_plural(tmp_path, monkeypatch):
