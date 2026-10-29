@@ -81,6 +81,16 @@ def component_unit_is_multiple(unit_name: str | None) -> bool:
     return str(unit_name or "").strip().lower() in _MULTIPLE_UNITS
 
 
+def component_multiplier(ing) -> float:
+    """Public name for a component row's batch multiplier.
+
+    The API needs it to expand ONE component row (rather than a whole recipe)
+    for the detail view, and reaching into a private helper from there is how a
+    second, drifting copy of this rule gets written.
+    """
+    return _component_mult(ing)
+
+
 def _component_mult(ing) -> float:
     """A component row's quantity as a batch multiplier; 0/blank means 1x.
 

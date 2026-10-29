@@ -450,3 +450,191 @@ def test_the_reported_scenario_end_to_end(auth_client):
     # The component line itself is NOT on the list — you do not buy a stock,
     # you make it from the things the list now contains.
     assert not any("oxtail stock" in n.lower() for n in names), sorted(names)
+
+
+# --- seeing what a component is made of, from the recipe page --------------
+
+def test_components_expand_lists_what_the_sub_recipe_is_made_of(auth_client):
+    """A linked component said a stock goes in and then showed nothing about
+    it — while its ingredients already reached the shopping list, the nutrition
+    totals and the allergen screening. The recipe page was the one place that
+    knew and would not say."""
+    stock = _recipe(auth_client, "Oxtail Stock", ["oxtail", "onion", "carrot"])
+    soup = auth_client.post("/api/v1/recipes", json={
+        "name": "Onion Soup", "ingredients": [
+            {"display": "3 onions", "quantity": 3, "food": "onion"},
+            {"display": "1 batch Oxtail Stock", "quantity": 1, "unit": "batch",
+             "refRecipeId": stock["id"]},
+        ]}).get_json()
+
+    out = auth_client.get(
+        f"/api/v1/recipes/{soup['id']}?components=expand").get_json()
+
+    groups = out["expandedComponents"]
+    assert len(groups) == 1
+    assert groups[0]["component"]["name"] == "Oxtail Stock"
+    names = {(i["food"] or {}).get("name") for i in groups[0]["ingredients"]}
+    assert names == {"oxtail", "onion", "carrot"}
+
+
+def test_expansion_is_absent_without_the_param(auth_client):
+    """Additive and opt-in. `ingredients` must not start carrying rows that
+    are not this recipe's — that array feeds the version snapshot and the
+    share payload, so an inlined component would be restored months later as
+    the recipe's own."""
+    stock = _recipe(auth_client, "Oxtail Stock", ["oxtail"])
+    soup = auth_client.post("/api/v1/recipes", json={
+        "name": "Onion Soup", "ingredients": [
+            {"display": "1 batch Oxtail Stock", "refRecipeId": stock["id"]}]}).get_json()
+
+    plain = auth_client.get(f"/api/v1/recipes/{soup['id']}").get_json()
+
+    assert "expandedComponents" not in plain
+    assert len(plain["ingredients"]) == 1      # the component row only
+
+
+def test_expanded_amounts_carry_the_component_multiplier(auth_client):
+    """Two batches of a stock needs twice its oxtail. The multiplier is the
+    expansion service's, not re-derived here."""
+    stock = auth_client.post("/api/v1/recipes", json={
+        "name": "Oxtail Stock", "ingredients": [
+            {"display": "2 kg oxtail", "quantity": 2, "unit": "kg", "food": "oxtail"}],
+    }).get_json()
+    soup = auth_client.post("/api/v1/recipes", json={
+        "name": "Onion Soup", "ingredients": [
+            {"display": "2 batches Oxtail Stock", "quantity": 2, "unit": "batch",
+             "refRecipeId": stock["id"]}]}).get_json()
+
+    groups = auth_client.get(
+        f"/api/v1/recipes/{soup['id']}?components=expand").get_json()["expandedComponents"]
+
+    assert groups[0]["multiplier"] == 2.0
+    assert groups[0]["ingredients"][0]["quantity"] == 4.0
+
+
+def test_expansion_compounds_with_servings_scaling(auth_client):
+    """Both transforms apply: the component's own multiplier AND the view's
+    serving scale. Applying one and silently dropping the other would put a
+    half-scaled amount beside a fully-scaled one."""
+    stock = auth_client.post("/api/v1/recipes", json={
+        "name": "Stock", "servings": 4, "ingredients": [
+            {"display": "2 kg oxtail", "quantity": 2, "unit": "kg", "food": "oxtail"}],
+    }).get_json()
+    soup = auth_client.post("/api/v1/recipes", json={
+        "name": "Soup", "servings": 2, "ingredients": [
+            {"display": "1 batch Stock", "quantity": 1, "unit": "batch",
+             "refRecipeId": stock["id"]}]}).get_json()
+
+    groups = auth_client.get(
+        f"/api/v1/recipes/{soup['id']}?components=expand&servings=4"
+    ).get_json()["expandedComponents"]
+
+    assert groups[0]["multiplier"] == 2.0          # 4 servings / 2 = x2
+    assert groups[0]["ingredients"][0]["quantity"] == 4.0
+
+
+def test_a_cycle_does_not_hang_the_expansion(auth_client):
+    """Two recipes referencing each other. The guard is the expansion
+    service's; this pins that the route goes THROUGH it rather than walking
+    `ref_recipe.ingredients` itself."""
+    a = _recipe(auth_client, "A", ["flour"])
+    b = auth_client.post("/api/v1/recipes", json={
+        "name": "B", "ingredients": [
+            {"display": "1 batch A", "refRecipeId": a["id"]}]}).get_json()
+    auth_client.put(f"/api/v1/recipes/{a['id']}", json={
+        "name": "A", "ingredients": [
+            {"display": "1 batch B", "refRecipeId": b["id"]}]})
+
+    out = auth_client.get(f"/api/v1/recipes/{b['id']}?components=expand")
+
+    assert out.status_code == 200
+
+
+# --- bulk safety tags, for filtering the list -----------------------------
+
+def _tags(client):
+    return client.get("/api/v1/recipes/safety-tags").get_json()
+
+
+def test_safety_tags_report_the_four_states_separately(auth_client):
+    """The filter the per-recipe endpoint's docstring says does not exist yet.
+
+    Its closing note is the brief: no policy, no boolean. So `contains`,
+    `mayContain` and `unknown` are three lists, not one — "we did not find
+    milk" and "we could not tell" must never filter alike.
+    """
+    auth_client.post("/api/v1/recipes", json={
+        "name": "Milky", "ingredients": [
+            {"display": "100 ml milk", "quantity": 100, "unit": "ml", "food": "milk"}]})
+
+    body = _tags(auth_client)
+    tags = next(iter(body["recipes"].values()))
+
+    assert tags["status"] == "screened"
+    assert "Milk" in tags["contains"]
+    # Three separate keys, and no boolean anywhere in the payload.
+    assert set(("contains", "mayContain", "unknown")) <= set(tags)
+    assert "safe" not in tags and "ok" not in tags
+
+
+def test_a_recipe_with_no_ingredients_is_not_reported_as_clean(auth_client):
+    """An empty tag set reads as "nothing in it". A draft has to say so."""
+    auth_client.post("/api/v1/recipes", json={"name": "Draft", "ingredients": []})
+
+    tags = next(iter(_tags(auth_client)["recipes"].values()))
+
+    assert tags["status"] == "no_ingredients"
+    assert "contains" not in tags
+
+
+def test_a_component_recipes_allergens_reach_the_parents_tags(auth_client):
+    """The soup must inherit the stock's dairy. Screening already recurses
+    through components; this pins that the BULK path uses the same walk rather
+    than reading only the parent's own rows."""
+    stock = _recipe(auth_client, "Butter Stock", ["butter"])
+    soup = auth_client.post("/api/v1/recipes", json={
+        "name": "Soup", "ingredients": [
+            {"display": "1 batch Butter Stock", "quantity": 1, "unit": "batch",
+             "refRecipeId": stock["id"]}]}).get_json()
+
+    tags = _tags(auth_client)["recipes"][soup["id"]]
+
+    assert "Milk" in tags["contains"], tags
+
+
+def test_the_option_list_only_offers_what_is_at_issue(auth_client):
+    """A control that can only ever do nothing is noise. "Avoid sesame" with
+    no sesame anywhere in the library is exactly that."""
+    auth_client.post("/api/v1/recipes", json={
+        "name": "Milky", "ingredients": [
+            {"display": "100 ml milk", "quantity": 100, "unit": "ml", "food": "milk"}]})
+
+    body = _tags(auth_client)
+
+    assert "Milk" in body["allergens"]
+    assert "Sesame" not in body["allergens"]
+
+
+def test_unreadable_lines_are_counted_so_the_filter_can_say_so(auth_client):
+    """A tag set over a recipe with unreadable lines is incomplete by
+    construction. Without the count the filter would present it as complete."""
+    auth_client.post("/api/v1/recipes", json={
+        "name": "Vague", "ingredients": [
+            {"display": "a splash of the usual", "freeText": True}]})
+
+    tags = next(iter(_tags(auth_client)["recipes"].values()))
+
+    assert tags["unreadable"] >= 1
+    assert tags["fullyScreened"] is False
+
+
+def test_the_bulk_call_is_capped_and_says_when_it_truncated(auth_client):
+    """Silently returning a partial map would make the filter claim a recipe
+    has no allergens when it was never looked at."""
+    body = _tags(auth_client)
+
+    # Nothing like 250 recipes here, so this asserts the flag EXISTS and is
+    # honest rather than asserting truncation itself — a 250-recipe fixture
+    # would cost ~4 s for no extra signal.
+    assert body["truncated"] is False
+    assert isinstance(body["failed"], list)
