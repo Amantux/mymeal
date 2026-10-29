@@ -4,6 +4,10 @@ All notable changes to the **myMeal add-on**. Home Assistant renders this file
 in the add-on's Changelog tab, so entries are written for someone deciding
 whether to hit Update — not for developers reading a diff.
 
+## 1.2.69
+
+- Show what a component is made of, and filter the list by allergen (#78).
+
 ## 1.2.68
 
 - Link a recipe inside a recipe from the line you already have (#76).
