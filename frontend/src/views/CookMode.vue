@@ -30,6 +30,13 @@ const ingredientGroups = computed(() => {
   }
   return groups
 })
+// Leaving cook mode for a component would lose the step you are on, so hand
+// back a `from` the sub-recipe's own cook-mode button can return to. The
+// wake lock is released by the unmount hook either way.
+function openComponent(ref) {
+  router.push({ path: `/recipes/${ref.id}`, query: { from: route.params.id || '' } })
+}
+
 const total = computed(() => steps.value.length)
 const current = computed(() => steps.value[i.value]?.text || '')
 const done = computed(() => total.value > 0 && i.value >= total.value - 1)
@@ -139,9 +146,18 @@ onUnmounted(() => {
       <ul class="cook-ing-list">
         <template v-for="(g, gi) in ingredientGroups" :key="gi">
           <li v-if="g.section" class="ci-sec">{{ g.section }}</li>
-          <li v-for="ing in g.rows" :key="ing.id">
+          <li v-for="ing in g.rows" :key="ing.id" :class="{ 'ci-ref': ing.refRecipe }">
             <span class="ci-amt tnum">{{ [ing.amountText, ing.unitText].filter(Boolean).join(' ') }}</span>
-            <span class="ci-food">{{ ing.restText ?? ing.display }}</span>
+            <!-- A component is a recipe you have to GO AND MAKE, and this is
+                 the surface where that matters most: mid-cook, needing the
+                 stock's method. It rendered as plain text here, identical to
+                 "2 onions", with no way through. -->
+            <a v-if="ing.refRecipe" class="ci-link" href="#"
+               :title="`Open ${ing.refRecipe.name}`"
+               @click.prevent="openComponent(ing.refRecipe)">
+              <span class="ci-ico" aria-hidden="true">🔗</span>{{ ing.refRecipe.name }}
+            </a>
+            <span v-else class="ci-food">{{ ing.restText ?? ing.display }}</span>
           </li>
         </template>
       </ul>
@@ -188,9 +204,16 @@ onUnmounted(() => {
   letter-spacing: 0.05em; color: var(--muted);
 }
 .cook-ing-list li.ci-sec:first-child { padding-top: 0; }
-.ci-amt, .ci-food { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.ci-amt, .ci-food, .ci-link { padding: 8px 0; border-bottom: 1px solid var(--border); }
 .cook-ing-list li:last-child .ci-amt,
-.cook-ing-list li:last-child .ci-food { border-bottom: 0; }
+.cook-ing-list li:last-child .ci-food,
+.cook-ing-list li:last-child .ci-link { border-bottom: 0; }
+/* A component reads as a link because it IS one — somewhere to go, not a
+   thing to fetch. The accent is the only colour this list uses, which is what
+   makes one accented row legible mid-cook at arm's length. */
+.ci-link { min-width: 0; color: var(--accent); text-decoration: none; font-weight: 600; }
+.ci-link:hover { text-decoration: underline; }
+.ci-ico { margin-right: 6px; font-size: 0.85em; }
 .ci-amt { font-weight: 650; text-align: right; white-space: nowrap; padding-right: 12px; }
 .ci-food { min-width: 0; }
 .cook-step { flex: 1; display: grid; place-items: center; text-align: center; overflow: auto; }

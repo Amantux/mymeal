@@ -2,7 +2,7 @@
 import json
 from datetime import datetime, date
 
-from ..services import food_resolve, step_structure, units
+from ..services import components, food_resolve, step_structure, units
 
 
 def iso(dt):
@@ -124,6 +124,19 @@ def ingredient_out(ing):
         "food": food_out(ing.food) if ing.food else None,
         "refRecipe": ({"id": ing.ref_recipe.id, "name": ing.ref_recipe.name,
                        "slug": ing.ref_recipe.slug} if ing.ref_recipe else None),
+        # Only ever true on a component row whose unit cannot be read as a
+        # count of whole batches ("2 cups oxtail stock"). Expansion falls back
+        # to 1x there, so shopping lists and nutrition are CONSERVATIVE rather
+        # than correct, and the only honest fix is a human saying what they
+        # meant. Surfaced so the UI can ask instead of hiding it.
+        #
+        # Absent on every other row rather than False, so a client cannot read
+        # "this is fine" into a flag about a situation that does not apply.
+        **({"componentAmountUnclear": True}
+           if ing.ref_recipe is not None
+           and not components.component_unit_is_multiple(
+               ing.unit.name if ing.unit else None)
+           else {}),
     }
 
 

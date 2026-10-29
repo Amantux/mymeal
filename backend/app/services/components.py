@@ -55,8 +55,51 @@ def component_load_opts(base=None):
     ]
 
 
+#: Units on a component row that mean "this many whole makings of it".
+#:
+#: A component's quantity is a BATCH MULTIPLIER, so it is only meaningful when
+#: the unit counts whole batches. "1 unit", "2 batches" and a bare "3" all do.
+#: "2 cups" does not: reading it as 2 batches is unboundedly wrong (a stock
+#: yielding 8 cups would be over-bought 4x, and the error grows with the
+#: recipe's yield), and reading it correctly needs a declared yield in a
+#: compatible unit, which recipes do not carry.
+#:
+#: "x" and "×" are here because "×2" is how the amount reads in the UI.
+_MULTIPLE_UNITS = frozenset({
+    "", "batch", "batches", "unit", "units", "portion", "portions",
+    "serving", "servings", "recipe", "recipes", "x", "\u00d7", "lot", "lots",
+    "quantity", "qty", "each", "ea", "whole", "time", "times",
+})
+
+
+def component_unit_is_multiple(unit_name: str | None) -> bool:
+    """Whether `unit_name` on a component row counts whole batches.
+
+    Exposed so a caller can WARN rather than silently mis-scale -- the API
+    surfaces it on the row, and the editor only offers units that pass.
+    """
+    return str(unit_name or "").strip().lower() in _MULTIPLE_UNITS
+
+
 def _component_mult(ing) -> float:
-    """A component row's quantity is its batch multiplier; 0/blank means 1×."""
+    """A component row's quantity as a batch multiplier; 0/blank means 1x.
+
+    ⚠️ A quantity in a unit that does NOT count whole batches is read as 1x,
+    not as itself. Previously the unit was ignored outright, so "2 cups
+    oxtail stock" expanded to TWO FULL BATCHES of stock in every shopping
+    list, nutrition total and can-I-cook check -- silently, and reachable
+    through the API today (the editor only ever writes "batch", but the AI
+    parser, MCP and the HA integration all post rows with a unit).
+
+    1x is not the true answer either -- that needs a yield this app does not
+    record -- but it is the CONSERVATIVE reading and the one already documented
+    as the default. It is also bounded: wrong by the recipe's yield rather than
+    by yield x quantity. The row is flagged to the client so a human can fix
+    the thing a guess cannot.
+    """
+    unit_name = getattr(getattr(ing, "unit", None), "name", None)
+    if not component_unit_is_multiple(unit_name):
+        return 1.0
     return float(ing.quantity or 0) or 1.0
 
 
