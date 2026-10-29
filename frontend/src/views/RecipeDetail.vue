@@ -531,7 +531,7 @@ function safetyWhy(verdict) {
   }
   const shown = terms.slice(0, 4).join(', ')
   const more = terms.length > 4 ? ` +${terms.length - 4} more` : ''
-  return { terms: shown + more, extra: notes[0] || '', full: terms.join(' ') }
+  return { terms: shown + more, extra: notes[0] || '', full: terms.join('\0') }
 }
 
 // A row exists to tell the reader something specific. When nine allergens are
@@ -1506,7 +1506,10 @@ const imageSrc = computed(() =>
         </div>
       </div>
       <div class="card">
-        <IngredientRows v-model="editIngredients" />
+        <!-- exclude-recipe-id: this recipe must never be offered as its own
+             component. The API refuses to STORE a self-reference, so the
+             suggestion would be an offer that cannot be accepted. -->
+        <IngredientRows v-model="editIngredients" :exclude-recipe-id="recipe?.id || ''" />
         <div class="row" style="margin-top:10px">
           <button class="ghost sm" :disabled="structuring || !filledRows().length" @click="tidyIngredients">
             {{ structuring ? 'Structuring…' : '✨ Tidy up with AI' }}

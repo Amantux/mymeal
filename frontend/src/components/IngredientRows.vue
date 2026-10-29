@@ -6,13 +6,19 @@
 // another recipe as a component (refRecipeId) — inserted via the recipe picker,
 // rendered as a read-only link. v-model is an array of
 // { quantity, unit, food, note, refRecipeId, refRecipeName } rows.
-import { ref, watch, onMounted, nextTick } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { api } from '../api'
 import { useUI } from '../stores/ui'
 import { rowToDisplay } from '../utils/ingredientEdit'
 import ComboBox from './ComboBox.vue'
 
-const props = defineProps({ modelValue: { type: Array, default: () => [] } })
+const props = defineProps({
+  modelValue: { type: Array, default: () => [] },
+  // The recipe being edited, so it is never suggested as its own component.
+  // The server refuses to STORE a self-reference, so offering one would be an
+  // offer that cannot be accepted.
+  excludeRecipeId: { type: String, default: '' },
+})
 const emit = defineEmits(['update:modelValue'])
 const ui = useUI()
 
@@ -69,6 +75,27 @@ function stepBatch(r, delta) {
 function fmtBatch(q) {
   const n = Number(q) || 1
   return Number.isInteger(n) ? String(n) : n.toFixed(1)
+}
+
+// The component row's unit, pluralised against its amount. Reads the row's own
+// unit rather than hardcoding "batch": "1 unit of X" is what a cook writes and
+// what the server stores, and overprinting "batch" made the word look lost.
+function unitLabel(r) {
+  const base = singularUnit(r)
+  return Number(r.quantity) === 1 ? base : pluralUnit(r)
+}
+
+function singularUnit(r) {
+  return String(r.unit || 'batch').trim().toLowerCase().replace(/e?s$/, '')
+}
+
+// The stepper's accessible name says WHAT it steps, so it has to follow the
+// row's unit: "More batches" on a batch row, "More units" on a unit row. The
+// label is always plural and never tracks the current amount -- a button whose
+// name changes as you press it is harder to follow, not easier.
+function pluralUnit(r) {
+  const base = singularUnit(r)
+  return `${base}${base.endsWith('h') ? 'es' : 's'}`
 }
 
 function add() { rows.value.push(blank()) }
@@ -227,19 +254,158 @@ async function searchRecipes() {
     pickerResults.value = res.results || []
   } catch { pickerResults.value = [] }
 }
-function openPicker() {
+// Which row the picker is linking, or -1 to append a new one. The picker used
+// to only ever APPEND, which is why a line you already had could not become a
+// component: you had to delete it and re-add, losing the amount and unit you
+// had typed. That is the whole reported problem.
+const linkTarget = ref(-1)
+
+function openPicker(rowIndex = -1) {
   showPicker.value = true
-  pickerQuery.value = ''
+  linkTarget.value = rowIndex
+  // Seed the search with the row's own text when linking an existing line --
+  // it is almost always the recipe's name, which is why the row is being
+  // linked at all. Saves retyping "Roasted Oxtail Stock with Pressure Cooker
+  // Browned Vegetables".
+  const row = rowIndex >= 0 ? rows.value[rowIndex] : null
+  pickerQuery.value = row ? (row.food || row.display || '').trim() : ''
   pickerResults.value = []
   searchRecipes()
 }
-function addComponent(r) {
-  rows.value.push({
-    ...blank(), quantity: '1', unit: 'batch', food: r.name,
-    refRecipeId: r.id, refRecipeName: r.name,
-  })
+
+//: Units that count whole makings of a recipe. Mirrors
+//: `components._MULTIPLE_UNITS` on the server, which is the thing that decides
+//: how the amount EXPANDS -- a unit outside this set is read as 1x and the row
+//: is flagged, so offering one here would invite the user to create that.
+const MULTIPLE_UNITS = ['batch', 'unit', 'portion', 'serving', 'recipe']
+
+// Link `r` into the row at `i`, or append when `i` is -1. Both entry points
+// -- the picker and the "you have a recipe called X" hint -- go through here.
+//
+// They did not, at first: the hint called the picker's handler, which read
+// `linkTarget` and found -1, so accepting a suggestion APPENDED a second row
+// instead of linking the one it was pointing at. One shared function with the
+// index passed explicitly removes the shared mutable state that caused it.
+function linkRow(i, r) {
+  if (i >= 0 && rows.value[i]) {
+    // Link IN PLACE, keeping the amount, unit, note and section the author
+    // already wrote. Only `food` is replaced, because the row now references
+    // a recipe rather than a food -- which is exactly what the server does
+    // with food_id on a ref row.
+    const row = rows.value[i]
+    const keptUnit = String(row.unit || '').trim().toLowerCase()
+    rows.value[i] = {
+      ...row,
+      food: r.name,
+      refRecipeId: r.id,
+      refRecipeName: r.name,
+      // A quantity of nothing becomes one, so the row reads "1 batch X"
+      // rather than "0". An existing amount is kept verbatim.
+      quantity: String(row.quantity || '').trim() || '1',
+      // Keep a whole-batch unit as written ("unit" stays "unit"); otherwise
+      // fall back to "batch". Keeping "2 cups" here would mean two whole
+      // batches of the sub-recipe on every shopping list.
+      unit: MULTIPLE_UNITS.includes(keptUnit) ? row.unit : 'batch',
+      // A prose line cannot also be a component -- the server enforces the
+      // same precedence, so clear it here rather than posting a combination
+      // it will silently resolve.
+      freeText: false,
+    }
+    // The suggestion for this row has been acted on; drop it so the hint does
+    // not linger beside the link it produced.
+    delete suggestions.value[suggestionKey(row)]
+  } else {
+    rows.value.push({
+      ...blank(), quantity: '1', unit: 'batch', food: r.name,
+      refRecipeId: r.id, refRecipeName: r.name,
+    })
+  }
   showPicker.value = false
+  linkTarget.value = -1
 }
+
+//: The picker's handler: links whichever row opened it.
+function addComponent(r) { linkRow(linkTarget.value, r) }
+
+function unlinkComponent(i) {
+  const row = rows.value[i]
+  if (!row) return
+  // Back to an ordinary row, keeping the recipe's name as the food text so the
+  // line still says what it was. Unlinking must not silently empty a row.
+  rows.value[i] = {
+    ...row, refRecipeId: '', refRecipeName: '',
+    food: row.food || row.refRecipeName || '',
+  }
+}
+
+// --- "this line looks like one of your recipes" ---
+//
+// The reported problem had two halves. One was that an existing row could not
+// be linked (above). The other is that nothing NOTICED: the soup's line named
+// a recipe that already existed, spelled identically, and the app said
+// nothing. A user who does not know the picker exists never finds it.
+//
+// Confidence is the server's -- `recipe_resolve`, the same policy every other
+// recipe reference in the app uses -- and only HIGH matches come back, so this
+// decorates a row at most when it is nearly certain. See the endpoint's
+// docstring for why a "maybe" would be worse than silence here.
+const suggestions = ref({})
+
+function suggestionKey(row) {
+  return String(row?.food || row?.display || '').trim().toLowerCase()
+}
+
+function suggestionFor(row) {
+  if (!row || row.refRecipeId) return null
+  const key = suggestionKey(row)
+  if (dismissed.value.has(key)) return null
+  return suggestions.value[key] || null
+}
+
+// Keys the user has waved away. Survives re-suggestion for the session, so a
+// line they decided to leave as plain text is not re-offered on every keystroke
+// -- being told twice about a decision you already made is nagging, and the
+// picker is still one click away on the row.
+const dismissed = ref(new Set())
+
+function dismissSuggestion(row) {
+  dismissed.value = new Set(dismissed.value).add(suggestionKey(row))
+}
+
+let suggestTimer
+async function refreshSuggestions() {
+  const texts = rows.value
+    .filter((r) => !r.refRecipeId)
+    .map((r) => String(r.food || r.display || '').trim())
+    .filter(Boolean)
+  if (!texts.length) { suggestions.value = {}; return }
+  try {
+    const res = await api.post('/recipes/component-suggestions',
+                               { texts, excludeId: props.excludeRecipeId || '' })
+    // Re-key to the same normalisation `suggestionKey` uses, so lookup does
+    // not depend on the server echoing the caller's exact casing.
+    const next = {}
+    for (const [text, match] of Object.entries(res.matches || {})) {
+      next[text.trim().toLowerCase()] = match
+    }
+    suggestions.value = next
+  } catch {
+    // A failed hint is a non-event: the picker still works and the rows are
+    // untouched. Never surface this.
+    suggestions.value = {}
+  }
+}
+
+watch(rows, () => {
+  clearTimeout(suggestTimer)
+  suggestTimer = setTimeout(refreshSuggestions, 400)
+}, { deep: true })
+
+onMounted(refreshSuggestions)
+onBeforeUnmount(() => {
+  clearTimeout(suggestTimer)
+  clearTimeout(searchTimer)
+})
 </script>
 
 <template>
@@ -280,10 +446,15 @@ function addComponent(r) {
          @keydown="onRowKey($event, i)">
       <template v-if="r.refRecipeId">
         <div class="batch">
-          <button type="button" class="bstep" aria-label="Fewer batches" @click="stepBatch(r, -0.5)">−</button>
+          <button type="button" class="bstep" :aria-label="`Fewer ${pluralUnit(r)}`" @click="stepBatch(r, -0.5)">−</button>
           <span class="bval tnum">{{ fmtBatch(r.quantity) }}</span>
-          <button type="button" class="bstep" aria-label="More batches" @click="stepBatch(r, 0.5)">+</button>
-          <span class="bunit">{{ Number(r.quantity) === 1 ? 'batch' : 'batches' }}</span>
+          <button type="button" class="bstep" :aria-label="`More ${pluralUnit(r)}`" @click="stepBatch(r, 0.5)">+</button>
+          <!-- The row's OWN unit, not a hardcoded "batch". "1 unit of X" is
+               what a cook writes and the server stores it faithfully; printing
+               "batch" over the top made the app look like it had lost the
+               word. Only whole-batch units ever reach a component row, so this
+               is always a count of makings. -->
+          <span class="bunit">{{ unitLabel(r) }}</span>
         </div>
         <div class="food-ref" :title="`Component: ${r.refRecipeName}`">
           <span class="link-ico">🔗</span>{{ r.refRecipeName }}
@@ -319,6 +490,19 @@ function addComponent(r) {
              "Use separate fields, pressed" — a double negative that says the
              row is in the mode it would switch to. The title still flips,
              because a mouse tooltip has no pressed state to lean on. -->
+        <!-- Link this line to a recipe. The picker opens seeded with the
+             row's own text and links IN PLACE, keeping the amount. Offered on
+             a component row too, as "change which recipe". -->
+        <button type="button" class="icon link-btn" :class="{ on: r.refRecipeId }"
+                :aria-label="r.refRecipeId ? 'Change linked recipe' : 'Link this line to a recipe'"
+                :title="r.refRecipeId ? 'Change linked recipe' : 'Link to a recipe'"
+                @click="openPicker(i)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6.5 9.5l3-3M7 4.5l1-1a2.5 2.5 0 013.5 3.5l-1 1M9 11.5l-1 1a2.5 2.5 0 01-3.5-3.5l1-1" /></svg>
+        </button>
+        <button v-if="r.refRecipeId" type="button" class="icon" aria-label="Unlink this recipe"
+                title="Unlink — keep the line as plain text" @click="unlinkComponent(i)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M7 4.5l1-1a2.5 2.5 0 013.5 3.5l-1 1M9 11.5l-1 1a2.5 2.5 0 01-3.5-3.5l1-1M3 3l10 10" /></svg>
+        </button>
         <button v-if="!r.refRecipeId" type="button" class="icon ftxt-tog"
                 :class="{ on: r.freeText }" :aria-pressed="String(!!r.freeText)"
                 aria-label="Write this line as free text"
@@ -336,6 +520,25 @@ function addComponent(r) {
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8" /></svg>
         </button>
       </div>
+      <!-- "You already have a recipe by this name." Appears only on a HIGH
+           confidence match (the server's `recipe_resolve` policy, shared with
+           every other recipe reference), so it is close to certain rather
+           than a guess the user has to adjudicate on every render.
+           Dismissible, because being told twice about a line you have decided
+           to leave as text is nagging. -->
+      <p v-if="suggestionFor(r)" class="link-hint">
+        <span class="lh-ico">🔗</span>
+        <span class="lh-txt">You have a recipe called
+          <strong>{{ suggestionFor(r).name }}</strong></span>
+        <button type="button" class="lh-act" @click="linkRow(i, suggestionFor(r))">
+          Link it
+        </button>
+        <!-- A WORD, not a ✕ — the same reason `.src-hide` is a word. The
+             row's destructive Remove is a ✕ on the same band, and reusing the
+             glyph for "hide a hint" puts a benign and a destructive action
+             behind identical affordances. -->
+        <button type="button" class="lh-dis" @click="dismissSuggestion(r)">No thanks</button>
+      </p>
       <!-- The line the parser was handed, so a wrong split is visible against its
            ground truth. Must come AFTER the controls: it spans every column, so
            in DOM order before them it pushes them onto a grid row of their own. -->
@@ -414,6 +617,31 @@ function addComponent(r) {
   font: inherit; color: var(--muted); cursor: pointer; text-decoration: underline;
 }
 .src-hide:hover { color: var(--text); }
+
+/* Full-width inside the row grid, like `.src` — a hint about the line belongs
+   under the line, not in a column. */
+.link-hint {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 8px;
+  margin: 0 0 12px; font-size: 0.85rem; color: var(--text);
+}
+.lh-ico { flex-shrink: 0; }
+.lh-txt { min-width: 0; overflow-wrap: anywhere; }
+/* The only button here with a border: accepting is the action, dismissing is
+   the way out. One primary per hint. */
+.lh-act {
+  flex-shrink: 0; font: inherit; cursor: pointer; padding: 2px 10px;
+  background: var(--accent-soft); border: 1px solid var(--accent);
+  color: var(--accent-text); border-radius: var(--radius-sm);
+}
+.lh-act:hover { background: var(--accent); color: var(--accent-fg); }
+.lh-dis {
+  flex-shrink: 0; border: 0; background: transparent; padding: 0;
+  font: inherit; color: var(--muted); cursor: pointer; text-decoration: underline;
+}
+.lh-dis:hover { color: var(--text); }
+/* The link control picks up the accent only when the row IS linked, so the
+   button reads as state rather than as a second always-on action. */
+.link-btn.on { color: var(--accent-text); }
 
 /* Section label: a quiet line between rows, styled like the read view's
    sub-heading. */

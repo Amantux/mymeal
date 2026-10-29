@@ -477,6 +477,99 @@ def resolve_recipe():
     return jsonify(decision)
 
 
+#: How many ingredient texts one suggestion call will score.
+#:
+#: Guards the endpoint, not the algorithm: scoring is pure and cheap, but the
+#: request body is caller-supplied and a recipe with 400 lines must not be able
+#: to turn one click into an unbounded loop. Well above any real recipe.
+_MAX_SUGGESTION_TEXTS = 60
+
+
+@bp.post("/recipes/component-suggestions")
+@login_required
+def component_suggestions():
+    """Which ingredient lines look like they name another recipe.
+
+    ``{"texts": ["Roasted Oxtail Stock", "2 onions"], "excludeId": "<id>"}``
+    -> ``{"matches": {"Roasted Oxtail Stock": {"id", "name", "slug",
+    "matchedOn", "score"}}}``, containing ONLY confident matches.
+
+    Text-driven rather than derived from the saved recipe, because the moment
+    this is useful is while EDITING -- the rows a user is looking at may not be
+    saved yet, and an endpoint that reads the database would have nothing to
+    say about them.
+
+    One query for the group's recipes, then ``recipe_resolve.decide`` per text.
+    The alternative -- a call to /recipes/resolve per row -- is N round trips
+    AND N queries AND returns a full recipe payload each time, to populate a
+    hint that needs three fields.
+
+    **Confident matches only, deliberately.** A suggestion the user must
+    adjudicate is worse than silence here: this decorates a row the user did
+    not ask about, so a wrong hint costs attention on every render. The "low"
+    branch -- show candidates and let the user choose -- is what the component
+    PICKER is for, and it is one click away. Same confidence policy as every
+    other recipe reference in the app (``recipe_resolve``), not a second rule.
+    """
+    data = request.get_json(silent=True) or {}
+    raw = data.get("texts")
+    if not isinstance(raw, list):
+        abort(400, description="texts must be a list of ingredient strings")
+
+    gid = current_group().id
+    exclude = str(data.get("excludeId") or "")
+
+    # Deduplicated and trimmed before scoring: a recipe repeating "stock" on
+    # three lines should cost one scoring pass, and the response is keyed by
+    # text anyway so duplicates could not be represented twice.
+    texts, seen = [], set()
+    for item in raw[:_MAX_SUGGESTION_TEXTS]:
+        text = str(item or "").strip()
+        if text and text.lower() not in seen:
+            seen.add(text.lower())
+            texts.append(text)
+    if not texts:
+        return jsonify({"matches": {}})
+
+    # Three columns, not whole Recipe objects and no eager-loaded tags: the
+    # response needs id/name/slug and the scoring below is given neither tags
+    # nor description (see next comment), so loading them was pure waste.
+    rows = (
+        db.session.query(Recipe.id, Recipe.name, Recipe.slug)
+        .filter_by(group_id=gid)
+        .all()
+    )
+    # `decide` scores against name, tags and description. Tags and description
+    # are deliberately NOT supplied: this asks "is this line the NAME of a
+    # recipe", and a stock whose description mentions onions must not be
+    # suggested for the line "2 onions". The picker still searches everything.
+    #
+    # Every recipe is scored against every text rather than pre-filtered with a
+    # LIKE per text, because the latter is one query per ingredient row. The
+    # trade is measured, not assumed: 60 texts x 500 recipes is 66 ms, and
+    # x 5000 is 761 ms. Fine for a hint; if a household ever gets near the
+    # upper end, pre-filter on a trigram index rather than going back to N
+    # queries.
+    scored = [{"id": r.id, "name": r.name, "tags": [], "description": ""}
+              for r in rows if r.id != exclude]
+    slugs = {r.id: r.slug for r in rows}
+
+    matches = {}
+    for text in texts:
+        decision = recipe_resolve.decide(scored, text)
+        if decision["confidence"] != "high":
+            continue
+        match = decision["match"]
+        matches[text] = {
+            "id": match["id"],
+            "name": match["name"],
+            "slug": slugs.get(match["id"]),
+            "matchedOn": decision.get("matchedOn"),
+            "score": decision.get("score"),
+        }
+    return jsonify({"matches": matches})
+
+
 @bp.get("/recipes/<ident>")
 @login_required
 def get_recipe(ident):

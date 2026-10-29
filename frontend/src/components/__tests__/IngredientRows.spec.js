@@ -10,7 +10,19 @@ vi.mock('../../api', () => ({
       if (path.startsWith('/search')) return Promise.resolve({ results: [{ id: 'r1', name: 'Garlic Confit' }] })
       return Promise.resolve([])
     }),
-    post: vi.fn((path) => {
+    post: vi.fn((path, body) => {
+      // Confident matches only, keyed by the text the caller sent — the shape
+      // the real endpoint returns.
+      if (path === '/recipes/component-suggestions') {
+        const matches = {}
+        for (const t of body?.texts || []) {
+          if (t.toLowerCase() === 'garlic confit') {
+            matches[t] = { id: 'r1', name: 'Garlic Confit', slug: 'garlic-confit',
+                           matchedOn: 'name', score: 100 }
+          }
+        }
+        return Promise.resolve({ matches })
+      }
       if (path === '/recipes/parse') {
         return Promise.resolve({ ingredients: [
           { quantity: 2, unit: 'cup', food: 'flour' },
@@ -295,5 +307,130 @@ describe('IngredientRows undo + reorder safety', () => {
     await w.findAll('.ing-row')[1].trigger('keydown', { key: 'ArrowUp', altKey: true, ctrlKey: true })
 
     expect(w.emitted('update:modelValue')).toBeUndefined()
+  })
+
+  // --- linking an EXISTING row (the reported problem) ----------------------
+
+  test('linking an existing row keeps the amount and unit already typed', async () => {
+    // The reported case: a line already says "1 unit Roasted Oxtail Stock",
+    // and the only way to link it was to delete it and re-add through the
+    // picker — which reset the amount to "1 batch" and lost what was written.
+    const w = mountIt([{ quantity: '2', unit: 'unit', food: 'Oxtail Stock',
+                         note: 'skim it', section: 'For the soup' }])
+    await flushPromises()
+
+    await w.get('[aria-label="Link this line to a recipe"]').trigger('click')
+    await flushPromises()
+    await w.get('.picker-list li').trigger('click')
+
+    const [row] = lastEmit(w)
+    expect(row.refRecipeId).toBe('r1')
+    expect(row.quantity).toBe('2')          // amount survives
+    expect(row.unit).toBe('unit')           // a whole-batch unit survives
+    expect(row.note).toBe('skim it')        // and everything else on the row
+    expect(row.section).toBe('For the soup')
+  })
+
+  test('linking replaces the row rather than appending a second one', async () => {
+    const w = mountIt([{ quantity: '1', unit: 'unit', food: 'Oxtail Stock' }])
+    await flushPromises()
+
+    await w.get('[aria-label="Link this line to a recipe"]').trigger('click')
+    await flushPromises()
+    await w.get('.picker-list li').trigger('click')
+
+    expect(lastEmit(w)).toHaveLength(1)
+  })
+
+  test('a non-batch unit falls back to batch when the row is linked', async () => {
+    // "2 cups" on a component row would expand to TWO WHOLE BATCHES of the
+    // sub-recipe in every shopping list, because a component's quantity is a
+    // batch multiplier. Keeping the user's "cups" here would invite exactly
+    // the mis-scaling the server now guards against.
+    const w = mountIt([{ quantity: '2', unit: 'cup', food: 'Oxtail Stock' }])
+    await flushPromises()
+
+    await w.get('[aria-label="Link this line to a recipe"]').trigger('click')
+    await flushPromises()
+    await w.get('.picker-list li').trigger('click')
+
+    const [row] = lastEmit(w)
+    expect(row.unit).toBe('batch')
+    expect(row.quantity).toBe('2')
+  })
+
+  test('a blank amount becomes one rather than zero', async () => {
+    const w = mountIt([{ quantity: '', unit: '', food: 'Oxtail Stock' }])
+    await flushPromises()
+
+    await w.get('[aria-label="Link this line to a recipe"]').trigger('click')
+    await flushPromises()
+    await w.get('.picker-list li').trigger('click')
+
+    expect(lastEmit(w)[0].quantity).toBe('1')
+  })
+
+  test('unlinking keeps the line as plain text instead of emptying it', async () => {
+    const w = mountIt([{ quantity: '1', unit: 'batch', food: 'Garlic Confit',
+                         refRecipeId: 'r1', refRecipeName: 'Garlic Confit' }])
+    await flushPromises()
+
+    await w.get('[aria-label="Unlink this recipe"]').trigger('click')
+
+    const [row] = lastEmit(w)
+    expect(row.refRecipeId).toBe('')
+    expect(row.food).toBe('Garlic Confit')   // the line still says what it was
+  })
+
+  test('the component row shows its own unit, not a hardcoded batch', async () => {
+    const w = mountIt([{ quantity: '1', unit: 'unit', food: 'Oxtail Stock',
+                         refRecipeId: 'r1', refRecipeName: 'Oxtail Stock' }])
+    await flushPromises()
+
+    expect(w.get('.bunit').text()).toBe('unit')
+    // And the stepper's accessible name follows the unit.
+    expect(w.find('[aria-label="More units"]').exists()).toBe(true)
+  })
+
+  // --- the suggestion, which is what makes any of it discoverable ----------
+
+  test('a line naming one of your recipes offers to link it', async () => {
+    const w = mountIt([{ quantity: '1', unit: '', food: 'Garlic Confit' }])
+    await flushPromises()
+
+    const hint = w.find('.link-hint')
+    expect(hint.exists()).toBe(true)
+    expect(hint.text()).toContain('Garlic Confit')
+  })
+
+  test('accepting the suggestion links the row in place', async () => {
+    const w = mountIt([{ quantity: '3', unit: 'unit', food: 'Garlic Confit' }])
+    await flushPromises()
+
+    await w.get('.lh-act').trigger('click')
+
+    const [row] = lastEmit(w)
+    expect(row.refRecipeId).toBe('r1')
+    expect(row.quantity).toBe('3')
+  })
+
+  test('a dismissed suggestion does not come back', async () => {
+    // Being told twice about a decision you already made is nagging, and the
+    // row's own link button is still there if the user changes their mind.
+    const w = mountIt([{ quantity: '1', unit: '', food: 'Garlic Confit' }])
+    await flushPromises()
+
+    await w.get('.lh-dis').trigger('click')   // reads "No thanks", not a ✕
+    await flushPromises()
+
+    expect(w.find('.link-hint').exists()).toBe(false)
+  })
+
+  test('no suggestion is shown on a row that is already linked', async () => {
+    const w = mountIt([{ quantity: '1', unit: 'batch', food: 'Garlic Confit',
+                         refRecipeId: 'r1', refRecipeName: 'Garlic Confit' }])
+    await flushPromises()
+
+    expect(w.find('.link-hint').exists()).toBe(false)
   })
 })
