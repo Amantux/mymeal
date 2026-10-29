@@ -573,7 +573,14 @@ def component_suggestions():
 @bp.get("/recipes/<ident>")
 @login_required
 def get_recipe(ident):
-    recipe = _get_by_id_or_slug(ident)
+    # Eager-load the component graph only when the caller asked to expand it:
+    # the loader costs an extra query per request and every other read of this
+    # route touches at most `ref_recipe`'s own columns.
+    if str(request.args.get("components") or "").lower() == "expand":
+        from ..services import components as _components
+        recipe = _get_by_id_or_slug(ident, _components.component_load_opts())
+    else:
+        recipe = _get_by_id_or_slug(ident)
     out = recipe_out(recipe)
     _apply_view(out, recipe, request.args)
     return jsonify(out)
@@ -668,6 +675,129 @@ def _safety_lines(recipe, seen=None, depth=0, budget=None):
     return rows
 
 
+#: How many recipes one bulk-screening call will do.
+#:
+#: Screening is ~15 ms a recipe, so this is a latency bound, not a safety one.
+#: A library past it gets `truncated: true` and the client says so — silently
+#: returning a partial map would make the filter claim a recipe has no
+#: allergens when it was simply never looked at, which is the exact failure the
+#: per-recipe panel exists to prevent.
+_MAX_BULK_SCREEN = 250
+
+
+@bp.get("/recipes/safety-tags")
+@login_required
+def recipe_safety_tags():
+    """Compact allergen/diet tags for the group's recipes, for filtering.
+
+    This is the filter the per-recipe `safety` docstring says does not exist
+    yet. Its closing note is the brief: "No policy is applied and no boolean is
+    returned... deciding what is acceptable needs an avoidance policy." So the
+    policy lives in the CLIENT, and this endpoint reports the same four states
+    the panel does -- never a boolean, never a "safe" flag.
+
+    Per recipe: `contains`, `mayContain`, `unknown` (labels the engine could
+    not decide), `incompatibleDiets`, `compatibleDiets`, `unreadable` (a count
+    of lines no rule could read). `unknown` is REPORTED SEPARATELY rather than
+    folded in with either answer, because that distinction is the whole point:
+    "we did not find milk" and "we could not tell" must not filter alike.
+
+    A recipe whose screening FAILS is listed under `failed` rather than being
+    given an empty tag set. An empty set reads as "nothing in it".
+
+    Computed on demand and not stored: a screening is rule-versioned derived
+    data (see the per-recipe endpoint's reasons 1 and 2), so caching it in a
+    column would hand a stale verdict to a filter months later under a ruleset
+    that had moved.
+    """
+    from ..services import components, food_reference
+
+    gid = current_group().id
+    recipes = (
+        db.session.query(Recipe)
+        .filter_by(group_id=gid)
+        .order_by(Recipe.name.asc())
+        .options(*components.component_load_opts())
+        .limit(_MAX_BULK_SCREEN + 1)
+        .all()
+    )
+    truncated = len(recipes) > _MAX_BULK_SCREEN
+    recipes = recipes[:_MAX_BULK_SCREEN]
+
+    out, failed = {}, []
+    for recipe in recipes:
+        try:
+            safety = food_reference.screen_lines(_safety_lines(recipe))
+        except food_reference.NothingToScreen:
+            # A draft with no ingredients. Distinct from a failure AND from a
+            # clean screen: there was nothing to look at.
+            out[recipe.id] = {"status": "no_ingredients"}
+            continue
+        except Exception:  # noqa: BLE001 - one bad recipe must not fail the list
+            failed.append(recipe.id)
+            continue
+        out[recipe.id] = _safety_tags(safety)
+
+    # The filter's options, derived from what is actually AT ISSUE somewhere in
+    # this library rather than from the whole ruleset. Offering "avoid sesame"
+    # when no recipe contains, may-contain or is-unsure-about sesame is a
+    # control that can only ever do nothing.
+    #
+    # `unknown` counts as at issue: a household that reacts to something needs
+    # to be able to act on "we could not tell", which is precisely the state a
+    # hardcoded option list would leave unreachable.
+    at_issue = sorted({
+        label
+        for tags in out.values()
+        for key in ("contains", "mayContain", "unknown")
+        for label in tags.get(key, ())
+    })
+    diets_seen = sorted({
+        label
+        for tags in out.values()
+        for key in ("incompatibleDiets", "compatibleDiets", "uncertainDiets")
+        for label in tags.get(key, ())
+    })
+    return jsonify({
+        "recipes": out,
+        "failed": failed,
+        "truncated": truncated,
+        "allergens": at_issue,
+        "diets": diets_seen,
+    })
+
+
+def _safety_tags(safety) -> dict:
+    """Project a screening onto the few facts a list filter needs."""
+    from ..schemas.serializers import recipe_safety_out
+
+    full = recipe_safety_out(safety)
+    allergens = full.get("allergens") or []
+    diets = full.get("diets") or []
+
+    def labels(rows, *states):
+        return sorted({r["label"] for r in rows if r["state"] in states})
+
+    return {
+        "status": "screened",
+        "contains": labels(allergens, "contains"),
+        "mayContain": labels(allergens, "may_contain"),
+        # Everything the engine could not decide. Deliberately NOT merged into
+        # either list: a filter that treats "could not tell" as "does not
+        # contain" is a false clearance, and as "contains" it hides food
+        # needlessly. The client has to choose, visibly.
+        "unknown": labels(allergens, "unknown"),
+        "incompatibleDiets": labels(diets, "incompatible"),
+        "compatibleDiets": labels(diets, "no_conflict_identified"),
+        "uncertainDiets": labels(diets, "uncertain", "unknown"),
+        # How many ingredient lines no rule could read. A tag set over a recipe
+        # with unreadable lines is incomplete by construction, and the filter
+        # must be able to say so.
+        "unreadable": sum(1 for c in (full.get("coverage") or []) if c.get("unscreened")),
+        "fullyScreened": bool(full.get("fullyScreened")),
+    }
+
+
 @bp.get("/recipes/<ident>/safety")
 @login_required
 def get_recipe_safety(ident):
@@ -718,12 +848,76 @@ def get_recipe_safety(ident):
     return jsonify(recipe_safety_out(safety))
 
 
+def _expand_components(out: dict, recipe: Recipe, args) -> None:
+    """Add ``expandedComponents`` — what each linked component is made of.
+
+    A linked component told the reader a stock goes in and then showed them
+    nothing about it. Its ingredients already reached the shopping list, the
+    nutrition totals and the allergen screening, so the recipe page was the one
+    place that knew about the stock and would not say what was in it.
+
+    ADDITIVE, under its own key, and only with the query param. It deliberately
+    does NOT merge into ``ingredients``:
+
+    * that array feeds the version snapshot and the share/export payload, and
+      an expanded component baked into a snapshot would be restored as the
+      recipe's own ingredients -- the sub-recipe silently inlined forever;
+    * every consumer of ``ingredients`` (shopping, MCP, HA, the SPA's amount
+      split) would start seeing rows that are not this recipe's, which is the
+      kind of change that is invisible until something double-counts.
+
+    Expansion goes through ``components.iter_leaf_ingredients`` rather than
+    walking ``ref_recipe.ingredients`` here, because that service owns the
+    cycle guard, the depth and expansion caps, and the multiplier -- the thing
+    this estate already shipped four slightly different copies of.
+    """
+    from ..services import components
+    from ..schemas.serializers import ingredient_out
+
+    try:
+        factor = int(args.get("servings") or 0)
+    except (TypeError, ValueError):
+        factor = 0
+    scale = (factor / recipe.servings) if factor > 0 and recipe.servings else 1.0
+
+    groups = []
+    for ing in recipe.ingredients:
+        if ing.ref_recipe is None:
+            continue
+        mult = components.component_multiplier(ing) * scale
+        rows = []
+        for leaf, leaf_mult in components.iter_leaf_ingredients(ing.ref_recipe, mult):
+            row = ingredient_out(leaf)
+            # The leaf's own amount times the path multiplier. `display` is left
+            # as the sub-recipe wrote it: rewriting the prose would need the
+            # scaling rules `scale_line` owns, and a wrong rewrite on a line the
+            # reader cannot cross-check is worse than an unscaled one. The
+            # structured quantity is what a client should render here.
+            if isinstance(row.get("quantity"), (int, float)) and row["quantity"]:
+                row["quantity"] = round(row["quantity"] * leaf_mult, 4)
+            rows.append(row)
+        groups.append({
+            "component": {"id": ing.ref_recipe.id, "name": ing.ref_recipe.name,
+                          "slug": ing.ref_recipe.slug},
+            # The multiplier actually applied, so a client can say "x2" rather
+            # than leaving the reader to wonder whose amounts these are.
+            "multiplier": mult,
+            "ingredients": rows,
+        })
+    if groups:
+        out["expandedComponents"] = groups
+
+
 def _apply_view(out: dict, recipe: Recipe, args):
     """Optional read-only transforms driven by query params:
-    ?servings=N     → scale ingredient quantities to N servings
-    ?units=weight   → show weights where a food's density is known
+    ?servings=N          → scale ingredient quantities to N servings
+    ?units=weight        → show weights where a food's density is known
+    ?components=expand   → also list what each linked component is made of
     Pure: mutates the response only, never the stored recipe."""
     from ..services import units
+
+    if str(args.get("components") or "").lower() == "expand":
+        _expand_components(out, recipe, args)
 
     try:
         target = int(args.get("servings") or 0)

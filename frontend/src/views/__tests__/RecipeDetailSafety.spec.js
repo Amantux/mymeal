@@ -480,4 +480,117 @@ describe('diet advisories', () => {
     })
     expect(w.find('.sf-advisory').exists()).toBe(false)
   })
+
+  // --- collapsed by default ------------------------------------------------
+  //
+  // Asked for. The risk is obvious and these tests exist to bound it: a panel
+  // that hides "Contains milk" from someone who cannot eat dairy would be a
+  // regression dressed as a preference.
+
+  const chip = (w) => w.findAll('.sf-chip').at(0)
+
+  test('the panel starts collapsed', async () => {
+    const w = await mountWith({ ...SCREENED,
+      allergens: [allergen('milk', 'Milk', 'contains')] })
+
+    // v-show, so the body exists but is hidden — asserting the style rather
+    // than absence, because v-if and v-show would both "pass" an exists check
+    // and only one of them keeps the body in the a11y tree for aria-controls.
+    expect(w.get('#contains-body').attributes('style')).toContain('display: none')
+    expect(w.get('.sf-toggle').attributes('aria-expanded')).toBe('false')
+  })
+
+  test('a CONTAINS verdict is visible while collapsed', async () => {
+    const w = await mountWith({ ...SCREENED,
+      allergens: [allergen('milk', 'Milk', 'contains')] })
+
+    // The whole safety argument for collapsing. The label is NAMED, not
+    // counted: "1 flagged" would force a reader to open the panel to find out
+    // whether it is the thing they react to.
+    expect(chip(w).text()).toContain('Contains')
+    expect(chip(w).text()).toContain('Milk')
+    expect(chip(w).classes()).toContain('sf-tone-bad')
+  })
+
+  test('a MAY CONTAIN verdict is visible while collapsed, in its own tone', async () => {
+    const w = await mountWith({ ...SCREENED,
+      allergens: [allergen('nuts', 'Tree nuts', 'may_contain')] })
+
+    expect(chip(w).text()).toContain('May contain')
+    expect(chip(w).classes()).toContain('sf-tone-warn')
+  })
+
+  test('the worst tone leads when several states are present', async () => {
+    const w = await mountWith({ ...SCREENED, allergens: [
+      allergen('nuts', 'Tree nuts', 'may_contain'),
+      allergen('milk', 'Milk', 'contains'),
+    ] })
+
+    // "Contains Milk", not "May contain Tree nuts" — the summary must lead
+    // with the strongest claim, not with whichever row sorted first.
+    expect(chip(w).text()).toContain('Contains')
+    expect(chip(w).text()).toContain('Milk')
+    expect(chip(w).classes()).toContain('sf-tone-bad')
+  })
+
+  test('the summary never claims a clearance when nothing is flagged', async () => {
+    const w = await mountWith(SCREENED)
+
+    const text = chip(w).text().toLowerCase()
+    // States the ACT, not a verdict. The panel exists because an empty result
+    // is not a clearance, and a collapsed summary is the easiest place to
+    // undo that by accident.
+    expect(text).toContain('screened')
+    for (const banned of ['free from', 'free of', 'safe', 'no allergens',
+                          'allergen free', 'none']) {
+      expect(text).not.toContain(banned)
+    }
+  })
+
+  test('unreadable lines are surfaced in the collapsed summary', async () => {
+    const w = await mountWith({
+      ...SCREENED, fullyScreened: false, screenedLines: 2,
+      coverage: [{ ingredient: 'a splash of something', recognised: [],
+                   unscreened: ['no rule matched'] }],
+    })
+
+    // With nothing flagged, "screened, nothing flagged" would be a half-truth
+    // while a line went unread — so the unread count takes the lead instead.
+    expect(chip(w).text()).toContain('unreadable')
+    expect(chip(w).classes()).toContain('sf-tone-unscreened')
+  })
+
+  test('an unscreened-only verdict summarises without crashing', async () => {
+    // REGRESSION. The first version hardcoded `bad ? 'bad' : 'warn'`, so a
+    // recipe whose only loud rows were `unknown` matched neither tone, the
+    // lead group came back empty and `lead[0].state` threw inside a computed —
+    // surfacing as an unhandled rejection rather than a failed assertion.
+    const w = await mountWith({ ...SCREENED,
+      allergens: [allergen('sesame', 'Sesame', 'unknown')] })
+
+    expect(chip(w).exists()).toBe(true)
+    expect(chip(w).text().length).toBeGreaterThan(0)
+  })
+
+  test('expanding reveals the detail and hides the summary chip', async () => {
+    const w = await mountWith({ ...SCREENED,
+      allergens: [allergen('milk', 'Milk', 'contains')] })
+
+    await w.get('.sf-toggle').trigger('click')
+
+    expect(w.get('#contains-body').attributes('style') || '')
+      .not.toContain('display: none')
+    expect(w.get('.sf-toggle').attributes('aria-expanded')).toBe('true')
+    // The chip goes: the verdict it summarised is now on screen in full, and
+    // two copies of one fact invite the reader to wonder which is current.
+    expect(w.find('.sf-chip').exists()).toBe(false)
+  })
+
+  test('the screening is still fetched even though the panel is shut', async () => {
+    await mountWith(SCREENED)
+
+    // Not fetching would be the cheaper reading of "hidden", and it would make
+    // the summary impossible — so the request stays and the body is what hides.
+    expect(get.mock.calls.some(([p]) => String(p).endsWith('/safety'))).toBe(true)
+  })
 })

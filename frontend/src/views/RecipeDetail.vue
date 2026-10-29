@@ -64,6 +64,49 @@ const isScaledView = computed(() =>
   !!scaled.value && !!viewServings.value
   && viewServings.value !== recipe.value?.servings)
 
+// --- what a linked component is made of -----------------------------------
+//
+// Fetched on demand rather than with the recipe: expanding walks the component
+// graph server-side and most readers never ask, so it is the same bargain the
+// safety panel makes. The amounts come back already multiplied by the
+// component's batch count and the current serving scale — the expansion
+// service owns that arithmetic, and re-doing it here is how two answers to one
+// question start disagreeing.
+const expandedComponents = ref([])
+const componentsExpanded = ref(false)
+const componentsLoading = ref(false)
+const componentsError = ref('')
+
+async function loadComponentIngredients() {
+  componentsLoading.value = true
+  componentsError.value = ''
+  try {
+    const q = new URLSearchParams({ components: 'expand' })
+    // Carry the serving scale the reader is looking at, so the sub-recipe's
+    // amounts match the numbers beside them rather than the stored recipe's.
+    // Reuses `isScaledView` — the same guard cook mode uses — so a failed
+    // scale request can never send an expansion a count nobody saw.
+    if (isScaledView.value) q.set('servings', String(viewServings.value))
+    const out = await api.get(`/recipes/${recipe.value.id}?${q}`)
+    expandedComponents.value = out.expandedComponents || []
+    componentsExpanded.value = true
+  } catch (e) {
+    componentsError.value = e.message || 'Could not load the component ingredients.'
+  } finally {
+    componentsLoading.value = false
+  }
+}
+
+// The sub-recipe's own amount, not re-parsed from its prose. `display` is left
+// as that recipe wrote it, so an unscaled sentence beside a scaled number
+// would be the misleading pair — the structured quantity is the one to show.
+function componentAmount(i) {
+  const qty = i.quantity
+  if (!qty) return ''
+  const unit = (i.unit && i.unit.name) || ''
+  return `${Number.isInteger(qty) ? qty : Number(qty.toFixed(2))}${unit ? ' ' + unit : ''}`
+}
+
 // Cook mode opens at the servings the reader is LOOKING at, not the recipe's
 // base — walking into the kitchen must not silently revert the numbers they
 // just scaled. Only passed when the view is actually scaled (isScaledView), so
@@ -576,6 +619,69 @@ function quietLabels(rows) {
     .map((r) => r.label)
     .sort((a, b) => a.localeCompare(b))
 }
+
+// --- the panel is collapsed by default ------------------------------------
+//
+// Asked for, and the safety reasoning had to be worked through rather than
+// just wrapping the card in a <details>.
+//
+// The screening is still FETCHED on mount even though the body is hidden. The
+// endpoint exists partly so its ~5 ms is not paid unless the panel is looked
+// at, so not fetching would be the cheaper reading of "hidden" — but the
+// summary below is built FROM the screening, and a collapsed panel with no
+// summary genuinely hides "Contains milk" from someone who cannot eat it.
+// One request the page already made is the right price for that.
+//
+// Collapsed state is not persisted: "hidden by default" means every visit
+// starts closed, and a remembered-open panel would stop being hidden by
+// default after the first time anyone looked.
+const containsOpen = ref(false)
+
+// What the header says while the body is shut. Built only from the LOUD rows,
+// so collapsing can never hide a verdict that wanted attention.
+//
+// ⚠️ Never says "free from", "safe" or "no allergens" — the whole panel exists
+// because an empty result is not a clearance. With nothing flagged it reports
+// what was DONE ("screened, nothing flagged"), and if any line was unreadable
+// it leads with that instead.
+const containsSummary = computed(() => {
+  if (safetyLoading.value) return { tone: 'quiet', text: 'Screening…' }
+  if (safetyError.value) return { tone: 'unscreened', text: 'Not screened' }
+  if (!safety.value) return null
+  if (safety.value.status === 'no_ingredients') {
+    return { tone: 'quiet', text: 'No ingredients yet' }
+  }
+  const loud = [...loudRows(safety.value.allergens), ...loudRows(safety.value.diets)]
+  const unread = unreadable.value.length
+  if (!loud.length) {
+    return unread
+      ? { tone: 'unscreened', text: `${unread} ingredient${unread === 1 ? '' : 's'} unreadable` }
+      // Not "no allergens". This states the ACT, not a clearance.
+      : { tone: 'quiet', text: 'Screened, nothing flagged' }
+  }
+  // Worst tone wins the chip's colour, and the labels are NAMED rather than
+  // counted: "Contains milk" is what a reader needs at a glance, where
+  // "2 flagged" would make them open the panel to find out which.
+  //
+  // The priority list is explicit and the lead group is derived from the tone
+  // that was actually FOUND. The first version hardcoded `bad ? 'bad' : 'warn'`
+  // and crashed on a recipe whose only loud rows were `unscreened`: no row
+  // matched 'warn', the lead group came back empty, and `lead[0].state` threw
+  // inside a computed. Caught by the existing suite as an unhandled rejection,
+  // which is the one way a broken computed shows up without a test aimed at it.
+  const TONE_ORDER = ['bad', 'warn', 'unscreened', 'quiet']
+  const worst = TONE_ORDER.find((t) => loud.some((r) => safetyTone(r.state) === t))
+  const lead = loud.filter((r) => safetyTone(r.state) === worst)
+  if (!lead.length) return { tone: 'unscreened', text: 'Screened — see detail' }
+  const all = lead.flatMap((r) => r.labels)
+  const labels = all.slice(0, 3)
+  const word = SAFETY_WORD[lead[0].state] || lead[0].state
+  const tail = unread ? ` · ${unread} unreadable` : ''
+  return {
+    tone: worst,
+    text: `${word} ${labels.join(', ')}${all.length > labels.length ? ` +${all.length - labels.length}` : ''}${tail}`,
+  }
+})
 
 const allergensLoud = computed(() => loudRows(safety.value?.allergens))
 const allergensQuiet = computed(() => quietLabels(safety.value?.allergens))
@@ -1172,6 +1278,37 @@ const imageSrc = computed(() =>
           <p class="muted component-note">
             Their ingredients are included in shopping lists, nutrition, and “what can I cook”.
           </p>
+          <!-- …and now here too, on request. The note above was true and
+               quietly unhelpful: it told the reader the stock's ingredients
+               counted everywhere EXCEPT the page they were reading. -->
+          <button v-if="!componentsExpanded" class="secondary sm comp-show"
+                  :disabled="componentsLoading" @click="loadComponentIngredients">
+            {{ componentsLoading ? 'Loading…' : 'Show what they are made of' }}
+          </button>
+          <p v-if="componentsError" class="muted component-note">
+            {{ componentsError }}
+            <button class="secondary sm" @click="loadComponentIngredients">Try again</button>
+          </p>
+          <div v-for="g in expandedComponents" :key="g.component.id" class="comp-exp">
+            <h4 class="comp-exp-h">
+              <a href="#" @click.prevent="router.push(`/recipes/${g.component.id}`)">
+                {{ g.component.name }}
+              </a>
+              <span v-if="g.multiplier !== 1" class="muted tnum">× {{ g.multiplier }}</span>
+            </h4>
+            <ul class="comp-exp-list">
+              <!-- Keyed by index: a sub-recipe may legally repeat a line, and
+                   two identical rows would collide on an id-based key. -->
+              <li v-for="(i, n) in g.ingredients" :key="n">
+                <span class="tnum comp-exp-amt">{{ componentAmount(i) }}</span>
+                <span>{{ (i.food && i.food.name) || i.display }}</span>
+              </li>
+            </ul>
+          </div>
+          <button v-if="componentsExpanded" class="secondary sm comp-show"
+                  @click="expandedComponents = []; componentsExpanded = false">
+            Hide
+          </button>
         </div>
       </div>
 
@@ -1225,9 +1362,25 @@ const imageSrc = computed(() =>
            own provenance, and a cook mid-recipe should not have this between
            the ingredient list and the steps. -->
       <div class="card">
-        <h2>What this contains
-          <span class="muted" style="font-weight:400">— allergens &amp; diets</span>
-        </h2>
+        <!-- The whole header is the toggle, so the hit target is the line a
+             reader is already looking at rather than a 16px chevron. -->
+        <button class="sf-toggle" :aria-expanded="String(containsOpen)"
+                aria-controls="contains-body" @click="containsOpen = !containsOpen">
+          <h2>What this contains
+            <span class="muted" style="font-weight:400">— allergens &amp; diets</span>
+          </h2>
+          <!-- Visible COLLAPSED, because this is the half that must not be
+               hidden: a reader who cannot eat dairy sees "Contains milk"
+               without opening anything. -->
+          <span v-if="containsSummary && !containsOpen"
+                :class="['sf-chip', 'sf-tone-' + containsSummary.tone,
+                         'sf-text-' + containsSummary.tone]">
+            {{ containsSummary.text }}
+          </span>
+          <span class="sf-caret" aria-hidden="true">{{ containsOpen ? '▾' : '▸' }}</span>
+        </button>
+
+        <div v-show="containsOpen" id="contains-body">
 
         <!-- Loading: a skeleton shaped like the rows it replaces. -->
         <div v-if="safetyLoading" class="sf-skel">
@@ -1364,6 +1517,7 @@ const imageSrc = computed(() =>
             check. Always read the packaging.
           </p>
         </template>
+        </div><!-- /contains-body -->
       </div>
 
       <div class="card">
@@ -1671,6 +1825,16 @@ const imageSrc = computed(() =>
 .component-row { display: flex; align-items: baseline; gap: 8px; }
 .component-amt { font-size: 0.85rem; }
 .component-note { font-size: 0.8rem; margin: 8px 0 0; }
+.comp-show { margin-top: 8px; }
+/* Indented and bordered on one side, so the sub-recipe's ingredients read as
+   BELONGING to the component above rather than as more of this recipe's own.
+   That distinction is the whole point: they are not things you add, they are
+   things the stock is made of. */
+.comp-exp { margin: 10px 0 0; padding-left: 12px; border-left: 2px solid var(--border); }
+.comp-exp-h { font-size: 0.9rem; margin: 0 0 4px; display: flex; gap: 8px; align-items: baseline; }
+.comp-exp-list { list-style: none; margin: 0; padding: 0; font-size: 0.9rem; }
+.comp-exp-list li { display: flex; gap: 8px; padding: 2px 0; }
+.comp-exp-amt { color: var(--muted); min-width: 5.5ch; text-align: right; }
 .exp-card { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; }
 .badge.ok { background: var(--success-soft, #e6f5ec); color: var(--success, #1a7f43); }
 .badge.off { opacity: 0.6; }
@@ -1754,6 +1918,26 @@ select.sm { padding: 2px 6px; }
 .sf-advisory { margin: 10px 0 0; font-size: 0.82rem; color: var(--muted); }
 .sf-advisory > summary { cursor: pointer; }
 .sf-advisory > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* The collapsed header. A button wrapping the <h2> so the whole line is the
+   hit target; `all: unset` because a <button> brings a font, a background and
+   a border that would all have to be undone individually. */
+.sf-toggle {
+  all: unset; box-sizing: border-box; cursor: pointer; width: 100%;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.sf-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.sf-toggle > h2 { margin: 0; }
+.sf-caret { margin-left: auto; color: var(--muted); flex-shrink: 0; }
+/* A RAIL, not a filled badge — the same device the verdict rows use, so the
+   summary reads as one of them rather than as a new kind of thing. It picks up
+   `sf-tone-*` (the rail colour) and `sf-text-*` (the AA-safe text colour)
+   unchanged, which is why those two class families are reused here rather than
+   given chip-specific variants that could drift from the rows. */
+.sf-chip {
+  font-size: 0.82rem; font-weight: 600; padding: 2px 0 2px 8px;
+  border-left: 3px solid var(--border);
+}
 
 .sf-tone-bad { border-left-color: var(--danger); }
 .sf-tone-warn { border-left-color: var(--warning); }
