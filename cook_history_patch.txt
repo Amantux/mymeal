@@ -1,0 +1,24 @@
+// Cook history section for RecipeDetail.vue
+// Add after the recipe metadata card (around line 991)
+
+      <!-- Cook history -->
+      <div class="card" v-if="cookHistory.count">
+        <div class="page-head" style="margin-bottom:10px">
+          <h2>Cook history</h2>
+        </div>
+        <div class="row wrap" style="gap:8px;margin-top:8px">
+          <span class="badge tnum">🔥 {{ cookHistory.count }} cooked</span>
+          <span class="badge tnum">📅 Last: {{ fmtDate(cookHistory.lastCookedAt) }}</span>
+        </div>
+        <details v-if="cookHistory.events.length > 1">
+          <summary>View all {{ cookHistory.events.length }} cook events</summary>
+          <ul class="hist-list" style="margin-top:8px">
+            <li v-for="event in cookHistory.events" :key="event.id" class="row" style="gap:8px;align-items:center">
+              <span class="muted sm fill">{{ fmtDate(event.createdAt) }}</span>
+              <button class="secondary sm danger" @click="undoCook(event.id)">✕ Undo</button>
+            </li>
+          </ul>
+        </details>
+      </div>
+
+      <!-- Media sits here, below the hero card and above Ingredients -->

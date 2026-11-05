@@ -59,7 +59,7 @@ async function request(method, path, body, isForm = false) {
   }
   const ct = res.headers.get('content-type') || ''
   const data = ct.includes('application/json') ? await res.json() : await res.text()
-  if (!res.ok) throw apiError((data && data.error) || res.statusText, res.status)
+  if (!res.ok) throw apiError((data && data.error) || res.status, res.status)
   return data
 }
 
@@ -121,4 +121,19 @@ export async function streamPost(path, body, onEvent) {
     flush(decoder.decode(value, { stream: true }), false)
   }
   flush(decoder.decode(), true)
+}
+
+// COOK LOG API
+// =============================================================================
+
+export function logCook(recipeId) {
+  return api.post(`/recipes/${recipeId}/cooked`)
+}
+
+export function getCookEvents(recipeId) {
+  return api.get(`/recipes/${recipeId}/cooked`)
+}
+
+export function undoCook(recipeId, eventId) {
+  return api.del(`/recipes/${recipeId}/cooked/${eventId}`)
 }

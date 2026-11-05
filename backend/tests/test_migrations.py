@@ -481,7 +481,11 @@ def test_0020_adds_kind_to_a_real_pre_media_database(tmp_path):
     must come back as one rather than as NULL under NOT NULL.
     """
     db = str(tmp_path / "m.db")
-    assert _run_alembic(db, "upgrade", "head").returncode == 0
+    # Target 0020 itself, not `head`: later migrations (e.g. cook_events)
+    # stack on top of 0020, and `downgrade -1` below only undoes whatever is
+    # currently head. Anchoring the upgrade to 0020 keeps "-1" meaning "undo
+    # 0020" regardless of how many migrations land after it.
+    assert _run_alembic(db, "upgrade", "0020_media_kind").returncode == 0
     c = sqlite3.connect(db)
     c.execute("PRAGMA foreign_keys=ON")
     _insert(c, "groups", {"id": "g", "name": "G"})
@@ -513,7 +517,7 @@ def test_0020_downgrade_then_upgrade_round_trips_with_rows_present(tmp_path):
     misses table-rebuild bugs — so seed a real row first. recipe_videos has
     FKs out to recipes and groups, and the downgrade rebuilds the table."""
     db = str(tmp_path / "m.db")
-    assert _run_alembic(db, "upgrade", "head").returncode == 0
+    assert _run_alembic(db, "upgrade", "0020_media_kind").returncode == 0
     c = sqlite3.connect(db)
     c.execute("PRAGMA foreign_keys=ON")
     _insert(c, "groups", {"id": "g", "name": "G"})

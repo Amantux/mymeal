@@ -21,13 +21,15 @@ def _parse_date(value):
 
 def entry_load_opts():
     """Eager-load what `mealplan_entry_out` -> `recipe_summary` actually touches:
-    the recipe plus its videos, tags and categories. Without this a month view
-    cost ~4 queries per distinct recipe, and /ha/summary is polled on a timer."""
+    the recipe plus its videos, tags, categories and cook_events. Without this
+    a month view cost ~4 queries per distinct recipe, and /ha/summary is
+    polled on a timer."""
     from sqlalchemy.orm import selectinload
     r = selectinload(MealPlanEntry.recipe)
     return [r.selectinload(Recipe.videos),
             r.selectinload(Recipe.tags),
-            r.selectinload(Recipe.categories)]
+            r.selectinload(Recipe.categories),
+            r.selectinload(Recipe.cook_events)]
 
 
 def _get(entry_id) -> MealPlanEntry:
