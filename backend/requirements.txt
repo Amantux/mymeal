@@ -55,5 +55,5 @@ uvicorn>=0.29.0
 foodcore @ git+https://github.com/Amantux/foodcore.git@v0.2.4
 
 # Pluggable AI providers (all optional at runtime — imported lazily).
-anthropic>=0.39.0
+anthropic>=1.3.0
 openai>=2.53.0
